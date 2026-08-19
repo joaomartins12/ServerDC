@@ -14,36 +14,17 @@ namespace GameServer
     public class GameServer : ServerMain
     {
         public static readonly GameServer Instance = new GameServer();
-
         public static GameChatCommands ChatCommands = new GameChatCommands();
-
         private bool _running;
 
-        /// <summary>
-        ///     Initializes fields and properties
-        /// </summary>
         private GameServer()
         {
         }
 
-        /// <summary>
-        ///     Instance of the actual server component.
-        /// </summary>
         public DefaultServer Server { get; set; }
-
-        /// <summary>
-        ///     Database
-        /// </summary>
         public GameDatabase Database { get; private set; }
-
-        /// <summary>
-        ///     Configuration
-        /// </summary>
         public GameConf Config { get; set; }
 
-        /// <summary>
-        ///     Loads all necessary components and starts the server.
-        /// </summary>
         public void Run()
         {
             if (_running)
@@ -62,32 +43,9 @@ namespace GameServer
             Log.Info($"Server Version {Shared.Util.Version.GetVersion()}");
 
             NavigateToRoot();
-
-            // Conf
             LoadConf(Config = new GameConf());
-
-            // Database
             InitDatabase(Database = new GameDatabase(), Config);
 
-            // Create server-side catalog schema immediately, before loading any game data.
-            // This guarantees dbo.item_catalog exists even if a later XML/data load fails.
-            using (var itemCatalogSchemaConnection = Database.Connection)
-                ItemCatalogDatabase.EnsureSchema(itemCatalogSchemaConnection);
-
-            // Data
-            /*var reader = new TdfReader();
-            if (reader.Load("system/data/QuestServer.tdf"))
-            {
-                Log.Debug("Loading Quest Table");
-                QuestTable = XiStrQuest.LoadFromTdf(reader);
-                if(QuestTable.Count == 0) throw new InvalidDataException("QuestTable corrupt!");
-                Log.Debug("Quest Table Initialized with {0:D} rows.", QuestTable.Count);
-            }
-            else
-            {
-                Log.Debug("Quest Table Load failed.");
-            }*/
-            
             Log.Info("Loading Vehicles..");
             if (File.Exists("system/data/Vehicles.xml"))
             {
@@ -148,8 +106,7 @@ namespace GameServer
                 throw new FileNotFoundException("Quest data not found!");
             }
             Log.Info("Quest Table loaded with {0:D} entries", Quests.Count);
-            
-            // ################# ITEMS ################ //
+
             Log.Info("Loading Item Table");
             if (File.Exists("system/data/Items.xml"))
             {
@@ -171,26 +128,13 @@ namespace GameServer
                 throw new FileNotFoundException("Items data not found!");
             }
             Log.Info("Item Table loaded with {0:D} entries", Items.Count);
-            
-            
-            /*reader = new TdfReader();
-            if (reader.Load("system/data/ItemClient.tdf"))
-            {
-                Log.Debug("Loading Item Table");
-                ItemTable = XiStrItem.LoadFromTdf(reader);
-                if(ItemTable.Count == 0) throw new InvalidDataException("ItemTable corrupt!");
-                Log.Debug("Item Table Initialized with {0:D} rows.", ItemTable.Count);
-            }*/
 
-            // TODO: Load VehicleList.csv to VehicleInfo
-            //VehicleInfo.Load("system/data/VehicleList.csv");
-            
             var reader = new TdfReader();
             if (reader.Load("system/data/LevelServer.tdf"))
             {
                 Log.Debug("Loading Exp Table");
                 LevelTable = XiExpTable.LoadFromTdf(reader);
-                if(LevelTable.Count == 0) throw new InvalidDataException("LevelTable corrupt!");
+                if (LevelTable.Count == 0) throw new InvalidDataException("LevelTable corrupt!");
                 Log.Debug("Exp Table Initialized with {0:D} rows.", LevelTable.Count);
             }
             else
@@ -198,26 +142,21 @@ namespace GameServer
                 Log.Debug("Exp Table Load failed.");
             }
 
-            // Export human-readable indexes for protocol / packet research.
+            // Runtime/client data is exported only. Database synchronization is deliberately
+            // performed offline from DCServerManager while GameServer.exe is stopped.
             GameDataCatalogExporter.Export(Items, VisualItems, Vehicles, Quests, LevelTable);
             ItemCatalogJsonExporter.Export(Items);
+            Log.Info("ItemCatalog.json ready for offline database import from Server Manager.");
 
-            // Keep a server-side definition catalog in SQL Server. The XML/client
-            // metadata is refreshed, while admin overrides are deliberately preserved.
-            using (var itemCatalogConnection = Database.Connection)
-                ItemCatalogDatabase.Synchronize(itemCatalogConnection, Items);
-
-            // Start
             Server = new DefaultServer(Config.Game.Port);
             Server.Start();
 
             ConsoleUtil.RunningTitle();
             _running = true;
-            
+
             watch.Stop();
             Log.Info("Ready after {0}ms", watch.ElapsedMilliseconds);
 
-            // Commands
             var commands = new GameConsoleCommands();
             commands.Wait();
         }
