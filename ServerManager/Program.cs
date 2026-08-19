@@ -10,7 +10,10 @@ namespace ServerManager
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new MainForm());
+
+            var form = new MainForm();
+            ManagerEnhancements.Attach(form);
+            Application.Run(form);
         }
     }
 }
