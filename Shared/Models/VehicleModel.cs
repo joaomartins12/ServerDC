@@ -16,7 +16,6 @@ namespace Shared.Models
                 cmd.AddParameter("@vehId", vehicle.CarId);
                 var updateCommand = cmd;
                 vehicle.WriteToDb(ref updateCommand);
-                cmd.Execute();
             }
         }
 
@@ -68,7 +67,9 @@ namespace Shared.Models
 
                 var insertCommand = cmd;
                 veh.WriteToDb(ref insertCommand);
-                cmd.Execute();
+
+                veh.CarId = (uint)cmd.LastId;
+                veh.CharacterId = ownerId;
                 return cmd.LastId;
             }
         }
