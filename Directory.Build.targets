@@ -1,4 +1,8 @@
 <Project>
+  <ItemGroup Condition="'$(MSBuildProjectName)' == 'GameServer'">
+    <Compile Include="$(MSBuildThisFileDirectory)GameServer\Util\GameDataCatalogExporter.cs" />
+  </ItemGroup>
+
   <Target Name="RemoveLegacyMySqlDataReference" BeforeTargets="ResolveAssemblyReferences">
     <ItemGroup>
       <Reference Remove="@(Reference)" Condition="$([System.String]::Copy('%(Reference.Identity)').StartsWith('MySql.Data'))" />
