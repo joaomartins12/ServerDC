@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using Shared.Database;
@@ -32,7 +32,12 @@ namespace Shared
             for (var i = 0; i < 3; ++i)
             {
                 if (Directory.Exists("system"))
+                {
+                    // From this point all server and packet logs are kept below /Logs
+                    // in the actual server root, independent of where the executable started.
+                    Log.InitializeStructuredLogging();
                     return;
+                }
 
                 Directory.SetCurrentDirectory("..");
             }
