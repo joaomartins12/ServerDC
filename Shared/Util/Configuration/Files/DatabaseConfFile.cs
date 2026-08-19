@@ -1,3 +1,5 @@
+using System;
+
 namespace Shared.Util.Configuration.Files
 {
     /// <summary>
@@ -21,6 +23,25 @@ namespace Shared.Util.Configuration.Files
             User = GetString("user", "");
             Pass = GetString("pass", "");
             Db = GetString("database", "DCServer");
+
+            // Transparently migrate the original project's MySQL defaults.
+            // This is intentionally limited to the known legacy values so a
+            // custom SQL Server configuration is never overwritten.
+            if (Port == 3306)
+                Port = 1433;
+
+            if (string.Equals(Db, "dcnc", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(Db, "dcmm", StringComparison.OrdinalIgnoreCase))
+                Db = "DCServer";
+
+            if (string.Equals(User, "root", StringComparison.OrdinalIgnoreCase))
+            {
+                User = "";
+                Pass = "";
+            }
+
+            if (Host == "127.0.0.1")
+                Host = "localhost";
         }
     }
 }
