@@ -14,12 +14,68 @@ namespace GameServer.Util
     /// </summary>
     public static class ItemCatalogDatabase
     {
+        public static void EnsureSchema(MySqlConnection connection)
+        {
+            if (connection == null)
+                throw new ArgumentNullException(nameof(connection));
+
+            const string sql = @"
+IF OBJECT_ID(N'dbo.item_catalog', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.item_catalog
+    (
+        TableIndex INT NOT NULL CONSTRAINT PK_item_catalog PRIMARY KEY,
+        ItemId VARCHAR(64) NOT NULL,
+        SourceType VARCHAR(16) NOT NULL,
+        Name NVARCHAR(255) NULL,
+        Description NVARCHAR(MAX) NULL,
+        Category VARCHAR(64) NULL,
+        FunctionName VARCHAR(128) NULL,
+        NextState VARCHAR(128) NULL,
+        SourceBuyValue VARCHAR(32) NULL,
+        SourceSellValue VARCHAR(32) NULL,
+        SourceBuyPrice INT NULL,
+        SourceSellPrice INT NULL,
+        ExpirationTime VARCHAR(32) NULL,
+        Auctionable BIT NULL,
+        PartsShop BIT NULL,
+        Sendable BIT NULL,
+        Stackable BIT NOT NULL CONSTRAINT DF_item_catalog_Stackable DEFAULT (0),
+        MaxStack INT NULL,
+        Grade VARCHAR(16) NULL,
+        RequiredLevel INT NULL,
+        BasePoints INT NULL,
+        BasePointModifier INT NULL,
+        BasePointVariable INT NULL,
+        PartAssist VARCHAR(64) NULL,
+        Lube VARCHAR(64) NULL,
+        NeoStats VARCHAR(128) NULL,
+        StatModifier VARCHAR(64) NULL,
+        Cooldown VARCHAR(64) NULL,
+        Duration VARCHAR(64) NULL,
+        IsEnabled BIT NOT NULL CONSTRAINT DF_item_catalog_IsEnabled DEFAULT (1),
+        ServerBuyPrice INT NULL,
+        ServerSellPrice INT NULL,
+        SourceUpdatedAt DATETIME2 NOT NULL CONSTRAINT DF_item_catalog_SourceUpdatedAt DEFAULT (SYSUTCDATETIME()),
+        AdminUpdatedAt DATETIME2 NULL
+    );
+    CREATE UNIQUE INDEX UX_item_catalog_ItemId ON dbo.item_catalog(ItemId);
+    CREATE INDEX IX_item_catalog_Category ON dbo.item_catalog(Category);
+    CREATE INDEX IX_item_catalog_Name ON dbo.item_catalog(Name);
+END;";
+
+            using (var cmd = new MySqlCommand(sql, connection))
+                cmd.ExecuteNonQuery();
+
+            Log.Info("Item catalog database schema ready (dbo.item_catalog)");
+        }
+
         public static void Synchronize(MySqlConnection connection, IList<BasicItem> items)
         {
             if (connection == null || items == null)
                 return;
 
-            EnsureTable(connection);
+            EnsureSchema(connection);
 
             using (var tx = connection.BeginTransaction())
             {
@@ -131,57 +187,6 @@ WHEN NOT MATCHED THEN
                     throw;
                 }
             }
-        }
-
-        private static void EnsureTable(MySqlConnection connection)
-        {
-            const string sql = @"
-IF OBJECT_ID(N'dbo.item_catalog', N'U') IS NULL
-BEGIN
-    CREATE TABLE dbo.item_catalog
-    (
-        TableIndex INT NOT NULL CONSTRAINT PK_item_catalog PRIMARY KEY,
-        ItemId VARCHAR(64) NOT NULL,
-        SourceType VARCHAR(16) NOT NULL,
-        Name NVARCHAR(255) NULL,
-        Description NVARCHAR(MAX) NULL,
-        Category VARCHAR(64) NULL,
-        FunctionName VARCHAR(128) NULL,
-        NextState VARCHAR(128) NULL,
-        SourceBuyValue VARCHAR(32) NULL,
-        SourceSellValue VARCHAR(32) NULL,
-        SourceBuyPrice INT NULL,
-        SourceSellPrice INT NULL,
-        ExpirationTime VARCHAR(32) NULL,
-        Auctionable BIT NULL,
-        PartsShop BIT NULL,
-        Sendable BIT NULL,
-        Stackable BIT NOT NULL CONSTRAINT DF_item_catalog_Stackable DEFAULT (0),
-        MaxStack INT NULL,
-        Grade VARCHAR(16) NULL,
-        RequiredLevel INT NULL,
-        BasePoints INT NULL,
-        BasePointModifier INT NULL,
-        BasePointVariable INT NULL,
-        PartAssist VARCHAR(64) NULL,
-        Lube VARCHAR(64) NULL,
-        NeoStats VARCHAR(128) NULL,
-        StatModifier VARCHAR(64) NULL,
-        Cooldown VARCHAR(64) NULL,
-        Duration VARCHAR(64) NULL,
-        IsEnabled BIT NOT NULL CONSTRAINT DF_item_catalog_IsEnabled DEFAULT (1),
-        ServerBuyPrice INT NULL,
-        ServerSellPrice INT NULL,
-        SourceUpdatedAt DATETIME2 NOT NULL CONSTRAINT DF_item_catalog_SourceUpdatedAt DEFAULT (SYSUTCDATETIME()),
-        AdminUpdatedAt DATETIME2 NULL
-    );
-    CREATE UNIQUE INDEX UX_item_catalog_ItemId ON dbo.item_catalog(ItemId);
-    CREATE INDEX IX_item_catalog_Category ON dbo.item_catalog(Category);
-    CREATE INDEX IX_item_catalog_Name ON dbo.item_catalog(Name);
-END;";
-
-            using (var cmd = new MySqlCommand(sql, connection))
-                cmd.ExecuteNonQuery();
         }
 
         private static object DbText(string value)
