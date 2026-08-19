@@ -195,6 +195,12 @@ namespace GameServer
 
             // Export human-readable indexes for protocol / packet research.
             GameDataCatalogExporter.Export(Items, VisualItems, Vehicles, Quests, LevelTable);
+            ItemCatalogJsonExporter.Export(Items);
+
+            // Keep a server-side definition catalog in SQL Server. The XML/client
+            // metadata is refreshed, while admin overrides are deliberately preserved.
+            using (var itemCatalogConnection = Database.Connection)
+                ItemCatalogDatabase.Synchronize(itemCatalogConnection, Items);
 
             // Start
             Server = new DefaultServer(Config.Game.Port);
