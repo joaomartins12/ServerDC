@@ -1,5 +1,7 @@
 <Project>
-  <ItemGroup>
-    <Reference Remove="MySql.Data" />
-  </ItemGroup>
+  <Target Name="RemoveLegacyMySqlDataReference" BeforeTargets="ResolveReferences">
+    <ItemGroup>
+      <Reference Remove="MySql.Data*" />
+    </ItemGroup>
+  </Target>
 </Project>
