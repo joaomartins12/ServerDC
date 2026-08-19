@@ -113,9 +113,8 @@ namespace GameServer.Util
                 foreach (var entry in shop)
                 {
                     if (entry == null) continue;
-                    BasicItem resolved;
+                    BasicItem resolved = null;
                     var found = !string.IsNullOrWhiteSpace(entry.ItemName) && itemById.TryGetValue(entry.ItemName, out resolved);
-                    if (!found) resolved = null;
 
                     WriteRow(writer,
                         entry.UniqueId,
@@ -192,11 +191,11 @@ namespace GameServer.Util
                         var rewardId = rewards[slot];
                         if (string.IsNullOrWhiteSpace(rewardId) || rewardId == "0") continue;
 
-                        BasicItem resolved;
+                        BasicItem resolved = null;
                         var found = itemById.TryGetValue(rewardId, out resolved);
                         WriteRow(writer, quest.TableIndex, quest.Id, quest.MissionType, quest.Experience, quest.Mito,
                             slot + 1, rewardId, found ? "YES" : "NO",
-                            found ? resolved.Name : "", found ? resolved.Category : "");
+                            found && resolved != null ? resolved.Name : "", found && resolved != null ? resolved.Category : "");
                     }
                 }
             }
