@@ -75,8 +75,8 @@ namespace Shared.Util
         }
 
         /// <summary>
-        /// Initializes the unified Logs folder. The root is located independently by walking
-        /// upwards until the server's /system directory is found, so startup messages are also captured.
+        /// Initializes the unified Logs folder beside the running executables.
+        /// Debug builds therefore use bin\\Debug\\Logs and Release builds use bin\\Release\\Logs.
         /// </summary>
         public static void InitializeStructuredLogging()
         {
@@ -88,8 +88,8 @@ namespace Shared.Util
                 _serverName = Process.GetCurrentProcess().ProcessName;
                 _sessionStamp = DateTime.Now.ToString("HH-mm-ss") + "_pid" + Process.GetCurrentProcess().Id;
 
-                var serverRoot = FindServerRoot();
-                var dayRoot = Path.Combine(serverRoot, "Logs", DateTime.Now.ToString("yyyy-MM-dd"));
+                var runtimeRoot = GetRuntimeRoot();
+                var dayRoot = Path.Combine(runtimeRoot, "Logs", DateTime.Now.ToString("yyyy-MM-dd"));
                 _serverLogRoot = Path.Combine(dayRoot, SafeFileName(_serverName));
                 _packetRoot = Path.Combine(_serverLogRoot, "Packets");
 
@@ -107,7 +107,7 @@ namespace Shared.Util
                     "Server: " + _serverName + Environment.NewLine +
                     "Started: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff") + Environment.NewLine +
                     "PID: " + Process.GetCurrentProcess().Id + Environment.NewLine +
-                    "Root: " + serverRoot + Environment.NewLine +
+                    "Runtime Root: " + runtimeRoot + Environment.NewLine +
                     "=================================" + Environment.NewLine,
                     Encoding.UTF8);
 
@@ -121,16 +121,13 @@ namespace Shared.Util
             }
         }
 
-        private static string FindServerRoot()
+        private static string GetRuntimeRoot()
         {
             try
             {
-                var current = new DirectoryInfo(Environment.CurrentDirectory);
-                for (var i = 0; i < 5 && current != null; i++, current = current.Parent)
-                {
-                    if (Directory.Exists(Path.Combine(current.FullName, "system")))
-                        return current.FullName;
-                }
+                var baseDirectory = AppDomain.CurrentDomain.BaseDirectory;
+                if (!string.IsNullOrWhiteSpace(baseDirectory))
+                    return Path.GetFullPath(baseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
             }
             catch
             {
