@@ -1,4 +1,5 @@
-﻿using Shared.Models;
+﻿using System.Collections.Generic;
+using Shared.Models;
 using Shared.Network;
 using Shared.Network.LobbyServer;
 using Shared.Objects;
@@ -18,7 +19,7 @@ namespace LobbyServer.Network.Handlers
                 packet.Sender.KillConnection("Session Invalid.");
                 return;
             }
-            
+
             var nameTaken = CharacterModel.CheckNameExists(LobbyServer.Instance.Database.Connection,
                 createCharPacket.CharacterName);
             if (nameTaken)
@@ -42,18 +43,60 @@ namespace LobbyServer.Network.Handlers
                 MitoMoney = LobbyServer.Instance.Config.Lobby.NewCharacterMito,
                 Hancoin = LobbyServer.Instance.Config.Lobby.NewCharacterHancoin
             };
+
             CharacterModel.CreateCharacter(LobbyServer.Instance.Database.Connection, ref character);
-            
-            character.ActiveVehicleId = (uint)VehicleModel.Create(LobbyServer.Instance.Database.Connection, new Vehicle()
+
+            var starterVehicle = new Vehicle()
             {
                 CarType = createCharPacket.CarType,
                 Color = createCharPacket.Color,
-            }, character.Id);
-            CharacterModel.Update(LobbyServer.Instance.Database.Connection, character);
-            
+                CharacterId = character.Id
+            };
+
+            var vehicleId = VehicleModel.Create(
+                LobbyServer.Instance.Database.Connection,
+                starterVehicle,
+                character.Id);
+
+            if (vehicleId <= 0)
+            {
+                Log.Error("CreateCharacter: failed to create starter vehicle for CID={0}", character.Id);
+                packet.Sender.SendError("Unable to create starter vehicle.");
+                return;
+            }
+
+            character.ActiveVehicleId = (uint)vehicleId;
+            starterVehicle.CarId = (uint)vehicleId;
+            character.ActiveCar = starterVehicle;
+
+            if (character.GarageVehicles == null)
+                character.GarageVehicles = new List<Vehicle>();
+            character.GarageVehicles.Add(starterVehicle);
+
+            if (!CharacterModel.Update(LobbyServer.Instance.Database.Connection, character))
+            {
+                Log.Error("CreateCharacter: failed to update CurrentCarID for CID={0}", character.Id);
+                packet.Sender.SendError("Unable to finish character creation.");
+                return;
+            }
+
+            // CheckInLobby loads this collection once. Keep it synchronized so
+            // a UserInfo request immediately after CreateChar sees the new char.
+            if (packet.Sender.User.Characters == null)
+                packet.Sender.User.Characters = new List<Character>();
+
+            packet.Sender.User.Characters.RemoveAll(c => c.Id == character.Id);
+            packet.Sender.User.Characters.Add(character);
+
+            Log.Info("CreateCharacter: created CID={0} Name={1} VehicleID={2} UID={3}",
+                character.Id,
+                character.Name,
+                character.ActiveVehicleId,
+                character.Uid);
+
             packet.Sender.Send(new CreateCharAnswerPacket
             {
-                CharacterName = createCharPacket.CharacterName,
+                CharacterName = character.Name,
                 CharacterId = character.Id,
                 ActiveVehicleId = (int)character.ActiveVehicleId,
             }.CreatePacket());
