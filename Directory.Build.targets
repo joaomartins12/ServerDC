@@ -1,0 +1,5 @@
+<Project>
+  <ItemGroup>
+    <Reference Remove="MySql.Data" />
+  </ItemGroup>
+</Project>
