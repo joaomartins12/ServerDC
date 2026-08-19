@@ -69,6 +69,11 @@ namespace GameServer
             // Database
             InitDatabase(Database = new GameDatabase(), Config);
 
+            // Create server-side catalog schema immediately, before loading any game data.
+            // This guarantees dbo.item_catalog exists even if a later XML/data load fails.
+            using (var itemCatalogSchemaConnection = Database.Connection)
+                ItemCatalogDatabase.EnsureSchema(itemCatalogSchemaConnection);
+
             // Data
             /*var reader = new TdfReader();
             if (reader.Load("system/data/QuestServer.tdf"))
