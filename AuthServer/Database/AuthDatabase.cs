@@ -1,22 +1,17 @@
-﻿using System;
+using System;
 using System.IO;
-using MySql.Data.MySqlClient;
 using Shared.Database;
+using Shared.Models;
 using Shared.Util;
 
 namespace AuthServer.Database
 {
     public class AuthDatabase : BaseDatabase
     {
-        /// <summary>
-        ///     Checks whether the SQL update file has already been applied.
-        /// </summary>
-        /// <param name="updateFile"></param>
-        /// <returns></returns>
         public bool CheckUpdate(string updateFile)
         {
             using (var conn = Connection)
-            using (var mc = new MySqlCommand("SELECT * FROM `updates` WHERE `path` = @path", conn))
+            using (var mc = new MySqlCommand("SELECT * FROM updates WHERE path = @path", conn))
             {
                 mc.Parameters.AddWithValue("@path", updateFile);
 
@@ -27,24 +22,18 @@ namespace AuthServer.Database
             }
         }
 
-        /// <summary>
-        ///     Executes SQL update file.
-        /// </summary>
-        /// <param name="updateFile"></param>
         public void RunUpdate(string updateFile)
         {
             try
             {
                 using (var conn = Connection)
                 {
-                    // Run update
                     using (var cmd = new MySqlCommand(File.ReadAllText(Path.Combine("sql", updateFile)), conn))
                     {
                         cmd.ExecuteNonQuery();
                     }
 
-                    // Log update
-                    using (var cmd = new InsertCommand("INSERT INTO `updates` {0}", conn))
+                    using (var cmd = new InsertCommand("INSERT INTO updates {0}", conn))
                     {
                         cmd.Set("path", updateFile);
                         cmd.Execute();
