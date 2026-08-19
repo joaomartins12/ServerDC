@@ -193,6 +193,9 @@ namespace GameServer
                 Log.Debug("Exp Table Load failed.");
             }
 
+            // Export human-readable indexes for protocol / packet research.
+            GameDataCatalogExporter.Export(Items, VisualItems, Vehicles, Quests, LevelTable);
+
             // Start
             Server = new DefaultServer(Config.Game.Port);
             Server.Start();
