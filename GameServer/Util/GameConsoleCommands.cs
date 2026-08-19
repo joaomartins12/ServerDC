@@ -1,6 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
+using Shared;
 using Shared.Network;
+using Shared.Objects.GameDatas;
+using Shared.Util;
 using Shared.Util.Commands;
 
 namespace GameServer.Util
@@ -49,6 +53,44 @@ namespace GameServer.Util
             });
 
             Add("weather", "[fine|cloudy|foggy|rain|sunset]", "Changes weather", HandleWeather);
+            Add("importitems", "Reload Items.xml/UseItems.xml and import item catalog to SQL Server", HandleImportItems);
+        }
+
+        private static CommandResult HandleImportItems(string command, IList<string> args)
+        {
+            if (args.Count != 1)
+                return CommandResult.InvalidArgument;
+
+            const string itemsPath = "system/data/Items.xml";
+            const string useItemsPath = "system/data/UseItems.xml";
+
+            if (!File.Exists(itemsPath) || !File.Exists(useItemsPath))
+            {
+                Log.Error("Item catalog import failed: Items.xml or UseItems.xml was not found.");
+                return CommandResult.Fail;
+            }
+
+            try
+            {
+                Log.Info("Manual item catalog import requested...");
+                var items = GameData.LoadItems(itemsPath, useItemsPath);
+
+                using (var connection = GameServer.Instance.Database.Connection)
+                    ItemCatalogDatabase.Synchronize(connection, items);
+
+                ItemCatalogJsonExporter.Export(items);
+
+                // Keep the live runtime table identical to what was just imported.
+                ServerMain.Items = items;
+
+                Log.Info("Manual item catalog import completed successfully with {0:D} entries.", items.Count);
+                return CommandResult.Okay;
+            }
+            catch (Exception ex)
+            {
+                Log.Exception(ex, "Manual item catalog import failed: {0}", ex.Message);
+                return CommandResult.Fail;
+            }
         }
 
         private static CommandResult HandleWeather(string command, IList<string> args)
