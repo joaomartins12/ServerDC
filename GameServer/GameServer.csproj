@@ -123,6 +123,7 @@
     <Compile Include="Util\GameChatCommands.cs" />
     <Compile Include="Util\GameConfig.cs" />
     <Compile Include="Util\GameConsoleCommands.cs" />
+    <Compile Include="Util\GameDataCatalogExporter.cs" />
     <Compile Include="XiExpTable.cs" />
   </ItemGroup>
   <ItemGroup>
