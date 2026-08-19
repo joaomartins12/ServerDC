@@ -75,8 +75,8 @@ namespace Shared.Util
         }
 
         /// <summary>
-        /// Initializes the unified Logs folder after ServerMain has navigated to the server root.
-        /// Every server process receives an independent log session.
+        /// Initializes the unified Logs folder. The root is located independently by walking
+        /// upwards until the server's /system directory is found, so startup messages are also captured.
         /// </summary>
         public static void InitializeStructuredLogging()
         {
@@ -88,7 +88,8 @@ namespace Shared.Util
                 _serverName = Process.GetCurrentProcess().ProcessName;
                 _sessionStamp = DateTime.Now.ToString("HH-mm-ss") + "_pid" + Process.GetCurrentProcess().Id;
 
-                var dayRoot = Path.Combine(Environment.CurrentDirectory, "Logs", DateTime.Now.ToString("yyyy-MM-dd"));
+                var serverRoot = FindServerRoot();
+                var dayRoot = Path.Combine(serverRoot, "Logs", DateTime.Now.ToString("yyyy-MM-dd"));
                 _serverLogRoot = Path.Combine(dayRoot, SafeFileName(_serverName));
                 _packetRoot = Path.Combine(_serverLogRoot, "Packets");
 
@@ -106,6 +107,7 @@ namespace Shared.Util
                     "Server: " + _serverName + Environment.NewLine +
                     "Started: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff") + Environment.NewLine +
                     "PID: " + Process.GetCurrentProcess().Id + Environment.NewLine +
+                    "Root: " + serverRoot + Environment.NewLine +
                     "=================================" + Environment.NewLine,
                     Encoding.UTF8);
 
@@ -117,6 +119,24 @@ namespace Shared.Util
                     "=====================================" + Environment.NewLine,
                     Encoding.UTF8);
             }
+        }
+
+        private static string FindServerRoot()
+        {
+            try
+            {
+                var current = new DirectoryInfo(Environment.CurrentDirectory);
+                for (var i = 0; i < 5 && current != null; i++, current = current.Parent)
+                {
+                    if (Directory.Exists(Path.Combine(current.FullName, "system")))
+                        return current.FullName;
+                }
+            }
+            catch
+            {
+            }
+
+            return Environment.CurrentDirectory;
         }
 
         /// <summary>
@@ -187,7 +207,6 @@ namespace Shared.Util
             }
             catch (Exception ex)
             {
-                // Packet logging must never be allowed to disconnect a game client.
                 Debug("PacketTrace failed for id {0}: {1}", id, ex.Message);
             }
         }
@@ -263,10 +282,6 @@ namespace Shared.Util
             }
 
             WriteLine(LogLevel.Exception, ex.ToString());
-
-#if !DEBUG
-            if (string.IsNullOrEmpty(Log.LogFile) || !File.Exists(Log.LogFile)) return;
-#endif
         }
 
         public static void Unimplemented(string format, params object[] args)
@@ -300,6 +315,12 @@ namespace Shared.Util
 
         private static void Write(LogLevel level, bool toFile, string format, params object[] args)
         {
+            if (!_structuredInitialized && toFile)
+            {
+                try { InitializeStructuredLogging(); }
+                catch { }
+            }
+
             lock (Console.Out)
             {
                 if (!Hide.HasFlag(level))
