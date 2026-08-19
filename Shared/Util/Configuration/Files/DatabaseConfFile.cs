@@ -1,7 +1,8 @@
-﻿namespace Shared.Util.Configuration.Files
+namespace Shared.Util.Configuration.Files
 {
     /// <summary>
-    ///     Represents database.conf
+    /// Represents system/conf/database.conf for Microsoft SQL Server.
+    /// Leave user/pass empty to use Windows Authentication.
     /// </summary>
     public class DatabaseConfFile : ConfFile
     {
@@ -11,16 +12,15 @@
         public string Pass { get; protected set; }
         public string Db { get; protected set; }
 
-
         public void Load()
         {
             Require("system/conf/database.conf");
 
-            Host = GetString("host", "127.0.0.1");
-            Port = GetInt("port", 3306);
-            User = GetString("user", "root");
+            Host = GetString("host", "localhost");
+            Port = GetInt("port", 1433);
+            User = GetString("user", "");
             Pass = GetString("pass", "");
-            Db = GetString("database", "dcnc");
+            Db = GetString("database", "DCServer");
         }
     }
 }
