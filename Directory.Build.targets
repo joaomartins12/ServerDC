@@ -4,4 +4,10 @@
       <Reference Remove="@(Reference)" Condition="$([System.String]::Copy('%(Reference.Identity)').StartsWith('MySql.Data'))" />
     </ItemGroup>
   </Target>
+
+  <Target Name="RemoveResolvedLegacyMySqlDataReference" BeforeTargets="CoreCompile">
+    <ItemGroup>
+      <ReferencePath Remove="@(ReferencePath)" Condition="$([System.String]::Copy('%(ReferencePath.Filename)').Equals('MySql.Data'))" />
+    </ItemGroup>
+  </Target>
 </Project>
