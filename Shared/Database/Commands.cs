@@ -85,3 +85,14 @@ namespace Shared.Database
         }
     }
 }
+
+// Legacy source files still contain `using MySql.Data.MySqlClient;`.
+// Keep the namespace available without exposing MySQL connection types.
+// The real compatibility connection/command classes are in Shared.Models
+// and are backed by Microsoft SQL Server.
+namespace MySql.Data.MySqlClient
+{
+    internal static class SqlServerCompatibilityMarker
+    {
+    }
+}
