@@ -1,14 +1,10 @@
-﻿using System;
+using System;
 using System.IO;
-using System.Linq;
 using System.Net;
 using System.Net.Sockets;
-using System.Threading;
-using Shared.Models;
 using Shared.Network.GameServer;
 using Shared.Objects;
 using Shared.Util;
-using Shared.Util.Configuration.Files;
 
 namespace Shared.Network
 {
@@ -61,6 +57,40 @@ namespace Shared.Network
         }
 
         public IPEndPoint EndPoint => _tcp.Client.RemoteEndPoint as IPEndPoint;
+
+        private int LocalPort
+        {
+            get
+            {
+                try
+                {
+                    var endpoint = _tcp.Client.LocalEndPoint as IPEndPoint;
+                    return endpoint == null ? 0 : endpoint.Port;
+                }
+                catch
+                {
+                    return 0;
+                }
+            }
+        }
+
+        private string RemoteEndpointText
+        {
+            get
+            {
+                try
+                {
+                    return _tcp.Client.RemoteEndPoint == null ? string.Empty : _tcp.Client.RemoteEndPoint.ToString();
+                }
+                catch
+                {
+                    return string.Empty;
+                }
+            }
+        }
+
+        private string Username => User == null ? string.Empty : User.Username;
+        private string CharacterName => User == null || User.ActiveCharacter == null ? string.Empty : User.ActiveCharacter.Name;
 
         private void OnExchange(IAsyncResult result)
         {
@@ -120,6 +150,16 @@ namespace Shared.Network
                     return;
                 }
 
+                // Rebuild the exact TCP packet before any handler reads or mutates its state.
+                var wirePacket = new byte[_packetLength];
+                Buffer.BlockCopy(BitConverter.GetBytes(_packetLength), 0, wirePacket, 0, 2);
+                Buffer.BlockCopy(BitConverter.GetBytes(_packetId), 0, wirePacket, 2, 2);
+                if (_buffer.Length > 0)
+                    Buffer.BlockCopy(_buffer, 0, wirePacket, 4, _buffer.Length);
+
+                Log.PacketTrace("IN", LocalPort, _packetId, wirePacket,
+                    RemoteEndpointText, Username, CharacterName);
+
                 var packet = new Packet(this, _packetId, _buffer);
                 _parent.Parse(packet);
 
@@ -136,56 +176,35 @@ namespace Shared.Network
         public void Send(Packet packet)
         {
             var buffer = packet.Writer.GetBuffer();
-
             var bufferLength = buffer.Length;
-            var length = (ushort) (bufferLength + 2); // Length includes itself
+            var length = (ushort)(bufferLength + 2); // Length includes itself.
+
+            // Capture exactly what will be written to the network: length + packet id + body.
+            var wirePacket = new byte[length];
+            Buffer.BlockCopy(BitConverter.GetBytes(length), 0, wirePacket, 0, 2);
+            if (bufferLength > 0)
+                Buffer.BlockCopy(buffer, 0, wirePacket, 2, bufferLength);
+
+            Log.PacketTrace("OUT", LocalPort, packet.Id, wirePacket,
+                RemoteEndpointText, Username, CharacterName);
+
 #if DEBUG
             var hexDump = BinaryWriterExt.HexDump(buffer);
-            
-            // Stop frequent packets from spamming the console.
+
+            // Stop frequent packets from spamming the console. They are still always written to Logs/Packets.
             if (!DefaultServer.PacketDumpBlacklist.Contains(packet.Id))
             {
-                if(DefaultServer.PacketNameDatabase.ContainsKey(packet.Id))
+                if (DefaultServer.PacketNameDatabase.ContainsKey(packet.Id))
                     Log.Info("Sending packet {0} ({1} id {2}, 0x{2:X}).", DefaultServer.PacketNameDatabase[packet.Id],
                         Packets.GetName(packet.Id), packet.Id);
                 else
                     Log.Info("Sending unnamed packet ({0} id {1}, 0x{1:X}).",
                         Packets.GetName(packet.Id), packet.Id);
-                
-                if(bufferLength != 0)
+
+                if (bufferLength != 0)
                     Log.Debug("HexDump {0} (Size: {1}):{2}{3}", packet.Id, bufferLength, Environment.NewLine, hexDump);
                 else
                     Log.Debug("HexDump {0}:{1}{2}", packet.Id, Environment.NewLine, hexDump);
-            }
-
-            if (DefaultServer.DumpOutgoing)
-            {
-                // Make sure the packetcaptures directory exists.
-                Directory.CreateDirectory("packetcaptures\\outgoing\\");
-
-                // Dump the received data in hex
-                if (DefaultServer.PacketNameDatabase.ContainsKey(packet.Id))
-                {
-                    if (!File.Exists(
-                        "packetcaptures\\outgoing\\" + DefaultServer.PacketNameDatabase[packet.Id] + ".txt"))
-                        File.WriteAllText(
-                            "packetcaptures\\outgoing\\" + DefaultServer.PacketNameDatabase[packet.Id] + ".txt",
-                            hexDump);
-                }
-                else if (!File.Exists("packetcaptures\\outgoing\\" + packet.Id + ".txt"))
-                    File.WriteAllText("packetcaptures\\outgoing\\" + packet.Id + ".txt", hexDump);
-
-                // Dump the received data into a binary file
-                if (DefaultServer.PacketNameDatabase.ContainsKey(packet.Id))
-                {
-                    if (!File.Exists(
-                        "packetcaptures\\outgoing\\" + DefaultServer.PacketNameDatabase[packet.Id] + ".bin"))
-                        File.WriteAllBytes(
-                            "packetcaptures\\outgoing\\" + DefaultServer.PacketNameDatabase[packet.Id] + ".bin",
-                            buffer);
-                }
-                else if (!File.Exists("packetcaptures\\outgoing\\" + packet.Id + ".bin"))
-                    File.WriteAllBytes("packetcaptures\\outgoing\\" + packet.Id + ".bin", buffer);
             }
 #endif
 
@@ -230,14 +249,13 @@ namespace Shared.Network
             if (!_connected) return;
             _connected = false;
 #if !DEBUG
-            if(reason != "Socket or IO Exception")
+            if (reason != "Socket or IO Exception")
 #endif
             {
                 Log.Info("Killing off client. {0}", reason);
             }
             _tcp.Close();
 
-            // Cleanup VehicleSerial
             if (User != null)
             {
                 if (DefaultServer.ActiveSerials.ContainsKey(User.VehicleSerial) &&
@@ -250,7 +268,6 @@ namespace Shared.Network
 
         public void SendChatMessage(string message)
         {
-            //Array.ConvertAll(new char[16], v => (char) 99).ToString()
             var ack = new ChatMessageAnswer
             {
                 MessageType = "channel",
