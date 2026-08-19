@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.IO;
 using System.Linq;
 using System.Windows.Forms;
@@ -19,30 +20,104 @@ namespace ServerManager
             public Button ToggleButton;
             public RichTextBox LogBox;
             public TextBox CommandBox;
+            public Panel Card;
+        }
+
+        private sealed class DarkTabControl : TabControl
+        {
+            private readonly Color _background;
+            private readonly Color _active;
+            private readonly Color _inactive;
+            private readonly Color _border;
+            private readonly Color _text;
+            private readonly Color _muted;
+            private readonly Color _accent;
+
+            public DarkTabControl(Color background, Color active, Color inactive, Color border, Color text, Color muted, Color accent)
+            {
+                _background = background;
+                _active = active;
+                _inactive = inactive;
+                _border = border;
+                _text = text;
+                _muted = muted;
+                _accent = accent;
+
+                DrawMode = TabDrawMode.OwnerDrawFixed;
+                SizeMode = TabSizeMode.Fixed;
+                ItemSize = new Size(130, 36);
+                Padding = new Point(0, 0);
+            }
+
+            protected override void OnPaintBackground(PaintEventArgs pevent)
+            {
+                pevent.Graphics.Clear(_background);
+            }
+
+            protected override void OnDrawItem(DrawItemEventArgs e)
+            {
+                var selected = e.Index == SelectedIndex;
+                var rect = GetTabRect(e.Index);
+                rect.Inflate(-1, 0);
+
+                using (var bg = new SolidBrush(selected ? _active : _inactive))
+                    e.Graphics.FillRectangle(bg, rect);
+
+                using (var border = new Pen(_border))
+                    e.Graphics.DrawRectangle(border, rect.X, rect.Y, rect.Width - 1, rect.Height - 1);
+
+                if (selected)
+                {
+                    using (var accent = new SolidBrush(_accent))
+                        e.Graphics.FillRectangle(accent, rect.X + 1, rect.Bottom - 3, rect.Width - 2, 3);
+                }
+
+                TextRenderer.DrawText(
+                    e.Graphics,
+                    TabPages[e.Index].Text,
+                    new Font("Segoe UI Semibold", 9F, FontStyle.Bold),
+                    rect,
+                    selected ? _text : _muted,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            }
         }
 
         private readonly Dictionary<string, ServerEntry> _servers = new Dictionary<string, ServerEntry>();
         private readonly FlowLayoutPanel _serverCards = new FlowLayoutPanel();
-        private readonly TabControl _logTabs = new TabControl();
         private readonly Timer _statusTimer = new Timer();
         private readonly Label _summaryLabel = new Label();
+        private readonly DarkTabControl _logTabs;
 
-        private static readonly Color BackgroundColor = Color.FromArgb(24, 26, 31);
-        private static readonly Color PanelColor = Color.FromArgb(34, 37, 43);
-        private static readonly Color LogColor = Color.FromArgb(17, 19, 23);
-        private static readonly Color TextColor = Color.FromArgb(226, 229, 234);
-        private static readonly Color MutedColor = Color.FromArgb(150, 157, 168);
-        private static readonly Color RunningColor = Color.FromArgb(70, 190, 105);
-        private static readonly Color StoppedColor = Color.FromArgb(220, 75, 75);
-        private static readonly Color WarningColor = Color.FromArgb(238, 181, 73);
-        private static readonly Color DebugColor = Color.FromArgb(125, 155, 195);
+        private static readonly Color BackgroundColor = Color.FromArgb(12, 14, 18);
+        private static readonly Color HeaderColor = Color.FromArgb(16, 18, 23);
+        private static readonly Color PanelColor = Color.FromArgb(25, 28, 34);
+        private static readonly Color PanelHoverColor = Color.FromArgb(30, 34, 41);
+        private static readonly Color SurfaceColor = Color.FromArgb(20, 23, 28);
+        private static readonly Color LogColor = Color.FromArgb(9, 11, 14);
+        private static readonly Color BorderColor = Color.FromArgb(47, 53, 63);
+        private static readonly Color TextColor = Color.FromArgb(236, 239, 243);
+        private static readonly Color MutedColor = Color.FromArgb(144, 151, 162);
+        private static readonly Color RunningColor = Color.FromArgb(61, 214, 128);
+        private static readonly Color StoppedColor = Color.FromArgb(239, 83, 80);
+        private static readonly Color WarningColor = Color.FromArgb(242, 184, 72);
+        private static readonly Color DebugColor = Color.FromArgb(101, 168, 255);
+        private static readonly Color AccentColor = Color.FromArgb(92, 140, 255);
 
         public MainForm()
         {
+            _logTabs = new DarkTabControl(
+                BackgroundColor,
+                PanelColor,
+                SurfaceColor,
+                BorderColor,
+                TextColor,
+                MutedColor,
+                AccentColor);
+
             Text = "Drift City Server Manager";
             StartPosition = FormStartPosition.CenterScreen;
-            MinimumSize = new Size(1050, 700);
-            Size = new Size(1280, 820);
+            MinimumSize = new Size(1100, 720);
+            Size = new Size(1320, 850);
             BackColor = BackgroundColor;
             ForeColor = TextColor;
             Font = new Font("Segoe UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
@@ -69,49 +144,53 @@ namespace ServerManager
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
                 RowCount = 3,
-                Padding = new Padding(12),
+                Padding = new Padding(18),
                 BackColor = BackgroundColor
             };
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 58F));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 118F));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 74F));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 128F));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             Controls.Add(root);
 
-            var header = new Panel { Dock = DockStyle.Fill, BackColor = BackgroundColor };
+            var header = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = HeaderColor,
+                Padding = new Padding(18, 10, 18, 10)
+            };
             root.Controls.Add(header, 0, 0);
 
             var title = new Label
             {
                 AutoSize = true,
                 Text = "DRIFT CITY SERVER MANAGER",
-                Font = new Font("Segoe UI Semibold", 16F, FontStyle.Bold),
+                Font = new Font("Segoe UI Semibold", 18F, FontStyle.Bold),
                 ForeColor = Color.White,
-                Location = new Point(0, 3)
+                Location = new Point(18, 10)
             };
             header.Controls.Add(title);
 
             _summaryLabel.AutoSize = true;
             _summaryLabel.ForeColor = MutedColor;
-            _summaryLabel.Location = new Point(3, 35);
+            _summaryLabel.Font = new Font("Segoe UI", 9.5F);
+            _summaryLabel.Location = new Point(21, 47);
             _summaryLabel.Text = "0/5 servers running";
             header.Controls.Add(_summaryLabel);
 
             var stopAll = MakeHeaderButton("STOP ALL", StoppedColor);
             stopAll.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-            stopAll.Location = new Point(header.Width - 120, 8);
             stopAll.Click += delegate { StopAll(); };
             header.Controls.Add(stopAll);
 
             var startAll = MakeHeaderButton("START ALL", RunningColor);
             startAll.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-            startAll.Location = new Point(header.Width - 245, 8);
             startAll.Click += delegate { StartAll(); };
             header.Controls.Add(startAll);
 
             header.Resize += delegate
             {
-                stopAll.Left = header.ClientSize.Width - stopAll.Width;
-                startAll.Left = stopAll.Left - startAll.Width - 8;
+                stopAll.Location = new Point(header.ClientSize.Width - stopAll.Width - 18, 18);
+                startAll.Location = new Point(stopAll.Left - startAll.Width - 10, 18);
             };
 
             _serverCards.Dock = DockStyle.Fill;
@@ -119,52 +198,74 @@ namespace ServerManager
             _serverCards.WrapContents = false;
             _serverCards.AutoScroll = true;
             _serverCards.BackColor = BackgroundColor;
+            _serverCards.Padding = new Padding(0, 10, 0, 8);
             root.Controls.Add(_serverCards, 0, 1);
 
+            var logHost = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = BackgroundColor,
+                Padding = new Padding(0, 4, 0, 0)
+            };
+            root.Controls.Add(logHost, 0, 2);
+
             _logTabs.Dock = DockStyle.Fill;
-            _logTabs.Padding = new Point(14, 6);
-            root.Controls.Add(_logTabs, 0, 2);
+            _logTabs.BackColor = BackgroundColor;
+            _logTabs.ForeColor = TextColor;
+            logHost.Controls.Add(_logTabs);
         }
 
-        private Button MakeHeaderButton(string text, Color backColor)
+        private Button MakeHeaderButton(string text, Color accent)
         {
-            return new Button
+            var button = new Button
             {
                 Text = text,
-                Width = 115,
-                Height = 34,
+                Width = 118,
+                Height = 38,
                 FlatStyle = FlatStyle.Flat,
-                BackColor = backColor,
+                BackColor = Color.FromArgb(30, 33, 40),
                 ForeColor = Color.White,
                 Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold),
                 UseVisualStyleBackColor = false,
                 Cursor = Cursors.Hand
             };
+            button.FlatAppearance.BorderColor = accent;
+            button.FlatAppearance.BorderSize = 1;
+            button.FlatAppearance.MouseOverBackColor = Color.FromArgb(39, 43, 51);
+            button.FlatAppearance.MouseDownBackColor = Color.FromArgb(45, 49, 58);
+            return button;
         }
 
         private void AddServer(string name, string exeName)
         {
-            var entry = new ServerEntry
-            {
-                Name = name,
-                ExeName = exeName
-            };
+            var entry = new ServerEntry { Name = name, ExeName = exeName };
 
             var card = new Panel
             {
-                Width = 225,
-                Height = 94,
-                Margin = new Padding(0, 4, 10, 4),
+                Width = 238,
+                Height = 104,
+                Margin = new Padding(0, 2, 12, 2),
+                Padding = new Padding(14),
                 BackColor = PanelColor
             };
+            entry.Card = card;
+
+            card.Paint += delegate(object sender, PaintEventArgs e)
+            {
+                using (var pen = new Pen(BorderColor))
+                    e.Graphics.DrawRectangle(pen, 0, 0, card.Width - 1, card.Height - 1);
+            };
+            card.MouseEnter += delegate { card.BackColor = PanelHoverColor; };
+            card.MouseLeave += delegate { card.BackColor = PanelColor; };
 
             var nameLabel = new Label
             {
                 Text = name + " Server",
                 AutoSize = true,
                 ForeColor = Color.White,
-                Font = new Font("Segoe UI Semibold", 11F, FontStyle.Bold),
-                Location = new Point(12, 10)
+                BackColor = Color.Transparent,
+                Font = new Font("Segoe UI Semibold", 11.5F, FontStyle.Bold),
+                Location = new Point(14, 14)
             };
             card.Controls.Add(nameLabel);
 
@@ -173,23 +274,28 @@ namespace ServerManager
                 Text = "STOPPED",
                 AutoSize = true,
                 ForeColor = StoppedColor,
+                BackColor = Color.Transparent,
                 Font = new Font("Segoe UI Semibold", 8.5F, FontStyle.Bold),
-                Location = new Point(13, 38)
+                Location = new Point(15, 47)
             };
             card.Controls.Add(entry.StatusLabel);
 
             entry.ToggleButton = new Button
             {
                 Text = "START",
-                Width = 78,
-                Height = 29,
-                Location = new Point(134, 54),
+                Width = 82,
+                Height = 31,
+                Location = new Point(142, 58),
                 FlatStyle = FlatStyle.Flat,
-                BackColor = Color.FromArgb(55, 59, 68),
+                BackColor = Color.FromArgb(30, 55, 42),
                 ForeColor = Color.White,
+                Font = new Font("Segoe UI Semibold", 8.5F, FontStyle.Bold),
                 Cursor = Cursors.Hand,
                 UseVisualStyleBackColor = false
             };
+            entry.ToggleButton.FlatAppearance.BorderColor = RunningColor;
+            entry.ToggleButton.FlatAppearance.BorderSize = 1;
+            entry.ToggleButton.FlatAppearance.MouseOverBackColor = Color.FromArgb(38, 68, 52);
             entry.ToggleButton.Click += delegate
             {
                 if (IsRunning(entry)) StopServer(entry);
@@ -198,7 +304,12 @@ namespace ServerManager
             card.Controls.Add(entry.ToggleButton);
             _serverCards.Controls.Add(card);
 
-            var tab = new TabPage(name + " Log") { BackColor = LogColor, ForeColor = TextColor };
+            var tab = new TabPage(name + " Log")
+            {
+                BackColor = LogColor,
+                ForeColor = TextColor,
+                Padding = new Padding(0)
+            };
             _logTabs.TabPages.Add(tab);
 
             var tabLayout = new TableLayoutPanel
@@ -207,10 +318,10 @@ namespace ServerManager
                 ColumnCount = 1,
                 RowCount = 2,
                 BackColor = LogColor,
-                Padding = new Padding(4)
+                Padding = new Padding(10)
             };
             tabLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            tabLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42F));
+            tabLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
             tab.Controls.Add(tabLayout);
 
             entry.LogBox = new RichTextBox
@@ -223,7 +334,8 @@ namespace ServerManager
                 Font = new Font("Consolas", 9.5F),
                 HideSelection = false,
                 WordWrap = false,
-                DetectUrls = false
+                DetectUrls = false,
+                Margin = new Padding(4)
             };
             tabLayout.Controls.Add(entry.LogBox, 0, 0);
 
@@ -232,20 +344,22 @@ namespace ServerManager
                 Dock = DockStyle.Fill,
                 ColumnCount = 2,
                 RowCount = 1,
-                BackColor = PanelColor,
-                Padding = new Padding(6, 5, 6, 5)
+                BackColor = SurfaceColor,
+                Padding = new Padding(8, 7, 8, 7),
+                Margin = new Padding(0, 5, 0, 0)
             };
             commandPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            commandPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90F));
+            commandPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96F));
             tabLayout.Controls.Add(commandPanel, 0, 1);
 
             entry.CommandBox = new TextBox
             {
                 Dock = DockStyle.Fill,
                 BorderStyle = BorderStyle.FixedSingle,
-                BackColor = Color.FromArgb(25, 28, 33),
-                ForeColor = Color.White,
-                Font = new Font("Consolas", 9.5F)
+                BackColor = Color.FromArgb(14, 16, 20),
+                ForeColor = TextColor,
+                Font = new Font("Consolas", 9.5F),
+                Margin = new Padding(0, 1, 8, 1)
             };
             entry.CommandBox.KeyDown += delegate(object sender, KeyEventArgs e)
             {
@@ -262,10 +376,15 @@ namespace ServerManager
                 Dock = DockStyle.Fill,
                 Text = "SEND",
                 FlatStyle = FlatStyle.Flat,
-                BackColor = Color.FromArgb(55, 59, 68),
+                BackColor = Color.FromArgb(31, 35, 43),
                 ForeColor = Color.White,
-                UseVisualStyleBackColor = false
+                Font = new Font("Segoe UI Semibold", 8.5F, FontStyle.Bold),
+                UseVisualStyleBackColor = false,
+                Cursor = Cursors.Hand,
+                Margin = new Padding(0)
             };
+            sendButton.FlatAppearance.BorderColor = BorderColor;
+            sendButton.FlatAppearance.MouseOverBackColor = Color.FromArgb(42, 47, 57);
             sendButton.Click += delegate { SendCommand(entry); };
             commandPanel.Controls.Add(sendButton, 1, 0);
 
@@ -275,15 +394,13 @@ namespace ServerManager
         private void StartAll()
         {
             foreach (var entry in _servers.Values)
-                if (!IsRunning(entry))
-                    StartServer(entry);
+                if (!IsRunning(entry)) StartServer(entry);
         }
 
         private void StopAll()
         {
             foreach (var entry in _servers.Values)
-                if (IsRunning(entry))
-                    StopServer(entry);
+                if (IsRunning(entry)) StopServer(entry);
         }
 
         private void StartServer(ServerEntry entry)
@@ -315,11 +432,7 @@ namespace ServerManager
                     RedirectStandardInput = true
                 };
 
-                var process = new Process
-                {
-                    StartInfo = startInfo,
-                    EnableRaisingEvents = true
-                };
+                var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
 
                 process.OutputDataReceived += delegate(object sender, DataReceivedEventArgs args)
                 {
@@ -332,7 +445,7 @@ namespace ServerManager
                 process.Exited += delegate
                 {
                     AppendManagerLog(entry, "Process exited.", StoppedColor);
-                    BeginInvoke(new Action(RefreshStatuses));
+                    try { BeginInvoke(new Action(RefreshStatuses)); } catch { }
                 };
 
                 if (!process.Start())
@@ -366,13 +479,9 @@ namespace ServerManager
                         entry.Process.StandardInput.WriteLine("exit");
                         entry.Process.StandardInput.Flush();
                     }
-                    catch
-                    {
-                    }
+                    catch { }
 
-                    if (!entry.Process.WaitForExit(1000))
-                        entry.Process.Kill();
-
+                    if (!entry.Process.WaitForExit(1000)) entry.Process.Kill();
                     AppendManagerLog(entry, "Stopped by Server Manager.", WarningColor);
                 }
                 else
@@ -424,30 +533,34 @@ namespace ServerManager
         {
             try
             {
-                if (entry.Process != null && !entry.Process.HasExited)
-                    return true;
+                if (entry.Process != null && !entry.Process.HasExited) return true;
             }
-            catch
-            {
-            }
+            catch { }
 
             var processName = Path.GetFileNameWithoutExtension(entry.ExeName);
-            return Process.GetProcessesByName(processName).Length > 0;
+            var processes = Process.GetProcessesByName(processName);
+            try { return processes.Length > 0; }
+            finally
+            {
+                foreach (var p in processes) p.Dispose();
+            }
         }
 
         private bool IsExternalRunning(ServerEntry entry)
         {
             try
             {
-                if (entry.Process != null && !entry.Process.HasExited)
-                    return false;
+                if (entry.Process != null && !entry.Process.HasExited) return false;
             }
-            catch
-            {
-            }
+            catch { }
 
             var processName = Path.GetFileNameWithoutExtension(entry.ExeName);
-            return Process.GetProcessesByName(processName).Length > 0;
+            var processes = Process.GetProcessesByName(processName);
+            try { return processes.Length > 0; }
+            finally
+            {
+                foreach (var p in processes) p.Dispose();
+            }
         }
 
         private void RefreshStatuses()
@@ -464,10 +577,15 @@ namespace ServerManager
                     ? (IsExternalRunning(entry) ? "RUNNING (EXTERNAL)" : "RUNNING")
                     : "STOPPED";
                 entry.StatusLabel.ForeColor = running ? RunningColor : StoppedColor;
+
                 entry.ToggleButton.Text = running ? "STOP" : "START";
                 entry.ToggleButton.BackColor = running
-                    ? Color.FromArgb(86, 54, 57)
-                    : Color.FromArgb(46, 82, 60);
+                    ? Color.FromArgb(62, 31, 34)
+                    : Color.FromArgb(27, 52, 39);
+                entry.ToggleButton.FlatAppearance.BorderColor = running ? StoppedColor : RunningColor;
+                entry.ToggleButton.FlatAppearance.MouseOverBackColor = running
+                    ? Color.FromArgb(80, 39, 43)
+                    : Color.FromArgb(36, 67, 50);
             }
 
             _summaryLabel.Text = runningCount + "/" + _servers.Count + " servers running";
@@ -476,8 +594,7 @@ namespace ServerManager
 
         private void AppendServerLog(ServerEntry entry, string line, bool stderr)
         {
-            var color = GetLogColor(line, stderr);
-            AppendManagerLog(entry, line, color);
+            AppendManagerLog(entry, line, GetLogColor(line, stderr));
         }
 
         private Color GetLogColor(string line, bool stderr)
@@ -495,10 +612,11 @@ namespace ServerManager
             if (text.Contains("[debug]") || text.Contains("hexdump"))
                 return DebugColor;
 
-            if (text.Contains("[info]") || text.Contains("started") || text.Contains("accepted client"))
-                return TextColor;
+            if (text.Contains("started ") || text.Contains("network started") || text.Contains("accepted client"))
+                return RunningColor;
 
-            return Color.FromArgb(196, 201, 210);
+            if (text.Contains("[info]")) return TextColor;
+            return Color.FromArgb(190, 196, 205);
         }
 
         private void AppendManagerLog(ServerEntry entry, string line, Color color)
@@ -511,9 +629,7 @@ namespace ServerManager
                 {
                     entry.LogBox.BeginInvoke(new Action<ServerEntry, string, Color>(AppendManagerLog), entry, line, color);
                 }
-                catch
-                {
-                }
+                catch { }
                 return;
             }
 
@@ -547,8 +663,7 @@ namespace ServerManager
                 return;
             }
 
-            if (result == DialogResult.Yes)
-                StopAll();
+            if (result == DialogResult.Yes) StopAll();
         }
     }
 }
