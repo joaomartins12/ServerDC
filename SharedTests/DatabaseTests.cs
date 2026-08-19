@@ -1,8 +1,7 @@
 ﻿using System;
+using System.Data.SqlClient;
 using NUnit.Framework;
 using Shared.Database;
-using System.IO;
-using MySql.Data.MySqlClient;
 using Shared.Models;
 using Shared.Objects;
 
@@ -13,76 +12,87 @@ namespace SharedTests
     {
         public static BaseDatabase DbConnection;
 
-        private static string DbHost = "127.0.0.1";
-        private static int DbPort = 3306;
-        private static string DbUsername = "root";
-        private static string DbPassword = "usbw";
-        private static string DbName = "dcmm_test";
-        
+        private const string DbHost = "localhost";
+        private const int DbPort = 1433;
+        private const string DbUsername = "";
+        private const string DbPassword = "";
+        private const string DbName = "DCServer_Test";
+
         [OneTimeSetUp]
         public static void Setup()
         {
-            var connStr = $"server={DbHost};user={DbUsername};port={DbPort};password={DbPassword};pooling=true; min pool size=0; max pool size=100; ConvertZeroDateTime=true";
-            using (var conn = new MySqlConnection(connStr))
-            using (var cmd = conn.CreateCommand())
-            {
-                conn.Open();
-                cmd.CommandText = $"CREATE DATABASE IF NOT EXISTS `{DbName}`;";
-                Assert.AreEqual(1, cmd.ExecuteNonQuery());
-            }
-            
+            // BaseDatabase.Init now handles SQL Server database creation and
+            // schema migration automatically. Empty username/password means
+            // Windows Authentication.
             DbConnection = new BaseDatabase();
             DbConnection.Init(DbHost, DbPort, DbUsername, DbPassword, DbName);
-            // Verify that mysql connection was set-up correctly.
-            Assert.IsNotNull(DbConnection.Connection);
-            
-            var filePath = Utilities.GetTestFile("/../../sql/dcmm.sql");
-            // Verify that db sql file exists
-            FileAssert.Exists(filePath);
-            var script = new MySqlScript(DbConnection.Connection, File.ReadAllText(filePath));
-            Assert.AreNotEqual(0, script.Execute());
+
+            using (var conn = DbConnection.Connection)
+            {
+                Assert.IsNotNull(conn);
+                Assert.AreEqual(System.Data.ConnectionState.Open, conn.State);
+            }
         }
 
         [OneTimeTearDown]
         public static void Teardown()
         {
-            DbConnection.Connection.Close();
             DbConnection = null;
-            
-            var connStr = $"server={DbHost};user={DbUsername};port={DbPort};password={DbPassword};pooling=true; min pool size=0; max pool size=100; ConvertZeroDateTime=true";
-            using (var conn = new MySqlConnection(connStr))
-            using (var cmd = conn.CreateCommand())
+
+            var builder = new SqlConnectionStringBuilder
+            {
+                DataSource = DbHost,
+                InitialCatalog = "master",
+                IntegratedSecurity = true,
+                TrustServerCertificate = true,
+                Encrypt = false,
+                ConnectTimeout = 15
+            };
+
+            using (var conn = new SqlConnection(builder.ConnectionString))
             {
                 conn.Open();
-                cmd.CommandText = $"DROP DATABASE IF EXISTS `{DbName}`;";
-                //Assert.AreEqual(1, cmd.ExecuteNonQuery());
-                cmd.ExecuteNonQuery();
+
+                // Force-close any test connections so the database can be
+                // removed deterministically after the test suite.
+                using (var cmd = new SqlCommand(
+                    "IF DB_ID(@name) IS NOT NULL " +
+                    "BEGIN " +
+                    "ALTER DATABASE [" + DbName + "] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; " +
+                    "DROP DATABASE [" + DbName + "]; " +
+                    "END", conn))
+                {
+                    cmd.Parameters.AddWithValue("@name", DbName);
+                    cmd.ExecuteNonQuery();
+                }
             }
         }
 
         [Test]
         public static void Test_RetrieveChar()
         {
-            var uid = AccountModel.CreateAccount(DbConnection.Connection, "127.0.0.1", "admin", "admin");
-            var character = new Character
+            using (var conn = DbConnection.Connection)
             {
-                Uid = (ulong)uid,
-                Name = "GigaToni",
-                Avatar = 1,
-            };
+                var uid = AccountModel.CreateAccount(conn, "127.0.0.1", "admin", "admin");
+                var character = new Character
+                {
+                    Uid = (ulong)uid,
+                    Name = "GigaToni",
+                    Avatar = 1,
+                };
 
-            CharacterModel.CreateCharacter(DbConnection.Connection, ref character);
-            character.ActiveVehicleId = (uint)VehicleModel.Create(DbConnection.Connection, new Vehicle()
-            {
-                CarType = 1,
-                Color = 0,
-            }, character.Id);
-            CharacterModel.Update(DbConnection.Connection, character);
+                CharacterModel.CreateCharacter(conn, ref character);
+                character.ActiveVehicleId = (uint)VehicleModel.Create(conn, new Vehicle()
+                {
+                    CarType = 1,
+                    Color = 0,
+                }, character.Id);
+                CharacterModel.Update(conn, character);
 
-            character = null;
-            character = CharacterModel.Retrieve(DbConnection.Connection, "GigaToni");
-            Assert.IsNotNull(character);
-            Console.WriteLine(character.Name);
+                character = CharacterModel.Retrieve(conn, "GigaToni");
+                Assert.IsNotNull(character);
+                Console.WriteLine(character.Name);
+            }
         }
     }
 }
