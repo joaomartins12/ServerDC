@@ -1,0 +1,245 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="14.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{FFEA87F0-8AA3-43B8-8914-78B6D5D6FB67}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <AppDesignerFolder>Properties</AppDesignerFolder>
+    <RootNamespace>Shared</RootNamespace>
+    <AssemblyName>Shared</AssemblyName>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <TargetFrameworkProfile />
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>..\..\bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugType>full</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>..\..\bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+    <DebugSymbols>true</DebugSymbols>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'ReleaseUnix|AnyCPU' ">
+    <DebugType>full</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>..\..\bin\ReleaseUnix\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+    <DebugSymbols>true</DebugSymbols>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="MySql.Data, Version=6.9.9.0, Culture=neutral, PublicKeyToken=c5687fc88969c44d">
+      <HintPath>..\packages\MySql.Data.6.9.9\lib\net45\MySql.Data.dll</HintPath>
+    </Reference>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Numerics" />
+    <Reference Include="System.Xml.Linq" />
+    <Reference Include="System.Data.DataSetExtensions" />
+    <Reference Include="Microsoft.CSharp" />
+    <Reference Include="System.Data" />
+    <Reference Include="System.Net.Http" />
+    <Reference Include="System.Xml" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Database\BaseDatabase.cs" />
+    <Compile Include="Database\Commands.cs" />
+    <Compile Include="Models\AccountModel.cs" />
+    <Compile Include="Models\CharacterModel.cs" />
+    <Compile Include="Models\FriendModel.cs" />
+    <Compile Include="Models\ItemModel.cs" />
+    <Compile Include="Models\QuestModel.cs" />
+    <Compile Include="Models\ServerModel.cs" />
+    <Compile Include="Models\VehicleModel.cs" />
+    <Compile Include="Network\Client.cs" />
+    <Compile Include="Network\DefaultServer.cs" />
+    <Compile Include="Network\Packet.cs" />
+    <Compile Include="Network\Packets.cs" />
+    <Compile Include="Network\Packets\AreaServer\Incoming\EnterAreaPacket.cs" />
+    <Compile Include="Network\Packets\AreaServer\Incoming\MoveVehiclePacket.cs" />
+    <Compile Include="Network\Packets\AreaServer\Incoming\TimeSyncPacket.cs" />
+    <Compile Include="Network\Packets\AreaServer\Incoming\UdpCastTcsSignalPacket.cs" />
+    <Compile Include="Network\Packets\AreaServer\Outgoing\AreaStatusAnswerPacket.cs" />
+    <Compile Include="Network\Packets\AreaServer\Outgoing\EnterAreaAnswer.cs" />
+    <Compile Include="Network\Packets\AreaServer\Outgoing\MoveVehicleAnswer.cs" />
+    <Compile Include="Network\Packets\AreaServer\Outgoing\TimeSyncAnswerPacket.cs" />
+    <Compile Include="Network\Packets\AreaServer\Outgoing\UdpCastTcsSignalAnswerPacket.cs" />
+    <Compile Include="Network\Packets\AuthServer\UserAuthAnswerPacket.cs" />
+    <Compile Include="Network\Packets\AuthServer\UserAuthPacket.cs" />
+    <Compile Include="Network\Packets\GameServer\Buy\BuyCarAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Buy\BuyCarPacket.cs" />
+    <Compile Include="Network\Packets\GameServer\Buy\BuyItemAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Buy\BuyItemPacket.cs" />
+    <Compile Include="Network\Packets\GameServer\Buy\BuyVisualItemThreadAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Buy\BuyVisualItemThreadPacket.cs" />
+    <Compile Include="Network\Packets\GameServer\Buy\SellCarAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Buy\SellItemAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Buy\SellItemPacket.cs" />
+    <Compile Include="Network\Packets\GameServer\Chase\ChaseRequestAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Chase\ChaseRequestPacket.cs" />
+    <Compile Include="Network\Packets\GameServer\CrewCenter\CheckTeamNameAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\CrewCenter\CheckTeamNamePacket.cs" />
+    <Compile Include="Network\Packets\GameServer\Generic\CheckStatAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Generic\FuelChargeReqAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Generic\FuelChargeReqPacket.cs" />
+    <Compile Include="Network\Packets\GameServer\Generic\GetMyHancoinAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Generic\RoomNotifyChangeAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Generic\SaveCarPosPacket.cs" />
+    <Compile Include="Network\Packets\GameServer\Info\AreaListAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Info\CharUpdateAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Info\DriveInfoPacket.cs" />
+    <Compile Include="Network\Packets\GameServer\Info\FriendListAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Info\GameCharInfoAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Info\GameCharInfoPacket.cs" />
+    <Compile Include="Network\Packets\GameServer\Info\ItemListAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Info\ItemModListAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Info\MyTeamInfoAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Info\MyTeamInfoPacket.cs" />
+    <Compile Include="Network\Packets\GameServer\Info\PlayerInfoOldAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Info\PlayerInfoReqPacket.cs" />
+    <Compile Include="Network\Packets\GameServer\Info\StatUpdateAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Info\VisualItemListAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Info\VisualUpdateAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Info\WeatherAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Instant\InstantGiveUpAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Instant\InstantGiveUpPacket.cs" />
+    <Compile Include="Network\Packets\GameServer\Instant\InstantGoalPlaceAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Instant\InstantGoalPlacePacket.cs" />
+    <Compile Include="Network\Packets\GameServer\Instant\InstantStartAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Instant\InstantStartPacket.cs" />
+    <Compile Include="Network\Packets\GameServer\JoinLeave\CheckInGameAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\JoinLeave\CheckInGamePacket.cs" />
+    <Compile Include="Network\Packets\GameServer\JoinLeave\CityLeaveCheckAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\JoinLeave\CityLeaveCheckPacket.cs" />
+    <Compile Include="Network\Packets\GameServer\JoinLeave\MyCityPositionAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\JoinLeave\GetDateTimePacket.cs" />
+    <Compile Include="Network\Packets\GameServer\JoinLeave\GetDateTimePacketAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\JoinLeave\JoinAreaAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\JoinLeave\JoinAreaPacket.cs" />
+    <Compile Include="Network\Packets\GameServer\JoinLeave\JoinChannelAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\JoinLeave\LoadCharThreadAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\JoinLeave\LoadCharThreadPacket.cs" />
+    <Compile Include="Network\Packets\GameServer\Messaging\ChatMessageAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Messaging\ChatMessagePacket.cs" />
+    <Compile Include="Network\Packets\GameServer\Messaging\SendMailPacket.cs" />
+    <Compile Include="Network\Packets\GameServer\Quests\MyQuestListAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Quests\QuestCompleteAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Quests\QuestCompletePacket.cs" />
+    <Compile Include="Network\Packets\GameServer\Quests\QuestGiveUpAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Quests\QuestGiveUpPacket.cs" />
+    <Compile Include="Network\Packets\GameServer\Quests\QuestRewardAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Quests\QuestRewardPacket.cs" />
+    <Compile Include="Network\Packets\GameServer\Quests\QuestStartAnswer.cs" />
+    <Compile Include="Network\Packets\GameServer\Quests\QuestStartPacket.cs" />
+    <Compile Include="Network\Packets\GameServer\SelectCarAnswer.cs" />
+    <Compile Include="Network\Packets\OutPacket.cs" />
+    <Compile Include="Network\Packets\LobbyServer\Incoming\CheckCharacterNamePacket.cs" />
+    <Compile Include="Network\Packets\LobbyServer\Incoming\CheckInLobbyPacket.cs" />
+    <Compile Include="Network\Packets\LobbyServer\Incoming\CreateCharPacket.cs" />
+    <Compile Include="Network\Packets\LobbyServer\Incoming\DeleteCharacterPacket.cs" />
+    <Compile Include="Network\Packets\LobbyServer\Incoming\UserInfoPacket.cs" />
+    <Compile Include="Network\Packets\LobbyServer\Outgoing\CheckCharacterNameAnswerPacket.cs" />
+    <Compile Include="Network\Packets\LobbyServer\Outgoing\CheckInLobbyAnswerPacket.cs" />
+    <Compile Include="Network\Packets\LobbyServer\Outgoing\CreateCharAnswerPacket.cs" />
+    <Compile Include="Network\Packets\LobbyServer\Outgoing\DeleteCharacterAnswerPacket.cs" />
+    <Compile Include="Network\Packets\LobbyServer\Outgoing\GameSettingsAnswer.cs" />
+    <Compile Include="Network\Packets\LobbyServer\Outgoing\LobbyTimeAnswerPacket.cs" />
+    <Compile Include="Network\Packets\LobbyServer\Outgoing\UserInfoAnswerPacket.cs" />
+    <Compile Include="Objects\Character.cs" />
+    <Compile Include="Objects\ExpInfo.cs" />
+    <Compile Include="Objects\GameDatas\BasicItem.cs" />
+    <Compile Include="Objects\GameDatas\GameData.cs" />
+    <Compile Include="Objects\GameDatas\ItemTable.cs" />
+    <Compile Include="Objects\GameDatas\QuestTable.cs" />
+    <Compile Include="Objects\GameDatas\UseItemTable.cs" />
+    <Compile Include="Objects\GameDatas\VehicleList.cs" />
+    <Compile Include="Objects\GameDatas\VShopItemList.cs" />
+    <Compile Include="Objects\InventoryItem.cs" />
+    <Compile Include="Models\CrewModel.cs" />
+    <Compile Include="Objects\Server.cs" />
+    <Compile Include="Objects\VehicleInfo.cs" />
+    <Compile Include="Objects\InventoryVisualItem.cs" />
+    <Compile Include="Objects\XiCarAttr.cs" />
+    <Compile Include="Objects\XiStrCarInfo.cs" />
+    <Compile Include="Objects\XiStrEnchantBonus.cs" />
+    <Compile Include="Objects\XiStrItem.cs" />
+    <Compile Include="Objects\XiPlayerInfo.cs" />
+    <Compile Include="Objects\XiStrMyItemMod.cs" />
+    <Compile Include="Objects\XiStrStatInfo.cs" />
+    <Compile Include="Objects\Crew.cs" />
+    <Compile Include="Objects\Vehicle.cs" />
+    <Compile Include="Objects\XiStrIcon.cs" />
+    <Compile Include="Objects\XiStrQuest.cs" />
+    <Compile Include="Objects\XiVisualItem.cs" />
+    <Compile Include="ServerMain.cs" />
+    <Compile Include="Objects\User.cs" />
+    <Compile Include="Util\BinaryReaderExt.cs" />
+    <Compile Include="Util\BinaryWriterExt.cs" />
+    <Compile Include="Util\Commands\ChatCommands.cs" />
+    <Compile Include="Util\Commands\CommandManager.cs" />
+    <Compile Include="Util\Commands\ConsoleCommands.cs" />
+    <Compile Include="Util\Configuration\BaseConf.cs" />
+    <Compile Include="Util\Configuration\ConfFile.cs" />
+    <Compile Include="Util\Configuration\Files\DatabaseConfFile.cs" />
+    <Compile Include="Util\Configuration\Files\IPConfFile.cs" />
+    <Compile Include="Util\Configuration\Files\LogConfFile.cs" />
+    <Compile Include="Util\ConsoleUtil.cs" />
+    <Compile Include="Util\FileReader.cs" />
+    <Compile Include="Util\Log.cs" />
+    <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="Util\Math2.cs" />
+    <Compile Include="Util\Password.cs" />
+    <Compile Include="Util\PastebinApi.cs" />
+    <Compile Include="Util\RandomProvider.cs" />
+    <Compile Include="Util\TdfReader.cs" />
+    <Compile Include="Util\Version.cs" />
+    <Compile Include="Util\Win32.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="app.config" />
+    <None Include="packages.config" />
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="Network\Packets\Ranking\Incoming\" />
+    <Folder Include="Network\Packets\Ranking\Outgoing\" />
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <PropertyGroup>
+    <PreBuildEvent>
+if $(ConfigurationName) NEQ ReleaseUnix (
+    "$(SolutionDir)External\NetRevisionTool.exe" /info /patch "$(ProjectDir)"
+    taskkill /F /IM "AuthServer.exe" 2&gt;nul 1&gt;nul
+    taskkill /F /IM "LobbyServer.exe" 2&gt;nul 1&gt;nul
+    taskkill /F /IM "AreaServer.exe" 2&gt;nul 1&gt;nul
+    taskkill /F /IM "GameServer.exe" 2&gt;nul 1&gt;nul
+    taskkill /F /IM "RankingServer.exe" 2&gt;nul 1&gt;nul
+    Exit 0
+)</PreBuildEvent>
+  </PropertyGroup>
+  <PropertyGroup>
+    <PostBuildEvent>
+if $(ConfigurationName) NEQ ReleaseUnix (
+    "$(SolutionDir)External\NetRevisionTool.exe" /restore "$(ProjectDir)"
+)</PostBuildEvent>
+  </PropertyGroup>
+  <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 
+       Other similar extension points exist, see Microsoft.Common.targets.
+  <Target Name="BeforeBuild">
+  </Target>
+  <Target Name="AfterBuild">
+  </Target>
+  -->
+</Project>
