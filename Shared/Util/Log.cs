@@ -1,11 +1,12 @@
-﻿using System;
+using System;
+using System.Diagnostics;
 using System.IO;
+using System.Text;
+using System.Threading;
+using Shared.Network;
 
 namespace Shared.Util
 {
-    /// <summary>
-    ///     All log levels. Also used as bitmask, for hiding.
-    /// </summary>
     [Flags]
     public enum LogLevel
     {
@@ -19,29 +20,21 @@ namespace Shared.Util
         None = 0x7FFF
     }
 
-    /// <summary>
-    ///     Logs messages to command line and file.
-    /// </summary>
     public static class Log
     {
+        private static readonly object FileLock = new object();
         private static string _logFile;
+        private static string _serverLogRoot;
+        private static string _packetRoot;
+        private static string _packetSessionLog;
+        private static string _sessionStamp;
+        private static string _serverName;
+        private static long _packetSequence;
+        private static bool _structuredInitialized;
 
-        /// <summary>
-        ///     Specifies the log levels that shouldn't be displayed
-        ///     on the command line.
-        /// </summary>
         public static LogLevel Hide { get; set; }
-
-        /// <summary>
-        ///     Sets or returns the directory in which the logs are archived.
-        ///     If no archive is set, log files will simply be overwritten.
-        /// </summary>
         public static string Archive { private get; set; }
 
-        /// <summary>
-        ///     Sets or returns the file to log to. Upon setting, the file will
-        ///     be deleted. If Archive is set, it will be moved to safety first.
-        /// </summary>
         public static string LogFile
         {
             get { return _logFile; }
@@ -50,10 +43,8 @@ namespace Shared.Util
                 if (value != null)
                 {
                     var pathToFile = Path.GetDirectoryName(value);
-
-                    if (!Directory.Exists(pathToFile))
-                        if (pathToFile != null)
-                            Directory.CreateDirectory(pathToFile);
+                    if (!string.IsNullOrEmpty(pathToFile) && !Directory.Exists(pathToFile))
+                        Directory.CreateDirectory(pathToFile);
 
                     if (File.Exists(value))
                     {
@@ -81,6 +72,152 @@ namespace Shared.Util
 
                 _logFile = value;
             }
+        }
+
+        /// <summary>
+        /// Initializes the unified Logs folder after ServerMain has navigated to the server root.
+        /// Every server process receives an independent log session.
+        /// </summary>
+        public static void InitializeStructuredLogging()
+        {
+            lock (FileLock)
+            {
+                if (_structuredInitialized)
+                    return;
+
+                _serverName = Process.GetCurrentProcess().ProcessName;
+                _sessionStamp = DateTime.Now.ToString("HH-mm-ss") + "_pid" + Process.GetCurrentProcess().Id;
+
+                var dayRoot = Path.Combine(Environment.CurrentDirectory, "Logs", DateTime.Now.ToString("yyyy-MM-dd"));
+                _serverLogRoot = Path.Combine(dayRoot, SafeFileName(_serverName));
+                _packetRoot = Path.Combine(_serverLogRoot, "Packets");
+
+                Directory.CreateDirectory(_serverLogRoot);
+                Directory.CreateDirectory(_packetRoot);
+                Directory.CreateDirectory(Path.Combine(_packetRoot, "IN"));
+                Directory.CreateDirectory(Path.Combine(_packetRoot, "OUT"));
+
+                _logFile = Path.Combine(_serverLogRoot, "server_" + _sessionStamp + ".log");
+                _packetSessionLog = Path.Combine(_packetRoot, "packets_" + _sessionStamp + ".log");
+                _structuredInitialized = true;
+
+                File.AppendAllText(_logFile,
+                    "===== Drift City Server Log =====" + Environment.NewLine +
+                    "Server: " + _serverName + Environment.NewLine +
+                    "Started: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff") + Environment.NewLine +
+                    "PID: " + Process.GetCurrentProcess().Id + Environment.NewLine +
+                    "=================================" + Environment.NewLine,
+                    Encoding.UTF8);
+
+                File.AppendAllText(_packetSessionLog,
+                    "===== Drift City Packet Session =====" + Environment.NewLine +
+                    "Server: " + _serverName + Environment.NewLine +
+                    "Started: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff") + Environment.NewLine +
+                    "Format: SEQ | TIMESTAMP | DIR | PORT | ID | NAME | WIRE_BYTES | ENDPOINT | USER | CHARACTER" + Environment.NewLine +
+                    "=====================================" + Environment.NewLine,
+                    Encoding.UTF8);
+            }
+        }
+
+        /// <summary>
+        /// Stores one exact packet as seen on the TCP wire. The supplied buffer must include
+        /// the two-byte packet length and two-byte packet id before the packet body.
+        /// </summary>
+        public static void PacketTrace(string direction, int port, ushort id, byte[] wireBytes,
+            string endpoint = null, string username = null, string characterName = null)
+        {
+            try
+            {
+                if (!_structuredInitialized)
+                    InitializeStructuredLogging();
+
+                if (wireBytes == null)
+                    wireBytes = new byte[0];
+
+                var sequence = Interlocked.Increment(ref _packetSequence);
+                var now = DateTime.Now;
+                var dir = string.Equals(direction, "OUT", StringComparison.OrdinalIgnoreCase) ? "OUT" : "IN";
+                var packetName = GetPacketName(id);
+                var fileBase = sequence.ToString("D6") + "_" + now.ToString("HH-mm-ss.fff") +
+                               "_ID" + id.ToString("D4") + "_" + SafeFileName(packetName);
+                var dirRoot = Path.Combine(_packetRoot, dir);
+                var txtPath = Path.Combine(dirRoot, fileBase + ".txt");
+                var binPath = Path.Combine(dirRoot, fileBase + ".bin");
+
+                var body = new StringBuilder();
+                body.AppendLine("DRIFT CITY PACKET CAPTURE");
+                body.AppendLine("=========================");
+                body.AppendLine("Sequence   : " + sequence);
+                body.AppendLine("Timestamp  : " + now.ToString("yyyy-MM-dd HH:mm:ss.fff"));
+                body.AppendLine("Direction  : " + dir);
+                body.AppendLine("Server     : " + _serverName);
+                body.AppendLine("Port       : " + port);
+                body.AppendLine("Packet ID  : " + id + " (0x" + id.ToString("X") + ")");
+                body.AppendLine("Packet Name: " + packetName);
+                body.AppendLine("Wire Bytes : " + wireBytes.Length);
+                body.AppendLine("Endpoint   : " + (endpoint ?? ""));
+                body.AppendLine("User       : " + (username ?? ""));
+                body.AppendLine("Character  : " + (characterName ?? ""));
+                body.AppendLine();
+                body.AppendLine("HEX DUMP");
+                body.AppendLine("--------");
+                body.AppendLine(BinaryWriterExt.HexDump(wireBytes));
+
+                lock (FileLock)
+                {
+                    Directory.CreateDirectory(dirRoot);
+                    File.WriteAllText(txtPath, body.ToString(), Encoding.UTF8);
+                    File.WriteAllBytes(binPath, wireBytes);
+
+                    using (var writer = new StreamWriter(_packetSessionLog, true, Encoding.UTF8))
+                    {
+                        writer.WriteLine("{0:D6} | {1} | {2} | {3} | {4} (0x{4:X}) | {5} | {6} | {7} | {8} | {9}",
+                            sequence,
+                            now.ToString("yyyy-MM-dd HH:mm:ss.fff"),
+                            dir,
+                            port,
+                            id,
+                            packetName,
+                            wireBytes.Length,
+                            endpoint ?? "",
+                            username ?? "",
+                            characterName ?? "");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                // Packet logging must never be allowed to disconnect a game client.
+                Debug("PacketTrace failed for id {0}: {1}", id, ex.Message);
+            }
+        }
+
+        private static string GetPacketName(ushort id)
+        {
+            try
+            {
+                var name = Packets.GetName(id);
+#if DEBUG
+                if (DefaultServer.PacketNameDatabase != null && DefaultServer.PacketNameDatabase.ContainsKey(id))
+                    return DefaultServer.PacketNameDatabase[id] + "_" + name;
+#endif
+                return name;
+            }
+            catch
+            {
+                return "UnknownPacket";
+            }
+        }
+
+        private static string SafeFileName(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return "Unknown";
+
+            foreach (var invalid in Path.GetInvalidFileNameChars())
+                value = value.Replace(invalid, '_');
+
+            return value.Replace(' ', '_');
         }
 
         public static void Info(string format, params object[] args)
@@ -126,15 +263,9 @@ namespace Shared.Util
             }
 
             WriteLine(LogLevel.Exception, ex.ToString());
-            
-#if !DEBUG
-            if (!File.Exists(Log.LogFile)) return;
-            
-            Console.WriteLine("Press any key to upload files to pastebin");
-            Console.ReadKey();
 
-            var url = PastebinApi.Publish(File.ReadAllText(Log.LogFile));
-            Console.WriteLine($"Your logfile has been uploaded to: {url}");
+#if !DEBUG
+            if (string.IsNullOrEmpty(Log.LogFile) || !File.Exists(Log.LogFile)) return;
 #endif
         }
 
@@ -146,7 +277,7 @@ namespace Shared.Util
         public static void Progress(int current, int max)
         {
             var donePerc = 100f / max * current;
-            var done = (int) Math.Min(20, Math.Ceiling(20f / max * current));
+            var done = (int)Math.Min(20, Math.Ceiling(20f / max * current));
 
             Write(LogLevel.Info, false, "[" + "".PadRight(done, '#') + "".PadLeft(20 - done, '.') + "] {0,5:0.0}%\r",
                 donePerc);
@@ -173,51 +304,44 @@ namespace Shared.Util
             {
                 if (!Hide.HasFlag(level))
                 {
-                    switch (level)
+                    try
                     {
-                        case LogLevel.Info:
-                            Console.ForegroundColor = ConsoleColor.White;
-                            break;
-                        case LogLevel.Warning:
-                            Console.ForegroundColor = ConsoleColor.Yellow;
-                            break;
-                        case LogLevel.Error:
-                            Console.ForegroundColor = ConsoleColor.Red;
-                            break;
-                        case LogLevel.Debug:
-                            Console.ForegroundColor = ConsoleColor.Cyan;
-                            break;
-                        case LogLevel.Status:
-                            Console.ForegroundColor = ConsoleColor.Green;
-                            break;
-                        case LogLevel.Exception:
-                            Console.ForegroundColor = ConsoleColor.DarkRed;
-                            break;
-                        case LogLevel.Unimplemented:
-                            Console.ForegroundColor = ConsoleColor.DarkGray;
-                            break;
+                        switch (level)
+                        {
+                            case LogLevel.Info: Console.ForegroundColor = ConsoleColor.White; break;
+                            case LogLevel.Warning: Console.ForegroundColor = ConsoleColor.Yellow; break;
+                            case LogLevel.Error: Console.ForegroundColor = ConsoleColor.Red; break;
+                            case LogLevel.Debug: Console.ForegroundColor = ConsoleColor.Cyan; break;
+                            case LogLevel.Status: Console.ForegroundColor = ConsoleColor.Green; break;
+                            case LogLevel.Exception: Console.ForegroundColor = ConsoleColor.DarkRed; break;
+                            case LogLevel.Unimplemented: Console.ForegroundColor = ConsoleColor.DarkGray; break;
+                        }
                     }
+                    catch { }
 
                     if (level != LogLevel.None)
                         Console.Write("[{0}]", level);
 
-                    Console.ForegroundColor = ConsoleColor.Gray;
+                    try { Console.ForegroundColor = ConsoleColor.Gray; } catch { }
 
                     if (level != LogLevel.None)
                         Console.Write(" - ");
 
                     Console.Write(format, args);
                 }
+            }
 
-                if (_logFile == null || !toFile) return;
-                
-                using (var file = new StreamWriter(_logFile, true))
+            if (_logFile == null || !toFile)
+                return;
+
+            lock (FileLock)
+            {
+                using (var file = new StreamWriter(_logFile, true, Encoding.UTF8))
                 {
-                    file.Write("{0:yyyy-MM-dd HH:mm} ", DateTime.Now);
+                    file.Write("{0:yyyy-MM-dd HH:mm:ss.fff} ", DateTime.Now);
                     if (level != LogLevel.None)
                         file.Write("[{0}] - ", level);
                     file.Write(format, args);
-                    file.Flush();
                 }
             }
         }
