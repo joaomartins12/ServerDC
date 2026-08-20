@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Security.Principal;
 
 namespace Shared.Util
@@ -8,32 +7,7 @@ namespace Shared.Util
     public class ConsoleUtil
     {
         private const string TitlePrefix = "DCNC: ";
-        private const int FallbackConsoleWidth = 100;
 
-        private static readonly string[] Logo =
-        {
-            @" /$$$$$$$   /$$$$$$  /$$   /$$  /$$$$$$ ",
-            @"| $$__  $$ /$$__  $$| $$$ | $$ /$$__  $$",
-            @"| $$  \ $$| $$  \__/| $$$$| $$| $$  \__/",
-            @"| $$  | $$| $$      | $$ $$ $$| $$      ",
-            @"| $$  | $$| $$      | $$  $$$$| $$      ",
-            @"| $$  | $$| $$    $$| $$\  $$$| $$    $$",
-            @"| $$$$$$$/|  $$$$$$/| $$ \  $$|  $$$$$$/",
-            @"|_______/  \______/ |__/  \__/ \______/ "
-        };
-
-        private static readonly string[] Credits =
-        {
-            @"Copyright (c) 2017 GigaToni",
-            @"For problems & support: https://github.com/exmex/DCNC/issues",
-            @"Also visit our discord channel: https://discord.gg/GnW6xxf",
-            @"Special Thanks to amPerl"
-        };
-
-        /// <summary>
-        ///     Gets a value indicating whether the current process is running
-        ///     in user interactive mode.
-        /// </summary>
         public static bool UserInteractive
         {
             get
@@ -46,10 +20,6 @@ namespace Shared.Util
             }
         }
 
-        /// <summary>
-        /// True when the process owns a real console instead of being hosted by
-        /// DCServerManager (or another process) with redirected stdin/stdout.
-        /// </summary>
         private static bool HasRealConsole
         {
             get
@@ -65,110 +35,29 @@ namespace Shared.Util
             }
         }
 
-        private static int GetConsoleWidthSafe()
-        {
-            if (!HasRealConsole)
-                return FallbackConsoleWidth;
-
-            try
-            {
-                return Math.Max(40, Console.WindowWidth);
-            }
-            catch
-            {
-                return FallbackConsoleWidth;
-            }
-        }
-
-        private static void SetConsoleColorSafe(ConsoleColor color)
-        {
-            if (!HasRealConsole)
-                return;
-
-            try
-            {
-                Console.ForegroundColor = color;
-            }
-            catch
-            {
-                // Output may be redirected or the process may not own a console.
-            }
-        }
-
-        private static void ResetConsoleColorSafe()
-        {
-            if (!HasRealConsole)
-                return;
-
-            try
-            {
-                Console.ResetColor();
-            }
-            catch
-            {
-                // Output may be redirected or the process may not own a console.
-            }
-        }
-
         /// <summary>
-        ///     Writes logo and credits to Console. When hosted by ServerManager,
-        ///     console-only operations such as WindowWidth/Title/Color are skipped.
+        /// Keeps only the window title behavior. The old ASCII logo, credits and
+        /// separator are intentionally suppressed so server output starts directly
+        /// with the first Log entry (Server startup requested).
         /// </summary>
         public static void WriteHeader(string consoleTitle, ConsoleColor color)
         {
-            if (HasRealConsole)
+            if (!HasRealConsole)
+                return;
+
+            try
             {
-                try
-                {
-                    Console.Title = TitlePrefix + consoleTitle;
-                }
-                catch
-                {
-                    // Ignore environments without a console window.
-                }
+                Console.Title = TitlePrefix + consoleTitle;
             }
-
-            Console.WriteLine();
-
-            SetConsoleColorSafe(color);
-            WriteLinesCentered(Logo);
-
-            Console.WriteLine();
-
-            SetConsoleColorSafe(ConsoleColor.White);
-            WriteLinesCentered(Credits);
-
-            ResetConsoleColorSafe();
-            WriteSeperator();
+            catch
+            {
+                // No console window attached.
+            }
         }
 
-        /// <summary>
-        ///     Writes a separator using the real console width when available,
-        ///     or a fixed safe width when output is redirected to ServerManager.
-        /// </summary>
         public static void WriteSeperator()
         {
-            Console.WriteLine("".PadLeft(GetConsoleWidthSafe(), '_'));
-        }
-
-        private static void WriteLinesCentered(string[] lines)
-        {
-            var longestLine = lines.Max(a => a.Length);
-            foreach (var line in lines)
-                WriteLineCentered(line, longestLine);
-        }
-
-        private static void WriteLineCentered(string line, int referenceLength = -1)
-        {
-            if (referenceLength < 0)
-                referenceLength = line.Length;
-
-            var width = GetConsoleWidthSafe();
-            var padding = line.Length + width / 2 - referenceLength / 2;
-            if (padding < line.Length)
-                padding = line.Length;
-
-            Console.WriteLine(line.PadLeft(padding));
+            // Kept for source compatibility; intentionally no output.
         }
 
         public static void LoadingTitle()
@@ -183,7 +72,6 @@ namespace Shared.Util
             }
             catch
             {
-                // No console window attached.
             }
         }
 
@@ -198,7 +86,6 @@ namespace Shared.Util
             }
             catch
             {
-                // No console window attached.
             }
         }
 
@@ -228,7 +115,6 @@ namespace Shared.Util
         {
             var id = WindowsIdentity.GetCurrent();
             var principal = new WindowsPrincipal(id);
-
             return principal.IsInRole(WindowsBuiltInRole.Administrator);
         }
 
