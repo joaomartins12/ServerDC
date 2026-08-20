@@ -49,18 +49,25 @@ namespace GameServer.Network.Handlers.Join
                         }
                     }
 
-                    if (definition != null && IsVehiclePart(category) && inventoryItem.Random == 0)
+                    // Earlier server builds generated a deterministic but protocol-invalid Random
+                    // value for every normal shop part. Only undo values that exactly match that
+                    // old formula. Legitimate Random values from dropped/generated items are left
+                    // untouched because BasePointVariable is part of the drop-item generation flow.
+                    if (definition != null && IsVehiclePart(category) && inventoryItem.Random != 0)
                     {
-                        inventoryItem.Random = CreateStablePartSeed(inventoryItem);
-                        ItemModel.Update(connection, inventoryItem);
-                        Log.Info(
-                            "Legacy part instance stabilized: DbId={0} InvenIdx={1} TableIndex={2} Name={3} Category={4} Random={5}",
-                            inventoryItem.DbId,
-                            inventoryItem.InventoryIndex,
-                            inventoryItem.TableIndex,
-                            itemName,
-                            category,
-                            inventoryItem.Random);
+                        var badSeed = CreateLegacyArtificialSeed(inventoryItem);
+                        if (inventoryItem.Random == badSeed)
+                        {
+                            Log.Info(
+                                "Reverting artificial part Random: DbId={0} InvenIdx={1} TableIndex={2} Name={3} OldRandom={4}",
+                                inventoryItem.DbId,
+                                inventoryItem.InventoryIndex,
+                                inventoryItem.TableIndex,
+                                itemName,
+                                inventoryItem.Random);
+                            inventoryItem.Random = 0;
+                            ItemModel.Update(connection, inventoryItem);
+                        }
                     }
 
                     Log.Debug(
@@ -95,7 +102,7 @@ namespace GameServer.Network.Handlers.Join
                    value == "crash" || value == "durability" || value == "boost" || value == "booster";
         }
 
-        private static int CreateStablePartSeed(Shared.Objects.InventoryItem item)
+        private static int CreateLegacyArtificialSeed(Shared.Objects.InventoryItem item)
         {
             unchecked
             {
