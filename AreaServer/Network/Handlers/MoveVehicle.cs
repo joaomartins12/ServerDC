@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using Shared.Network;
-using Shared.Util;
 
 namespace AreaServer.Network.Handlers
 {
@@ -84,8 +84,6 @@ namespace AreaServer.Network.Handlers
                 SerialArea.TryGetValue(vehicleSerial, out areaId);
             }
 
-            // Relay only to clients registered in the same area. Preserve the full body
-            // exactly as this client sent it; this build uses 541 for remote discovery.
             foreach (var client in AreaServer.Instance.Server.GetClients())
             {
                 if (client == null || client == packet.Sender || client.User == null)
@@ -103,9 +101,6 @@ namespace AreaServer.Network.Handlers
                 WritePresenceLog("LIVE", vehicleSerial, targetSerial, areaId, movement.Length);
             }
 
-            // Also refresh the sender's view of everybody else in the area. This makes
-            // recovery deterministic after entering/leaving shops or when discovery was
-            // missed because another driver was stationary.
             if (areaId >= 0)
                 ReplayExisting(packet.Sender, vehicleSerial, areaId);
         }
@@ -122,13 +117,14 @@ namespace AreaServer.Network.Handlers
         {
             try
             {
-                FileAuditLog.Write("PresenceSync.txt",
-                    string.Format("{0:O} {1} source={2} target={3} area={4} body={5}",
-                        DateTime.UtcNow, action, sourceSerial, targetSerial, areaId, bodyLength));
+                var dir = Path.Combine("Logs", "Research");
+                Directory.CreateDirectory(dir);
+                File.AppendAllText(Path.Combine(dir, "PresenceSync.txt"),
+                    string.Format("{0:O} {1} source={2} target={3} area={4} body={5}{6}",
+                        DateTime.UtcNow, action, sourceSerial, targetSerial, areaId, bodyLength, Environment.NewLine));
             }
             catch
             {
-                // Research/audit logging must never affect gameplay.
             }
         }
     }
