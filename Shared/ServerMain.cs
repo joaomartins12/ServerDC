@@ -90,13 +90,22 @@ END;";
         }
 
         /// <summary>
-        /// Persistent driver statistics and license/title state. This migration is
-        /// intentionally additive so existing DCServer databases are upgraded in-place.
-        /// License 7000 is the client-defined Rookie license and is granted to everyone.
+        /// Persistent driver statistics and license/title state. All server executables
+        /// start nearly together, so SQL Server application locking serializes this
+        /// additive migration across processes.
         /// </summary>
         private static void EnsureCharacterProgressSchema(BaseDatabase db)
         {
             const string sql = @"
+DECLARE @LockResult INT;
+EXEC @LockResult = sys.sp_getapplock
+    @Resource=N'DCServer.CharacterProgressMigration',
+    @LockMode=N'Exclusive',
+    @LockOwner=N'Session',
+    @LockTimeout=60000;
+IF @LockResult < 0
+    THROW 51000, 'Unable to acquire character progress migration lock.', 1;
+
 IF OBJECT_ID(N'dbo.characters', N'U') IS NOT NULL
 BEGIN
     IF COL_LENGTH(N'dbo.characters', N'CurrentLicenseId') IS NULL
@@ -149,7 +158,11 @@ ON target.CID = source.CID AND target.LicenseId = source.LicenseId
 WHEN NOT MATCHED THEN
     INSERT (CID, LicenseId, UnlockedDate, IsNew) VALUES (source.CID, source.LicenseId, 0, 0);
 
-UPDATE dbo.characters SET CurrentLicenseId = 7000 WHERE CurrentLicenseId IS NULL OR CurrentLicenseId <= 0;";
+UPDATE dbo.characters SET CurrentLicenseId = 7000 WHERE CurrentLicenseId IS NULL OR CurrentLicenseId <= 0;
+
+EXEC sys.sp_releaseapplock
+    @Resource=N'DCServer.CharacterProgressMigration',
+    @LockOwner=N'Session';";
 
             using (var connection = db.Connection)
             using (var command = new Shared.Models.MySqlCommand(sql, connection))
@@ -254,6 +267,42 @@ namespace Shared.Models
             }
         }
 
+        public static void RecordBattleResult(MySqlConnection connection, Character character, bool teamBattle, bool won, uint points, long unixTime)
+        {
+            if (connection == null || character == null) return;
+
+            var totalColumn = teamBattle ? "TeamPvpCount" : "PvpCount";
+            var winsColumn = teamBattle ? "TeamPvpWinCount" : "PvpWinCount";
+            var pointColumn = teamBattle ? "TeamPvpPoint" : "PvpPoint";
+            var progressKey = teamBattle ? "GC_BattleTeam" : "GC_BattlePersonal";
+
+            var sql = "UPDATE dbo.characters SET " + totalColumn + "=" + totalColumn + "+1, " +
+                      winsColumn + "=" + winsColumn + "+@win, " +
+                      pointColumn + "=" + pointColumn + "+@points WHERE CID=@cid";
+            using (var command = new MySqlCommand(sql, connection))
+            {
+                command.Parameters.AddWithValue("@win", won ? 1 : 0);
+                command.Parameters.AddWithValue("@points", points);
+                command.Parameters.AddWithValue("@cid", character.Id);
+                command.ExecuteNonQuery();
+            }
+
+            if (teamBattle)
+            {
+                character.TeamPvpCount++;
+                if (won) character.TeamPvpWinCount++;
+                character.TeamPvpPoint += points;
+            }
+            else
+            {
+                character.PvpCount++;
+                if (won) character.PvpWinCount++;
+                character.PvpPoint += points;
+            }
+
+            IncrementProgress(connection, character.Id, progressKey, 1, unixTime);
+        }
+
         public static int GetCurrentLicense(MySqlConnection connection, ulong cid)
         {
             using (var command = new MySqlCommand(
@@ -317,6 +366,7 @@ IF NOT EXISTS (SELECT 1 FROM dbo.character_licenses WHERE CID=@cid AND LicenseId
 
         public static long GetProgress(MySqlConnection connection, ulong cid, string progressKey)
         {
+            if (string.IsNullOrWhiteSpace(progressKey)) return 0L;
             using (var command = new MySqlCommand(
                 "SELECT ProgressValue FROM dbo.character_progress WHERE CID=@cid AND ProgressKey=@key", connection))
             {
