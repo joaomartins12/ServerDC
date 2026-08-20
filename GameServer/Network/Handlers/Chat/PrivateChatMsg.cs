@@ -18,8 +18,10 @@ namespace GameServer.Network.Handlers
                 return;
 
             var senderCharacter = packet.Sender.User.ActiveCharacter;
-            var stream = packet.Reader.BaseStream;
+            WriteWhisperResearch("IN148", packet.Sender.User.VehicleSerial, 0,
+                senderCharacter.Name, null, null, packet);
 
+            var stream = packet.Reader.BaseStream;
             string targetName;
             try
             {
@@ -28,6 +30,8 @@ namespace GameServer.Network.Handlers
             catch (Exception ex)
             {
                 Log.Warning("CmdWhisper: failed to read target from {0}: {1}", senderCharacter.Name, ex.Message);
+                WriteWhisperResearch("PARSE_TARGET_ERROR", packet.Sender.User.VehicleSerial, 0,
+                    senderCharacter.Name, null, ex.Message, packet);
                 return;
             }
 
@@ -41,9 +45,13 @@ namespace GameServer.Network.Handlers
             if (!TryReadTrailingUnicodeMessage(stream, out message) || string.IsNullOrEmpty(message))
             {
                 Log.Debug("Whisper target selected without message: {0} -> {1}", senderCharacter.Name, targetName);
+                WriteWhisperResearch("NO_MESSAGE", packet.Sender.User.VehicleSerial, 0,
+                    senderCharacter.Name, targetName, null, packet);
                 return;
             }
 
+            WriteWhisperResearch("PARSED148", packet.Sender.User.VehicleSerial, 0,
+                senderCharacter.Name, targetName, message, packet);
             SendPrivate(packet, targetName, message);
         }
 
@@ -52,6 +60,9 @@ namespace GameServer.Network.Handlers
         {
             if (packet.Sender.User == null || packet.Sender.User.ActiveCharacter == null)
                 return;
+
+            WriteWhisperResearch("IN149", packet.Sender.User.VehicleSerial, 0,
+                packet.Sender.User.ActiveCharacter.Name, packet.Sender.User.ActiveCharacter.LastMessageFrom, null, packet);
 
             var targetName = packet.Sender.User.ActiveCharacter.LastMessageFrom;
             string message;
@@ -147,6 +158,8 @@ namespace GameServer.Network.Handlers
 
             if (target == null)
             {
+                WriteWhisperResearch("TARGET_OFFLINE", packet.Sender.User.VehicleSerial, 0,
+                    senderCharacter.Name, targetName, message, packet);
                 packet.Sender.SendError(targetName + " is offline.");
                 return;
             }
@@ -155,22 +168,47 @@ namespace GameServer.Network.Handlers
             if (packet.Sender.User.GmFlag)
                 senderName = "GM " + senderName;
 
-            // The client already echoes the outgoing whisper locally. Deliver only to
-            // the recipient, using ChatMsgAck with the dedicated "whisper" chat type.
-            // "private" is not recognized by this client and packet 149 is ignored.
-            var whisper = new ChatMessageAnswer
+            var ack = new ChatMessageAnswer
             {
                 MessageType = "whisper",
                 SenderCharacterName = senderName,
                 Message = message ?? string.Empty
             }.CreatePacket();
-            target.Send(whisper);
+
+            WriteWhisperResearch("OUT147_WHISPER", packet.Sender.User.VehicleSerial,
+                target.User.VehicleSerial, senderCharacter.Name, target.User.ActiveCharacter.Name, message, ack);
+            target.Send(ack);
 
             senderCharacter.LastMessageFrom = target.User.ActiveCharacter.Name;
             target.User.ActiveCharacter.LastMessageFrom = senderCharacter.Name;
 
             Log.Debug("Whisper delivered: <{0}> -> <{1}> {2}", senderCharacter.Name,
                 target.User.ActiveCharacter.Name, message);
+        }
+
+        private static void WriteWhisperResearch(string stage, ushort sourceSerial, ushort targetSerial,
+            string sender, string target, string message, Packet packet)
+        {
+            try
+            {
+                var dir = Path.Combine("Logs", "Research");
+                Directory.CreateDirectory(dir);
+                var path = Path.Combine(dir, "WhisperProtocol.txt");
+                var hex = packet == null || packet.Buffer == null
+                    ? "<no packet>"
+                    : BinaryWriterExt.HexDump(packet.Buffer);
+
+                var text = string.Format(
+                    "{0:O} {1} sourceSerial={2} targetSerial={3} sender='{4}' target='{5}' message='{6}' len={7}{8}{9}{8}{8}",
+                    DateTime.UtcNow, stage, sourceSerial, targetSerial,
+                    sender ?? string.Empty, target ?? string.Empty, message ?? string.Empty,
+                    packet == null || packet.Buffer == null ? 0 : packet.Buffer.Length,
+                    Environment.NewLine, hex);
+                File.AppendAllText(path, text);
+            }
+            catch
+            {
+            }
         }
     }
 }
