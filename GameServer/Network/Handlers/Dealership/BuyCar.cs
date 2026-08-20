@@ -15,6 +15,8 @@ namespace GameServer.Network.Handlers.Dealership
 {
     public class BuyCar
     {
+        private const int UseItemProtocolBase = 0x580;
+
         [Packet(Packets.CmdBuyCar)]
         public static void Handle(Packet packet)
         {
@@ -149,7 +151,7 @@ namespace GameServer.Network.Handlers.Dealership
             if (keyGranted)
             {
                 Log.Info(
-                    "BuyCar key granted: CID={0} CarId={1} CarType={2} Vehicle='{3}' RuntimeTableIndex={4} UseItemIndex={5} StoredTableIndex={6} ItemId={7} Name='{8}' InvenIdx={9}",
+                    "BuyCar key granted: CID={0} CarId={1} CarType={2} Vehicle='{3}' CatalogTableIndex={4} UseItemIndex={5} ProtocolTableIndex={6} ItemId={7} Name='{8}' InvenIdx={9}",
                     character.Id,
                     newVehicle.CarId,
                     newVehicle.CarType,
@@ -256,6 +258,8 @@ namespace GameServer.Network.Handlers.Dealership
                     !useItem.Name.EndsWith("key", StringComparison.OrdinalIgnoreCase))
                     continue;
 
+                // IMPORTANT: for vehicle keys the original UseItems.xml maxstack is not
+                // a stack size. It is the vehicle CarType mapping used by the client data.
                 uint mappedCarType;
                 if (!uint.TryParse(useItem.MaxStack, NumberStyles.Integer, CultureInfo.InvariantCulture, out mappedCarType) ||
                     mappedCarType != vehicle.CarType)
@@ -264,25 +268,28 @@ namespace GameServer.Network.Handlers.Dealership
                 keyCatalogIndex = i;
                 keyUseItemIndex = i - firstUseItemCatalogIndex;
 
-                // Car keys are stored using the combined runtime catalog TableIndex.
-                // This is the same TableIndex exported by ItemCatalog.json / Items_RuntimeTable.csv.
-                // Example from the captured catalog: pc_0068s Nevera key = runtime TableIndex 874.
-                keyProtocolTableIndex = keyCatalogIndex;
+                // UseItems do NOT use the combined ItemCatalog index on the wire.
+                // The protocol namespace confirmed by normal UseItem purchases is:
+                //   0x580 + (zero-based UseItems.xml ordinal + 1)
+                // Keep exactly the same rule for car keys. Do not derive this from pc_XXXX.
+                keyProtocolTableIndex = checked(UseItemProtocolBase + keyUseItemIndex + 1);
                 keyData = useItem;
 
                 Log.Info(
-                    "Vehicle key runtime mapping: CarType={0} ItemId={1} Name='{2}' RuntimeTableIndex={3} UseItemIndex={4}",
+                    "Vehicle key mapping: CarType={0} ItemId={1} Name='{2}' CatalogTableIndex={3} UseItemIndex={4} ProtocolTableIndex={5}",
                     vehicle.CarType,
                     useItem.Id,
                     useItem.Name,
                     keyCatalogIndex,
-                    keyUseItemIndex);
+                    keyUseItemIndex,
+                    keyProtocolTableIndex);
                 break;
             }
 
             if (keyCatalogIndex < 0 || keyData == null)
                 return false;
 
+            // GiveItem needs the combined server catalog index to resolve metadata/persistence.
             grantedKey = character.GiveItem(
                 GameServer.Instance.Database.Connection,
                 keyCatalogIndex,
@@ -290,6 +297,7 @@ namespace GameServer.Network.Handlers.Dealership
             if (grantedKey == null)
                 return false;
 
+            // The inventory packet/client needs the UseItems protocol TableIndex instead.
             grantedKey.TableIndex = keyProtocolTableIndex;
             grantedKey.CarId = vehicle.CarId;
             grantedKey.StackNum = 1;
@@ -300,9 +308,11 @@ namespace GameServer.Network.Handlers.Dealership
             ItemModel.Update(GameServer.Instance.Database.Connection, grantedKey);
 
             Log.Debug(
-                "BuyCar key persisted: DbId={0} CarId={1} RuntimeTableIndex={2} InvenIdx={3}",
+                "BuyCar key persisted: DbId={0} CarId={1} CarType={2} CatalogTableIndex={3} ProtocolTableIndex={4} InvenIdx={5}",
                 grantedKey.DbId,
                 vehicle.CarId,
+                vehicle.CarType,
+                keyCatalogIndex,
                 keyProtocolTableIndex,
                 grantedKey.InventoryIndex);
 
