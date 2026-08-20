@@ -3,27 +3,18 @@ using System.Linq;
 using Shared.Models;
 using Shared.Network;
 using Shared.Network.GameServer;
+using Shared.Objects;
 using Shared.Util;
 
 namespace GameServer.Network.Handlers
 {
-    /// <summary>
-    /// Item equip flow reconstructed from client captures.
-    /// CmdEquipItem payload is three UInt32 values:
-    /// InventoryIndex, TargetSlot, CarId.
-    /// Observed target slots start at 100 (100, 101, 106, ...).
-    /// </summary>
     public static class ItemEquipResearch
     {
         [Packet(Packets.CmdEquipItem)]
         public static void Equip(Packet packet)
         {
             var character = packet.Sender.User == null ? null : packet.Sender.User.ActiveCharacter;
-            if (character == null || character.ActiveCar == null)
-            {
-                Log.Warning("CmdEquipItem ignored: no active character/car.");
-                return;
-            }
+            if (character == null || character.ActiveCar == null) return;
 
             if (packet.Reader.BaseStream.Length - packet.Reader.BaseStream.Position < 12)
             {
@@ -34,33 +25,13 @@ namespace GameServer.Network.Handlers
             var inventoryIndex = packet.Reader.ReadUInt32();
             var targetSlot = packet.Reader.ReadUInt32();
             var carId = packet.Reader.ReadUInt32();
-
-            Log.Info(
-                "CmdEquipItem: CID={0} InvenIdx={1} TargetSlot={2} CarId={3} ActiveCar={4}",
-                character.Id, inventoryIndex, targetSlot, carId, character.ActiveCar.CarId);
-
-            if (carId != character.ActiveCar.CarId)
-            {
-                Log.Warning("CmdEquipItem rejected: requested CarId={0}, active CarId={1}.", carId, character.ActiveCar.CarId);
-                return;
-            }
+            if (carId != character.ActiveCar.CarId || targetSlot > ushort.MaxValue) return;
 
             var item = character.InventoryItems.FirstOrDefault(x => x.InventoryIndex == inventoryIndex);
-            if (item == null)
-            {
-                Log.Warning("CmdEquipItem rejected: inventory index {0} not found.", inventoryIndex);
-                return;
-            }
-
-            if (targetSlot > ushort.MaxValue)
-            {
-                Log.Warning("CmdEquipItem rejected: target slot {0} out of range.", targetSlot);
-                return;
-            }
+            if (item == null) return;
 
             using (var connection = GameServer.Instance.Database.Connection)
             {
-                // Only one item can occupy a given equipment slot on the same car.
                 var previous = character.InventoryItems.FirstOrDefault(x =>
                     x != item && x.CarId == carId && x.State == 1 && x.Slot == (ushort)targetSlot);
 
@@ -68,59 +39,92 @@ namespace GameServer.Network.Handlers
                 {
                     previous.State = 0;
                     previous.Slot = 0;
-                    previous.CarId = carId;
                     previous.Belonging = 0;
                     ItemModel.Update(connection, previous);
                 }
 
                 item.LastCarId = item.CarId;
                 item.CarId = carId;
-                item.State = 1; // 0=inventory, 1=equipped
+                item.State = 1;
                 item.Slot = (ushort)targetSlot;
                 item.Belonging = 1;
                 ItemModel.Update(connection, item);
             }
 
-            // Do not use ItemMod State=3 for this transition. In captured tests that made
-            // the client remove the source icon but did not populate the destination slot.
-            // ItemListAck is already known to reconstruct inventory/equipment state correctly,
-            // so resync the authoritative full list until the dedicated EquipItem ACK is decoded.
-            packet.Sender.Send(new ItemListAnswer
-            {
-                InventoryItems = character.InventoryItems.OrderBy(x => x.InventoryIndex).ToArray()
-            }.CreatePacket());
-
-            Log.Info(
-                "Item equipped and inventory resynced: DbId={0} InvenIdx={1} TableIndex={2} CarId={3} Slot={4} State={5}",
-                item.DbId, item.InventoryIndex, item.TableIndex, item.CarId, item.Slot, item.State);
-
+            ResyncInventory(packet, character);
+            Log.Info("Item equipped: InvenIdx={0} TableIndex={1} CarId={2} Slot={3}", item.InventoryIndex, item.TableIndex, item.CarId, item.Slot);
             CheckStat.Handle(packet);
         }
 
         [Packet(Packets.CmdUnEquipItem)]
         public static void UnEquip(Packet packet)
         {
-            // We do not yet have a captured 411 payload. Keep this path capture-only until one is observed.
-            TraceRemaining(packet, "CmdUnEquipItem", Packets.CmdUnEquipItem);
+            var character = packet.Sender.User == null ? null : packet.Sender.User.ActiveCharacter;
+            if (character == null || character.ActiveCar == null) return;
+
+            var remaining = (int)Math.Max(0L, packet.Reader.BaseStream.Length - packet.Reader.BaseStream.Position);
+            var raw = remaining > 0 ? packet.Reader.ReadBytes(remaining) : new byte[0];
+
+            Log.Info("CmdUnEquipItem: CID={0} PayloadBytes={1}", character.Id, raw.Length);
+            if (raw.Length > 0)
+                Log.Debug("CmdUnEquipItem payload HEX:\n{0}", BinaryWriterExt.HexDump(raw));
+
+            uint a = 0, b = 0, c = 0;
+            if (raw.Length >= 4) a = BitConverter.ToUInt32(raw, 0);
+            if (raw.Length >= 8) b = BitConverter.ToUInt32(raw, 4);
+            if (raw.Length >= 12) c = BitConverter.ToUInt32(raw, 8);
+
+            // Until we have the first real 411 capture, resolve defensively against the
+            // currently equipped set. Values used by the client are expected to be one of
+            // InventoryIndex, equipment Slot and CarId.
+            InventoryItem item = null;
+            var equipped = character.InventoryItems.Where(x => x.State == 1 && x.CarId == character.ActiveCar.CarId).ToList();
+
+            item = equipped.FirstOrDefault(x => x.InventoryIndex == a);
+            if (item == null) item = equipped.FirstOrDefault(x => x.Slot == a);
+            if (item == null && raw.Length >= 8) item = equipped.FirstOrDefault(x => x.InventoryIndex == b || x.Slot == b);
+            if (item == null && raw.Length >= 12) item = equipped.FirstOrDefault(x => x.InventoryIndex == c || x.Slot == c);
+
+            // If the client sends only the current equipment slot and there is exactly one
+            // equipped item in that slot context, use that item rather than silently failing.
+            if (item == null && equipped.Count == 1)
+                item = equipped[0];
+
+            if (item == null)
+            {
+                Log.Warning("CmdUnEquipItem: could not resolve equipped item from payload a={0} b={1} c={2}.", a, b, c);
+                return;
+            }
+
+            using (var connection = GameServer.Instance.Database.Connection)
+            {
+                item.LastCarId = item.CarId;
+                item.State = 0;
+                item.Slot = 0;
+                item.Belonging = 0;
+                ItemModel.Update(connection, item);
+            }
+
+            ResyncInventory(packet, character);
+            Log.Info("Item unequipped: InvenIdx={0} TableIndex={1} CarId={2}", item.InventoryIndex, item.TableIndex, item.CarId);
+            CheckStat.Handle(packet);
+        }
+
+        private static void ResyncInventory(Packet packet, Shared.Objects.Character character)
+        {
+            packet.Sender.Send(new ItemListAnswer
+            {
+                InventoryItems = character.InventoryItems.OrderBy(x => x.InventoryIndex).ToArray()
+            }.CreatePacket());
         }
 
         private static void TraceRemaining(Packet packet, string name, ushort packetId)
         {
-            var character = packet.Sender.User == null ? null : packet.Sender.User.ActiveCharacter;
             var stream = packet.Reader.BaseStream;
             var remaining = Math.Max(0L, stream.Length - stream.Position);
             var bytes = remaining > 0 ? packet.Reader.ReadBytes(checked((int)remaining)) : new byte[0];
-
-            Log.Warning(
-                "INVENTORY RESEARCH {0} ({1},0x{1:X}): CID={2} ActiveCarDbId={3} PayloadBytes={4}",
-                name,
-                packetId,
-                character == null ? 0UL : character.Id,
-                character == null || character.ActiveCar == null ? 0U : character.ActiveCar.CarId,
-                bytes.Length);
-
-            if (bytes.Length > 0)
-                Log.Debug("{0} payload HEX:\n{1}", name, BinaryWriterExt.HexDump(bytes));
+            Log.Warning("INVENTORY RESEARCH {0} ({1},0x{1:X}) PayloadBytes={2}", name, packetId, bytes.Length);
+            if (bytes.Length > 0) Log.Debug("{0} payload HEX:\n{1}", name, BinaryWriterExt.HexDump(bytes));
         }
     }
 }
