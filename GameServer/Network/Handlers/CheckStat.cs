@@ -39,14 +39,13 @@ namespace GameServer.Network.Handlers
 
             var equipped = EquippedItemStatResolver.Resolve(character, activeCar);
 
-            // The client already displays the grade-specific vehicle base stat and the equipped
-            // part contribution separately. Character level must NOT be added to this block.
-            // Example from the current client: Nevera V2 Speed=52 + Small(+1) must total 53,
-            // not 54 because the character happens to be level 1.
-            var totalSpeed = stats.Speed + equipped.Speed;
-            var totalCrash = stats.Crash + equipped.Crash;
-            var totalAccel = stats.Accel + equipped.Accel;
-            var totalBoost = stats.Boost + equipped.Boost;
+            // The client exposes three independent contributors in User Information:
+            // Car + Parts + User. Character level belongs to the User block, not Parts.
+            var userBonus = (int)character.Level;
+            var totalSpeed = stats.Speed + equipped.Speed + userBonus;
+            var totalCrash = stats.Crash + equipped.Crash + userBonus;
+            var totalAccel = stats.Accel + equipped.Accel + userBonus;
+            var totalBoost = stats.Boost + equipped.Boost + userBonus;
 
             var ack = new CheckStatAnswer
             {
@@ -60,16 +59,19 @@ namespace GameServer.Network.Handlers
                 EquipAcceleration = equipped.Accel,
                 EquipBoost = equipped.Boost,
 
+                CharSpeed = userBonus,
+                CharDurability = userBonus,
+                CharAcceleration = userBonus,
+                CharBoost = userBonus,
+
                 TotalSpeed = totalSpeed,
                 TotalDurability = totalCrash,
                 TotalAcceleration = totalAccel,
                 TotalBoost = totalBoost,
 
-                // There are two four-value groups in the still partially reverse-engineered
-                // vehicle-performance section. Previous builds only populated the second one,
-                // while the current client kept Maximum Speed / Time to reach / Crash Damage /
-                // Boost Time at zero. Mirror the effective vehicle stats into both groups so the
-                // client has the grade+equipment values regardless of which group this build reads.
+                // These fields are still under protocol research. Keeping the effective totals in
+                // both candidate groups preserves the diagnostic signal without mixing them with
+                // the separate Car / Parts / User blocks above.
                 PerformanceUnknown1 = totalSpeed,
                 PerformanceUnknown2 = totalCrash,
                 PerformanceUnknown3 = totalAccel,
@@ -84,7 +86,7 @@ namespace GameServer.Network.Handlers
             };
 
             Log.Info(
-                "StatUpdate: CID={0} Level={1} CarDbId={2} VehicleId={3} Name={4} Grade=V{5} Source={6} Base[S={7},C={8},A={9},B={10}] Equip[S={11},C={12},A={13},B={14}] Total[S={15},C={16},A={17},B={18}] Performance1[S={19},C={20},A={21},B={22}] Performance2[S={23},C={24},A={25},B={26}] Mitron[Capacity={27},Efficiency={28}]",
+                "StatUpdate: CID={0} Level={1} CarDbId={2} VehicleId={3} Name={4} Grade=V{5} Source={6} Base[S={7},C={8},A={9},B={10}] Equip[S={11},C={12},A={13},B={14}] User[S={15},C={16},A={17},B={18}] Total[S={19},C={20},A={21},B={22}] Performance1[S={23},C={24},A={25},B={26}] Performance2[S={27},C={28},A={29},B={30}] Mitron[Capacity={31},Efficiency={32}]",
                 character.Id,
                 character.Level,
                 activeCar.CarId,
@@ -100,6 +102,10 @@ namespace GameServer.Network.Handlers
                 equipped.Crash,
                 equipped.Accel,
                 equipped.Boost,
+                ack.CharSpeed,
+                ack.CharDurability,
+                ack.CharAcceleration,
+                ack.CharBoost,
                 totalSpeed,
                 totalCrash,
                 totalAccel,
