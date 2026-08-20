@@ -44,10 +44,6 @@ namespace GameServer.Network.Handlers
                     ItemModel.Update(connection, previous);
                 }
 
-                // LastCarId is serialized to the client but is not persisted by ItemModel.
-                // Feeding the previous car id back on every equip made the client treat the
-                // same part transition as additional state and visually accumulate bonuses.
-                // The real car association is CarId; keep the transient field neutral.
                 item.LastCarId = 0;
                 item.CarId = carId;
                 item.State = 1;
@@ -66,7 +62,7 @@ namespace GameServer.Network.Handlers
         public static void UnEquip(Packet packet)
         {
             var character = packet.Sender.User == null ? null : packet.Sender.User.ActiveCharacter;
-            if (character == null || character.ActiveCar == null) return;
+            if (character == null) return;
 
             var remaining = (int)Math.Max(0L, packet.Reader.BaseStream.Length - packet.Reader.BaseStream.Position);
             var raw = remaining > 0 ? packet.Reader.ReadBytes(remaining) : new byte[0];
@@ -80,37 +76,57 @@ namespace GameServer.Network.Handlers
             if (raw.Length >= 8) b = BitConverter.ToUInt32(raw, 4);
             if (raw.Length >= 12) c = BitConverter.ToUInt32(raw, 8);
 
-            InventoryItem item = null;
-            var equipped = character.InventoryItems.Where(x => x.State == 1 && x.CarId == character.ActiveCar.CarId).ToList();
+            // Confirmed from the client when selling a non-active car:
+            //   a = equipped part slot/inventory selector
+            //   b = target CarId
+            // Example: a=3,b=18 means unequip slot 3 from CarId 18.
+            // Do not restrict this operation to ActiveCar; the dealership asks the client
+            // to unequip parts from the vehicle being sold, which may be non-active.
+            var targetCarId = raw.Length >= 8 && b != 0
+                ? b
+                : character.ActiveCar != null ? character.ActiveCar.CarId : 0u;
 
+            var equipped = character.InventoryItems
+                .Where(x => x != null && x.State == 1 && (targetCarId == 0 || x.CarId == targetCarId))
+                .ToList();
+
+            InventoryItem item = null;
             item = equipped.FirstOrDefault(x => x.InventoryIndex == a);
             if (item == null) item = equipped.FirstOrDefault(x => x.Slot == a);
-            if (item == null && raw.Length >= 8) item = equipped.FirstOrDefault(x => x.InventoryIndex == b || x.Slot == b);
-            if (item == null && raw.Length >= 12) item = equipped.FirstOrDefault(x => x.InventoryIndex == c || x.Slot == c);
+
+            // Only treat b/c as selectors when they are not the already-resolved target CarId.
+            if (item == null && raw.Length >= 8 && b != targetCarId)
+                item = equipped.FirstOrDefault(x => x.InventoryIndex == b || x.Slot == b);
+            if (item == null && raw.Length >= 12 && c != targetCarId)
+                item = equipped.FirstOrDefault(x => x.InventoryIndex == c || x.Slot == c);
 
             if (item == null && equipped.Count == 1)
                 item = equipped[0];
 
             if (item == null)
             {
-                Log.Warning("CmdUnEquipItem: could not resolve equipped item from payload a={0} b={1} c={2}.", a, b, c);
+                Log.Warning(
+                    "CmdUnEquipItem: could not resolve equipped item from payload a={0} b={1} c={2} TargetCarId={3} Candidates={4}.",
+                    a, b, c, targetCarId, equipped.Count);
                 return;
             }
 
             using (var connection = GameServer.Instance.Database.Connection)
             {
-                // Keep CarId as the owning-car association, but never serialize a stale
-                // previous-car value back to the client during equipment transitions.
-                item.LastCarId = 0;
+                var previousCarId = item.CarId;
+                item.LastCarId = previousCarId;
+                item.CarId = 0;
                 item.State = 0;
                 item.Slot = 0;
                 item.Belonging = 0;
                 ItemModel.Update(connection, item);
+
+                Log.Info(
+                    "Item unequipped: InvenIdx={0} TableIndex={1} PreviousCarId={2} TargetCarId={3} -> CarId=0 State=0 Slot=0",
+                    item.InventoryIndex, item.TableIndex, previousCarId, targetCarId);
             }
 
             ResyncInventory(packet, character);
-            Log.Info("Item unequipped: InvenIdx={0} TableIndex={1} CarId={2} LastCarId={3}",
-                item.InventoryIndex, item.TableIndex, item.CarId, item.LastCarId);
             CheckStat.Handle(packet);
         }
 
