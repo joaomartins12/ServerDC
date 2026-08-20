@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Data.SqlClient;
-using System.Globalization;
 using System.IO;
 using System.Web.Script.Serialization;
 
@@ -26,18 +25,18 @@ namespace ServerManager
         private sealed class CatalogVehicle
         {
             public int runtimeIndex { get; set; }
-            public int vehicleId { get; set; }
+            public int? vehicleId { get; set; }
             public string name { get; set; }
             public string type { get; set; }
             public string typeString { get; set; }
-            public bool sellable { get; set; }
+            public bool? sellable { get; set; }
             public string grade { get; set; }
-            public int accel { get; set; }
-            public int speed { get; set; }
-            public int crash { get; set; }
-            public int boost { get; set; }
-            public int requiredLevel { get; set; }
-            public int level { get; set; }
+            public int? accel { get; set; }
+            public int? speed { get; set; }
+            public int? crash { get; set; }
+            public int? boost { get; set; }
+            public int? requiredLevel { get; set; }
+            public int? level { get; set; }
             public List<CatalogUpgrade> upgrades { get; set; }
         }
 
@@ -46,17 +45,17 @@ namespace ServerManager
             public int gradeIndex { get; set; }
             public string gradeName { get; set; }
             public string coupon { get; set; }
-            public int accel { get; set; }
-            public int speed { get; set; }
-            public int crash { get; set; }
-            public int boost { get; set; }
-            public int price { get; set; }
-            public int sell { get; set; }
-            public int closeSell { get; set; }
-            public int upgradeMito { get; set; }
-            public int efficiency { get; set; }
-            public int capacity { get; set; }
-            public int requiredLevel { get; set; }
+            public int? accel { get; set; }
+            public int? speed { get; set; }
+            public int? crash { get; set; }
+            public int? boost { get; set; }
+            public int? price { get; set; }
+            public int? sell { get; set; }
+            public int? closeSell { get; set; }
+            public int? upgradeMito { get; set; }
+            public int? efficiency { get; set; }
+            public int? capacity { get; set; }
+            public int? requiredLevel { get; set; }
         }
 
         public static string CatalogPath => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Logs", "Catalogs", "VehicleCatalog.json");
@@ -84,6 +83,7 @@ namespace ServerManager
                 ApplicationName = "DriftCity Server Manager"
             }.ConnectionString;
 
+            var vehicleCount = 0;
             var upgradeCount = 0;
             using (var connection = new SqlConnection(connectionString))
             {
@@ -95,11 +95,20 @@ namespace ServerManager
                     {
                         foreach (var vehicle in catalog.vehicles)
                         {
-                            UpsertVehicle(connection, tx, vehicle);
+                            // VehicleId is the stable key used by the game. A catalog row without
+                            // it cannot safely be persisted, so ignore that malformed source row.
+                            if (vehicle == null || !vehicle.vehicleId.HasValue)
+                                continue;
+
+                            var vehicleId = vehicle.vehicleId.Value;
+                            UpsertVehicle(connection, tx, vehicleId, vehicle);
+                            vehicleCount++;
+
                             if (vehicle.upgrades == null) continue;
                             foreach (var upgrade in vehicle.upgrades)
                             {
-                                UpsertUpgrade(connection, tx, vehicle.vehicleId, upgrade);
+                                if (upgrade == null) continue;
+                                UpsertUpgrade(connection, tx, vehicleId, upgrade);
                                 upgradeCount++;
                             }
                         }
@@ -113,7 +122,7 @@ namespace ServerManager
                 }
             }
 
-            return new ImportResult { Vehicles = catalog.vehicles.Count, Upgrades = upgradeCount, JsonPath = CatalogPath };
+            return new ImportResult { Vehicles = vehicleCount, Upgrades = upgradeCount, JsonPath = CatalogPath };
         }
 
         private static void EnsureTables(SqlConnection connection)
@@ -177,7 +186,7 @@ END;";
             using (var cmd = new SqlCommand(sql, connection)) cmd.ExecuteNonQuery();
         }
 
-        private static void UpsertVehicle(SqlConnection connection, SqlTransaction tx, CatalogVehicle v)
+        private static void UpsertVehicle(SqlConnection connection, SqlTransaction tx, int vehicleId, CatalogVehicle v)
         {
             const string sql = @"
 MERGE dbo.vehicle_catalog AS target
@@ -191,19 +200,19 @@ VALUES(@VehicleId,@RuntimeIndex,@Name,@Type,@TypeString,@Sellable,@Grade,@BaseAc
 @BaseBoost,@RequiredLevel,@Level,1,SYSUTCDATETIME());";
             using (var cmd = new SqlCommand(sql, connection, tx))
             {
-                cmd.Parameters.AddWithValue("@VehicleId", v.vehicleId);
+                cmd.Parameters.AddWithValue("@VehicleId", vehicleId);
                 cmd.Parameters.AddWithValue("@RuntimeIndex", v.runtimeIndex);
                 cmd.Parameters.AddWithValue("@Name", Db(v.name));
                 cmd.Parameters.AddWithValue("@Type", Db(v.type));
                 cmd.Parameters.AddWithValue("@TypeString", Db(v.typeString));
-                cmd.Parameters.AddWithValue("@Sellable", v.sellable);
+                cmd.Parameters.AddWithValue("@Sellable", v.sellable ?? false);
                 cmd.Parameters.AddWithValue("@Grade", Db(v.grade));
-                cmd.Parameters.AddWithValue("@BaseAccel", v.accel);
-                cmd.Parameters.AddWithValue("@BaseSpeed", v.speed);
-                cmd.Parameters.AddWithValue("@BaseCrash", v.crash);
-                cmd.Parameters.AddWithValue("@BaseBoost", v.boost);
-                cmd.Parameters.AddWithValue("@RequiredLevel", v.requiredLevel);
-                cmd.Parameters.AddWithValue("@Level", v.level);
+                cmd.Parameters.AddWithValue("@BaseAccel", Db(v.accel));
+                cmd.Parameters.AddWithValue("@BaseSpeed", Db(v.speed));
+                cmd.Parameters.AddWithValue("@BaseCrash", Db(v.crash));
+                cmd.Parameters.AddWithValue("@BaseBoost", Db(v.boost));
+                cmd.Parameters.AddWithValue("@RequiredLevel", Db(v.requiredLevel));
+                cmd.Parameters.AddWithValue("@Level", Db(v.level));
                 cmd.ExecuteNonQuery();
             }
         }
@@ -225,19 +234,19 @@ VALUES(@VehicleId,@GradeIndex,@GradeName,@Coupon,@Accel,@Speed,@Crash,@Boost,@So
             {
                 cmd.Parameters.AddWithValue("@VehicleId", vehicleId);
                 cmd.Parameters.AddWithValue("@GradeIndex", u.gradeIndex);
-                cmd.Parameters.AddWithValue("@GradeName", Db(u.gradeName));
+                cmd.Parameters.AddWithValue("@GradeName", Db(string.IsNullOrWhiteSpace(u.gradeName) ? "V" + (u.gradeIndex + 1) : u.gradeName));
                 cmd.Parameters.AddWithValue("@Coupon", Db(u.coupon));
-                cmd.Parameters.AddWithValue("@Accel", u.accel);
-                cmd.Parameters.AddWithValue("@Speed", u.speed);
-                cmd.Parameters.AddWithValue("@Crash", u.crash);
-                cmd.Parameters.AddWithValue("@Boost", u.boost);
-                cmd.Parameters.AddWithValue("@SourcePrice", u.price);
-                cmd.Parameters.AddWithValue("@SourceSell", u.sell);
-                cmd.Parameters.AddWithValue("@CloseSell", u.closeSell);
-                cmd.Parameters.AddWithValue("@UpgradeMito", u.upgradeMito);
-                cmd.Parameters.AddWithValue("@Efficiency", u.efficiency);
-                cmd.Parameters.AddWithValue("@Capacity", u.capacity);
-                cmd.Parameters.AddWithValue("@RequiredLevel", u.requiredLevel);
+                cmd.Parameters.AddWithValue("@Accel", Db(u.accel));
+                cmd.Parameters.AddWithValue("@Speed", Db(u.speed));
+                cmd.Parameters.AddWithValue("@Crash", Db(u.crash));
+                cmd.Parameters.AddWithValue("@Boost", Db(u.boost));
+                cmd.Parameters.AddWithValue("@SourcePrice", Db(u.price));
+                cmd.Parameters.AddWithValue("@SourceSell", Db(u.sell));
+                cmd.Parameters.AddWithValue("@CloseSell", Db(u.closeSell));
+                cmd.Parameters.AddWithValue("@UpgradeMito", Db(u.upgradeMito));
+                cmd.Parameters.AddWithValue("@Efficiency", Db(u.efficiency));
+                cmd.Parameters.AddWithValue("@Capacity", Db(u.capacity));
+                cmd.Parameters.AddWithValue("@RequiredLevel", Db(u.requiredLevel));
                 cmd.ExecuteNonQuery();
             }
         }
