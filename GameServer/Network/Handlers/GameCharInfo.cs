@@ -1,4 +1,4 @@
-﻿using GameServer.Util;
+using GameServer.Util;
 using Shared.Models;
 using Shared.Network;
 using Shared.Network.GameServer;
@@ -47,8 +47,31 @@ namespace GameServer.Network.Handlers
             var user = targetClient?.User ??
                        AccountModel.Retrieve(GameServer.Instance.Database.Connection, character.Uid);
             var statisticInfo = BuildStatisticInfo(character);
-
             var serial = user == null ? (ushort)0 : user.VehicleSerial;
+
+            // The User Information window does not request PlayerInfoReq (801) in this
+            // client build. Seed the same remote-player cache explicitly before packet 661.
+            // Packet 802 describes the player and packet 467 supplies the car/visual context
+            // the renderer normally receives from room/world visual updates.
+            if (serial != 0 && character.ActiveCar != null)
+            {
+                var playerInfo = PlayerVisualSnapshotBuilder.BuildPlayerInfo(serial, character);
+                packet.Sender.Send(new PlayerInfoOldAnswer
+                {
+                    PlayerInfo = playerInfo
+                }.CreatePacket());
+
+                packet.Sender.Send(
+                    PlayerVisualSnapshotBuilder.BuildRoomNotifyChange(serial, character).CreatePacket());
+
+                Log.Debug(
+                    "GameCharInfo visual context: target={0} Serial={1} CarType={2} Color={3} -> 802 + 467",
+                    character.Name,
+                    serial,
+                    character.ActiveCar.CarType,
+                    character.ActiveCar.Color != 0 ? character.ActiveCar.Color : character.ActiveCar.BaseColor);
+            }
+
             var ack = new GameCharInfoAnswer
             {
                 Character = character,
@@ -90,25 +113,6 @@ namespace GameServer.Network.Handlers
             }
 
             packet.Sender.Send(ack.CreatePacket());
-        }
-
-        // The v0.77 client requests this immediately after loading a character. Leaving
-        // packet 1350 unanswered leaves its sticker/vehicle-visual subsystem uninitialized.
-        // The original server also accompanies remote player information with sticker data.
-        // Until persistent sticker records are implemented, explicitly return an empty list
-        // instead of silently dropping the request. 1351 is the response paired with 1350.
-        [Packet((ushort)1350)]
-        public static void MyStickerList(Packet packet)
-        {
-            var ack = new Packet((ushort)1351);
-            ack.Writer.Write(0); // Sticker count.
-            packet.Sender.Send(ack);
-
-            var character = packet.Sender.User?.ActiveCharacter;
-            Log.Debug(
-                "MyStickerListAck: CID={0} Name={1} Count=0",
-                character == null ? 0UL : character.Id,
-                character == null ? "UNKNOWN" : character.Name);
         }
 
         private static XiStrStatInfo BuildStatisticInfo(Character character)
