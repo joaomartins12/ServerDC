@@ -1,6 +1,7 @@
 ﻿using Shared.Models;
 using Shared.Network;
 using Shared.Network.AreaServer;
+using Shared.Util;
 
 namespace AreaServer.Network.Handlers
 {
@@ -20,7 +21,10 @@ namespace AreaServer.Network.Handlers
                     return;
                 }
 
-                var account = AccountModel.RetrieveFromSerial(AreaServer.Instance.Database.Connection, character.Uid, enterAreaPacket.VehicleSerial);
+                var account = AccountModel.RetrieveFromSerial(
+                    AreaServer.Instance.Database.Connection,
+                    character.Uid,
+                    enterAreaPacket.VehicleSerial);
                 if (account == null)
                 {
                     packet.Sender.KillConnection("Invalid serial");
@@ -29,22 +33,34 @@ namespace AreaServer.Network.Handlers
 
                 packet.Sender.User = account;
                 packet.Sender.User.ActiveCharacter = character;
-
-                if (DefaultServer.ActiveSerials.ContainsKey(enterAreaPacket.VehicleSerial))
-                {
-                    if (packet.Sender.User.VehicleSerial != enterAreaPacket.VehicleSerial)
-                    {
-                        packet.Sender.KillConnection($"[{packet.Sender.User.VehicleSerial} vs {enterAreaPacket.VehicleSerial}] Still wrong user.");
-                        return;
-                    }
-                }
-                else
-                {
-                    DefaultServer.ActiveSerials.Add(enterAreaPacket.VehicleSerial, packet.Sender.User);
-                }
             }
 
-            MoveVehicle.RegisterArea(enterAreaPacket.VehicleSerial, enterAreaPacket.AreaId);
+            if (packet.Sender.User.VehicleSerial != enterAreaPacket.VehicleSerial)
+            {
+                packet.Sender.KillConnection(
+                    $"[{packet.Sender.User.VehicleSerial} vs {enterAreaPacket.VehicleSerial}] Still wrong user.");
+                return;
+            }
+
+            // Area transitions can create a fresh TCP connection while the previous
+            // connection with the same vehicle serial is still shutting down. Always bind
+            // the serial to the newest authenticated User object. Otherwise the old
+            // Client.KillConnection() may remove the serial later and make the new live
+            // session look inactive to presence/movement routing.
+            Shared.Objects.User previousOwner = null;
+            DefaultServer.ActiveSerials.TryGetValue(enterAreaPacket.VehicleSerial, out previousOwner);
+            DefaultServer.ActiveSerials[enterAreaPacket.VehicleSerial] = packet.Sender.User;
+
+            if (previousOwner != null && !ReferenceEquals(previousOwner, packet.Sender.User))
+            {
+                Log.Debug(
+                    "Area serial ownership rebound: Serial={0} Character={1} Area={2}",
+                    enterAreaPacket.VehicleSerial,
+                    enterAreaPacket.CharacterName,
+                    enterAreaPacket.AreaId);
+            }
+
+            MoveVehicle.RegisterArea(packet.Sender, enterAreaPacket.VehicleSerial, enterAreaPacket.AreaId);
 
             packet.Sender.Send(new EnterAreaAnswer
             {
