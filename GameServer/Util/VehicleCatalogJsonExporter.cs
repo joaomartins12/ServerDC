@@ -36,10 +36,10 @@ namespace GameServer.Util
                             N(writer, "runtimeIndex", i, true);
                             N(writer, "vehicleId", vehicle.UniqueId, true);
                             S(writer, "name", vehicle.Name, true);
-                            S(writer, "type", Convert.ToString(vehicle.Type, CultureInfo.InvariantCulture), true);
+                            S(writer, "type", vehicle.Type, true);
                             S(writer, "typeString", vehicle.TypeStr, true);
                             B(writer, "sellable", vehicle.Sellable, true);
-                            S(writer, "grade", Convert.ToString(vehicle.Grade, CultureInfo.InvariantCulture), true);
+                            S(writer, "grade", vehicle.Grade, true);
                             N(writer, "accel", vehicle.Acceleration, true);
                             N(writer, "speed", vehicle.Speed, true);
                             N(writer, "crash", vehicle.Crash, true);
@@ -115,14 +115,21 @@ namespace GameServer.Util
 
         private static void N(StreamWriter w, string name, object value, bool comma, int indent = 6)
         {
-            var s = value == null ? "null" : Convert.ToString(value, CultureInfo.InvariantCulture);
-            w.WriteLine(new string(' ', indent) + "\"" + Escape(name) + "\": " + s + (comma ? "," : string.Empty));
+            var raw = value == null ? null : Convert.ToString(value, CultureInfo.InvariantCulture);
+            decimal number;
+            var serialized = !string.IsNullOrWhiteSpace(raw) && decimal.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out number)
+                ? number.ToString(CultureInfo.InvariantCulture)
+                : "null";
+            w.WriteLine(new string(' ', indent) + "\"" + Escape(name) + "\": " + serialized + (comma ? "," : string.Empty));
         }
 
         private static void B(StreamWriter w, string name, object value, bool comma, int indent = 6)
         {
-            var b = false;
-            if (value != null) bool.TryParse(Convert.ToString(value, CultureInfo.InvariantCulture), out b);
+            var raw = value == null ? string.Empty : Convert.ToString(value, CultureInfo.InvariantCulture);
+            bool b;
+            if (raw == "1") b = true;
+            else if (raw == "0") b = false;
+            else bool.TryParse(raw, out b);
             w.WriteLine(new string(' ', indent) + "\"" + Escape(name) + "\": " + (b ? "true" : "false") + (comma ? "," : string.Empty));
         }
 
