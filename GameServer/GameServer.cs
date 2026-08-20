@@ -146,7 +146,8 @@ namespace GameServer
             ItemCatalogJsonExporter.Export(Items);
             VehicleCatalogJsonExporter.Export(Vehicles);
             VehicleKeyResearchExporter.Export(Vehicles, Items);
-            Log.Info("ItemCatalog.json, VehicleCatalog.json and VehicleKeyResearch.csv ready in Logs\\Catalogs.");
+            VehicleKeyDatabaseExporter.ExportExistingCatalogRows();
+            Log.Info("ItemCatalog.json, VehicleCatalog.json, VehicleKeyResearch.csv and VehicleKeysForDatabase.csv ready in Logs\\Catalogs.");
 
             Server = new DefaultServer(Config.Game.Port);
             Server.Start();
