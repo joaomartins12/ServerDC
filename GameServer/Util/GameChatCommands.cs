@@ -32,8 +32,8 @@ namespace GameServer.Util
             Add("tempmute", "/mute [Character Name]", 0x8000, "Mutes/Unmutes the character from chat", MuteCommandHandler);
 
             Add("gm", "/gm", 0x1000, "Toggles your GM Status", ToggleGmStatusCommandHandler);
-            Add("perfprobe", "/perfprobe [1-8] [value] | /perfprobe off", 0x8000,
-                "Temporarily probes one StatUpdate 32-byte research field", PerformanceProbeCommandHandler);
+            Add("perfprobe", "/perfprobe [1-12] [value] | /perfprobe off", 0x8000,
+                "Temporarily probes one StatUpdate research field", PerformanceProbeCommandHandler);
         }
 
         private static CommandResult PerformanceProbeCommandHandler(DefaultServer server, Client sender, string command,
@@ -55,7 +55,7 @@ namespace GameServer.Util
 
             int field;
             int value;
-            if (!int.TryParse(args[0], out field) || field < 1 || field > 8)
+            if (!int.TryParse(args[0], out field) || field < 1 || field > 12)
                 return CommandResult.InvalidArgument;
             if (!int.TryParse(args[1], out value))
                 return CommandResult.InvalidArgument;
