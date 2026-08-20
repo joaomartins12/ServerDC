@@ -1,4 +1,5 @@
-﻿using Shared;
+﻿using System;
+using Shared;
 using Shared.Models;
 using Shared.Network;
 using Shared.Network.GameServer;
@@ -31,10 +32,11 @@ namespace GameServer.Network.Handlers.Join
                     string itemId = "UNKNOWN";
                     string itemName = "UNKNOWN";
                     string category = "UNKNOWN";
+                    Shared.Objects.GameDatas.BasicItem definition = null;
 
                     if (ServerMain.Items != null && inventoryItem.TableIndex >= 0 && inventoryItem.TableIndex < ServerMain.Items.Count)
                     {
-                        var definition = ServerMain.Items[inventoryItem.TableIndex];
+                        definition = ServerMain.Items[inventoryItem.TableIndex];
                         if (definition != null)
                         {
                             itemId = definition.Id ?? "UNKNOWN";
@@ -43,8 +45,24 @@ namespace GameServer.Network.Handlers.Join
                         }
                     }
 
+                    // Older inventory rows were created with Random=0. Stabilize vehicle parts once
+                    // and persist the seed so the client sees the exact same instance every login.
+                    if (definition != null && IsVehiclePart(category) && inventoryItem.Random == 0)
+                    {
+                        inventoryItem.Random = CreateStablePartSeed(inventoryItem);
+                        ItemModel.Update(connection, inventoryItem);
+                        Log.Info(
+                            "Legacy part instance stabilized: DbId={0} InvenIdx={1} TableIndex={2} Name={3} Category={4} Random={5}",
+                            inventoryItem.DbId,
+                            inventoryItem.InventoryIndex,
+                            inventoryItem.TableIndex,
+                            itemName,
+                            category,
+                            inventoryItem.Random);
+                    }
+
                     Log.Debug(
-                        "Inventory item: DbId={0} InvenIdx={1} TableIndex={2} ItemId={3} Name={4} Category={5} Stack={6} CarId={7} State={8} Slot={9} Upgrade={10} UpgradePoint={11} Durability={12}",
+                        "Inventory item: DbId={0} InvenIdx={1} TableIndex={2} ItemId={3} Name={4} Category={5} Stack={6} CarId={7} State={8} Slot={9} Upgrade={10} UpgradePoint={11} Durability={12} Random={13}",
                         inventoryItem.DbId,
                         inventoryItem.InventoryIndex,
                         inventoryItem.TableIndex,
@@ -57,11 +75,30 @@ namespace GameServer.Network.Handlers.Join
                         inventoryItem.Slot,
                         inventoryItem.Upgrade,
                         inventoryItem.UpgradePoint,
-                        inventoryItem.Durability);
+                        inventoryItem.Durability,
+                        inventoryItem.Random);
                 }
 
                 var ack = new ItemListAnswer { InventoryItems = items.ToArray() };
                 packet.Sender.Send(ack.CreatePacket());
+            }
+        }
+
+        private static bool IsVehiclePart(string category)
+        {
+            if (string.IsNullOrWhiteSpace(category)) return false;
+            var value = category.Trim().ToLowerInvariant();
+            return value == "speed" || value == "accel" || value == "acceleration" ||
+                   value == "crash" || value == "durability" || value == "boost" || value == "booster";
+        }
+
+        private static int CreateStablePartSeed(Shared.Objects.InventoryItem item)
+        {
+            unchecked
+            {
+                var seed = (item.DbId * 397) ^ (item.TableIndex * 7919) ^ (int)item.InventoryIndex ^ 0x35A4E21;
+                seed &= int.MaxValue;
+                return seed == 0 ? 1 : seed;
             }
         }
     }
