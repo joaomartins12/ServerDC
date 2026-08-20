@@ -14,9 +14,6 @@ namespace GameServer.Network.Handlers
         {
             var gameCharInfoPacket = new GameCharInfoPacket(packet);
 
-            // Prefer the live session. User Information is primarily requested for
-            // players currently visible in the world, and the live Character contains
-            // the authoritative active vehicle/inventory state for that session.
             var targetClient = GameServer.Instance.Server.GetClient(gameCharInfoPacket.CharacterName);
             var character = targetClient?.User?.ActiveCharacter;
             var source = "live";
@@ -39,8 +36,6 @@ namespace GameServer.Network.Handlers
                 return;
             }
 
-            // DB fallback and older live sessions may not have their inventory loaded yet.
-            // Equipment stats and profile data should never depend on opening inventory first.
             if (character.InventoryItems == null || character.InventoryItems.Count == 0)
                 ItemModel.RetrieveAll(GameServer.Instance.Database.Connection, ref character);
 
@@ -49,28 +44,16 @@ namespace GameServer.Network.Handlers
             var statisticInfo = BuildStatisticInfo(character);
             var serial = user == null ? (ushort)0 : user.VehicleSerial;
 
-            // This v0.77 client does not issue PlayerInfoReq (801) when the User
-            // Information window is opened. Seed the remote visual cache explicitly
-            // before packet 661: 802 identifies the player, 467 supplies the car model,
-            // color and visual state.
-            if (serial != 0 && character.ActiveCar != null)
-            {
-                var playerInfo = PlayerVisualSnapshotBuilder.BuildPlayerInfo(serial, character);
-                packet.Sender.Send(new PlayerInfoOldAnswer
-                {
-                    PlayerInfo = playerInfo
-                }.CreatePacket());
-
-                packet.Sender.Send(
-                    PlayerVisualSnapshotBuilder.BuildRoomNotifyChange(serial, character).CreatePacket());
-
-                Log.Debug(
-                    "GameCharInfo visual context: target={0} Serial={1} CarType={2} Color={3} -> 802 + 467",
-                    character.Name,
-                    serial,
-                    character.ActiveCar.CarType,
-                    character.ActiveCar.Color != 0 ? character.ActiveCar.Color : character.ActiveCar.BaseColor);
-            }
+            // Do not force RoomNotifyChange (467) from User Information. The packet
+            // controls the car rendered in the world and its Body value does not use
+            // Character.ActiveCar.CarType directly. Sending it here caused a temporary
+            // tank model. The client naturally follows 660 with PlayerInfoReq (801),
+            // so let that normal flow request the remote XiPlayerInfo instead.
+            Log.Debug(
+                "GameCharInfo profile context: target={0} Serial={1} CarType={2}; waiting for native 801 flow",
+                character.Name,
+                serial,
+                character.ActiveCar == null ? 0u : character.ActiveCar.CarType);
 
             var ack = new GameCharInfoAnswer
             {
@@ -154,10 +137,6 @@ namespace GameServer.Network.Handlers
 
 namespace GameServer.Network.Handlers.Join
 {
-    /// <summary>
-    /// Initializes the sticker subsystem. Sticker persistence is not implemented yet,
-    /// so return a valid empty list instead of dropping packet 1350.
-    /// </summary>
     public class MyStickerList
     {
         [Packet((ushort)1350)]
@@ -178,9 +157,6 @@ namespace GameServer.Network.Handlers.Join
 
 namespace GameServer.Util
 {
-    /// <summary>
-    /// Single source of truth for the visual snapshot of another driver.
-    /// </summary>
     public static class PlayerVisualSnapshotBuilder
     {
         public static XiPlayerInfo BuildPlayerInfo(ushort serial, Character character)
@@ -191,40 +167,6 @@ namespace GameServer.Util
                 VisualItem = new XiVisualItem { PlateString = string.Empty },
                 UseTime = 0.0f
             };
-        }
-
-        public static RoomNotifyChangeAnswer BuildRoomNotifyChange(ushort serial, Character character)
-        {
-            return new RoomNotifyChangeAnswer
-            {
-                Serial = serial,
-                Age = 0,
-                CarAttr = BuildCarAttr(character == null ? null : character.ActiveCar),
-                PlayerInfo = BuildPlayerInfo(serial, character)
-            };
-        }
-
-        public static XiCarAttr BuildCarAttr(Vehicle vehicle)
-        {
-            var result = new XiCarAttr();
-            if (vehicle == null)
-                return result;
-
-            // XiCarAttr native layout: ushort Sort, ushort Body, byte Color[4].
-            // Sort 0 is a normal player vehicle; Body is the client vehicle model.
-            const ushort playerCarSort = 0;
-            var body = unchecked((ushort)vehicle.CarType);
-            var color = vehicle.Color != 0 ? vehicle.Color : vehicle.BaseColor;
-            var packed = (ulong)playerCarSort |
-                         ((ulong)body << 16) |
-                         ((ulong)color << 32);
-
-            result.___u0.__s0.Sort = playerCarSort;
-            result.___u0.__s0.Body = body;
-            result.___u0.__s1.lvalSortBody = unchecked((int)(uint)packed);
-            result.___u0.__s1.lvalColor = unchecked((int)color);
-            result.___u0.llval = unchecked((long)packed);
-            return result;
         }
     }
 }
