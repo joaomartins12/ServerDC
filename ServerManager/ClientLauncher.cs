@@ -106,7 +106,7 @@ namespace ServerManager
 
         public static Process StartClient(string clientFolder, string executablePath, Action<string> log, Action exited)
         {
-            return StartClient(clientFolder, executablePath, null, log, exited);
+            return StartClient(clientFolder, executablePath, OfficialLauncherSettings.GetLauncherPath(), log, exited);
         }
 
         public static Process StartClient(string clientFolder, string executablePath, string officialLauncherPath, Action<string> log, Action exited)
