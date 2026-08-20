@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Reflection;
 using System.Windows.Forms;
 
@@ -53,19 +54,18 @@ namespace ServerManager
                 };
                 tracked.Add(state);
 
-                // Individual START: clear before MainForm starts redirecting new stdout.
                 toggle.MouseDown += delegate(object sender, MouseEventArgs e)
                 {
                     if (e.Button != MouseButtons.Left) return;
                     if (!ManagerEnhancements.ClearVisibleLogsOnServerStart) return;
                     if (!string.Equals(toggle.Text, "START", StringComparison.OrdinalIgnoreCase)) return;
 
+                    ClearPersistedRuntimeLogs();
                     Clear(state.LogBox);
                     state.ClearedBeforeStart = true;
                 };
             }
 
-            // START ALL must also clear before any child process can emit its first line.
             var startAll = FindButton(form, "START ALL");
             if (startAll != null)
             {
@@ -74,9 +74,9 @@ namespace ServerManager
                     if (e.Button != MouseButtons.Left) return;
                     if (!ManagerEnhancements.ClearVisibleLogsOnServerStart) return;
 
+                    ClearPersistedRuntimeLogs();
                     foreach (var state in tracked)
                     {
-                        // Do not erase a server that was already running before START ALL.
                         if (IsRunning(state.Entry, state.ProcessField)) continue;
                         Clear(state.LogBox);
                         state.ClearedBeforeStart = true;
@@ -84,7 +84,6 @@ namespace ServerManager
                 };
             }
 
-            // Actual STOPPED -> RUNNING transition watcher covers any future launch path.
             var timer = new Timer { Interval = 50 };
             timer.Tick += delegate
             {
@@ -94,7 +93,10 @@ namespace ServerManager
                     if (!state.WasRunning && running)
                     {
                         if (ManagerEnhancements.ClearVisibleLogsOnServerStart && !state.ClearedBeforeStart)
+                        {
+                            ClearPersistedRuntimeLogs();
                             Clear(state.LogBox);
+                        }
                         state.ClearedBeforeStart = false;
                     }
                     else if (state.WasRunning && !running)
@@ -114,6 +116,59 @@ namespace ServerManager
                 Timers.Remove(timer);
                 timer.Dispose();
             };
+        }
+
+        private static void ClearPersistedRuntimeLogs()
+        {
+            try
+            {
+                var root = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Logs");
+                if (!Directory.Exists(root)) return;
+
+                foreach (var file in Directory.GetFiles(root))
+                {
+                    TryDeleteFile(file);
+                }
+
+                foreach (var directory in Directory.GetDirectories(root))
+                {
+                    var name = Path.GetFileName(directory);
+                    if (string.Equals(name, "Catalogs", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    TryDeleteDirectory(directory);
+                }
+            }
+            catch
+            {
+                // Logging cleanup must never prevent a server from starting.
+            }
+        }
+
+        private static void TryDeleteFile(string path)
+        {
+            try
+            {
+                if (File.Exists(path)) File.Delete(path);
+            }
+            catch { }
+        }
+
+        private static void TryDeleteDirectory(string path)
+        {
+            try
+            {
+                if (Directory.Exists(path)) Directory.Delete(path, true);
+            }
+            catch
+            {
+                try
+                {
+                    foreach (var file in Directory.GetFiles(path, "*", SearchOption.AllDirectories))
+                        TryDeleteFile(file);
+                }
+                catch { }
+            }
         }
 
         private static Button FindButton(Control root, string text)
