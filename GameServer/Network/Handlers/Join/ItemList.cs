@@ -48,16 +48,10 @@ namespace GameServer.Network.Handlers.Join
                     BasicItem definition = null;
                     Vehicle linkedVehicle = null;
 
-                    // Vehicle keys are special. The UseItems.xml maxstack field maps the key to
-                    // CarType, while the client-facing TableIndex for keys is the combined runtime
-                    // catalog index exported by ItemCatalog.json / Items_RuntimeTable.csv.
-                    // Repair the two experimental encodings used by older server builds:
-                    //   0x580 + XML UseItem ordinal + 1
-                    //   0x580 + pc_XXXX numeric id + 1
                     BasicItem expectedKey;
                     int expectedKeyCatalogIndex;
                     int expectedKeyUseItemIndex;
-                    int oldXmlProtocolIndex;
+                    int expectedKeyProtocolIndex;
                     int oldKeyIdProtocolIndex;
                     if (TryResolveVehicleKeyForInventory(
                         character,
@@ -67,38 +61,43 @@ namespace GameServer.Network.Handlers.Join
                         out expectedKey,
                         out expectedKeyCatalogIndex,
                         out expectedKeyUseItemIndex,
-                        out oldXmlProtocolIndex,
+                        out expectedKeyProtocolIndex,
                         out oldKeyIdProtocolIndex))
                     {
-                        var shouldMigrate = inventoryItem.TableIndex == oldXmlProtocolIndex ||
+                        // Repair both experimental encodings used by previous builds:
+                        // 1) direct combined ItemCatalog index (e.g. Nevera 874)
+                        // 2) 0x580 + numeric part of pc_XXXX + 1
+                        // The real client-facing UseItem namespace is based on XML ordinal.
+                        var shouldMigrate = inventoryItem.TableIndex == expectedKeyCatalogIndex ||
                                             inventoryItem.TableIndex == oldKeyIdProtocolIndex;
 
-                        if (shouldMigrate && inventoryItem.TableIndex != expectedKeyCatalogIndex)
+                        if (shouldMigrate && inventoryItem.TableIndex != expectedKeyProtocolIndex)
                         {
                             var oldProtocol = inventoryItem.TableIndex;
-                            inventoryItem.TableIndex = expectedKeyCatalogIndex;
+                            inventoryItem.TableIndex = expectedKeyProtocolIndex;
                             ItemModel.Update(connection, inventoryItem);
                             Log.Info(
-                                "Vehicle key runtime migration: DbId={0} CarId={1} CarType={2} ItemId={3} Name='{4}' UseItemIndex={5} OldTableIndex={6} RuntimeTableIndex={7}",
+                                "Vehicle key protocol migration: DbId={0} CarId={1} CarType={2} ItemId={3} Name='{4}' CatalogTableIndex={5} UseItemIndex={6} OldTableIndex={7} ProtocolTableIndex={8}",
                                 inventoryItem.DbId,
                                 inventoryItem.CarId,
                                 linkedVehicle == null ? 0u : linkedVehicle.CarType,
                                 expectedKey.Id,
                                 expectedKey.Name,
+                                expectedKeyCatalogIndex,
                                 expectedKeyUseItemIndex,
                                 oldProtocol,
-                                expectedKeyCatalogIndex);
+                                expectedKeyProtocolIndex);
                         }
 
-                        if (inventoryItem.TableIndex == expectedKeyCatalogIndex)
+                        if (inventoryItem.TableIndex == expectedKeyProtocolIndex)
                         {
                             definition = expectedKey;
-                            protocolKind = "vehicle-key/runtime";
+                            protocolKind = "vehicle-key/useitem-xml-order";
                         }
                     }
 
-                    // Normal UseItems use the namespace confirmed from the real Mittron Fuel (5L)
-                    // purchase: 0x580 + (zero-based UseItems.xml index + 1).
+                    // All UseItems share the protocol namespace confirmed by real client purchases:
+                    // 0x580 + (zero-based UseItems.xml ordinal + 1).
                     if (definition == null && firstUseItemIndex >= 0 && inventoryItem.TableIndex > UseItemProtocolBase)
                     {
                         var useItemIndex = inventoryItem.TableIndex - UseItemProtocolBase - 1;
@@ -129,10 +128,6 @@ namespace GameServer.Network.Handlers.Join
                         category = definition.Category ?? "UNKNOWN";
                     }
 
-                    // Earlier server builds generated a deterministic but protocol-invalid Random
-                    // value for every normal shop part. Only undo values that exactly match that
-                    // old formula. Legitimate Random values from dropped/generated items are left
-                    // untouched because BasePointVariable is part of the drop-item generation flow.
                     if (definition != null && IsVehiclePart(category) && inventoryItem.Random != 0)
                     {
                         var badSeed = CreateLegacyArtificialSeed(inventoryItem);
@@ -169,14 +164,11 @@ namespace GameServer.Network.Handlers.Join
                         inventoryItem.Random,
                         inventoryItem.LastCarId);
 
-                    // CmdInventoryRequest (1156) has no per-item payload; it is a general refresh.
-                    // For car keys, log all linked vehicle data. Once the key TableIndex is correct,
-                    // the client can associate the key definition with this CarId locally.
                     if (definition != null && IsVehicleKey(definition) && linkedVehicle != null)
                     {
                         var stats = VehicleStatResolver.Resolve(linkedVehicle);
                         Log.Info(
-                            "Vehicle key info: DbId={0} ItemId={1} Name='{2}' RuntimeTableIndex={3} CarId={4} CarType={5} Grade=V{6} Km={7:F2} Mitron={8:F2} Capacity={9:F3} Efficiency={10:F3} Stats[S={11},C={12},A={13},B={14}] Source={15}",
+                            "Vehicle key info: DbId={0} ItemId={1} Name='{2}' ProtocolTableIndex={3} CarId={4} CarType={5} Grade=V{6} Km={7:F2} Mitron={8:F2} Capacity={9:F3} Efficiency={10:F3} Stats[S={11},C={12},A={13},B={14}] Source={15}",
                             inventoryItem.DbId,
                             definition.Id,
                             definition.Name,
@@ -209,14 +201,14 @@ namespace GameServer.Network.Handlers.Join
             out BasicItem keyDefinition,
             out int keyCatalogIndex,
             out int keyUseItemIndex,
-            out int oldXmlProtocolIndex,
+            out int keyProtocolIndex,
             out int oldKeyIdProtocolIndex)
         {
             linkedVehicle = null;
             keyDefinition = null;
             keyCatalogIndex = -1;
             keyUseItemIndex = -1;
-            oldXmlProtocolIndex = -1;
+            keyProtocolIndex = -1;
             oldKeyIdProtocolIndex = -1;
 
             if (character == null || inventoryItem == null || inventoryItem.CarId == 0 ||
@@ -234,6 +226,7 @@ namespace GameServer.Network.Handlers.Join
                 if (useItem == null || !IsVehicleKey(useItem))
                     continue;
 
+                // Original UseItems.xml maxstack is the CarType relation for vehicle keys.
                 uint mappedCarType;
                 if (!uint.TryParse(useItem.MaxStack, NumberStyles.Integer, CultureInfo.InvariantCulture, out mappedCarType) ||
                     mappedCarType != linkedVehicle.CarType)
@@ -242,7 +235,7 @@ namespace GameServer.Network.Handlers.Join
                 keyDefinition = useItem;
                 keyCatalogIndex = i;
                 keyUseItemIndex = i - firstUseItemIndex;
-                oldXmlProtocolIndex = checked(UseItemProtocolBase + keyUseItemIndex + 1);
+                keyProtocolIndex = checked(UseItemProtocolBase + keyUseItemIndex + 1);
 
                 int keyNumber;
                 if (TryGetVehicleKeyNumber(useItem.Id, out keyNumber))
