@@ -16,7 +16,6 @@ namespace ServerManager
         {
             public int Files;
             public long Rows;
-            public long Cells;
             public int ItemLookupRows;
             public string Folder;
         }
@@ -25,6 +24,7 @@ namespace ServerManager
         {
             public string FileName;
             public string FullPath;
+            public string TableName;
             public string Hash;
             public int HeaderBytes;
             public short VersionMajor;
@@ -68,12 +68,14 @@ namespace ServerManager
                 throw new InvalidOperationException("No .tdf files were found in " + folder + ".");
 
             var snapshots = new List<TdfSnapshot>();
+            var usedTableNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var path in paths)
-                snapshots.Add(Parse(path, folder));
+            {
+                var snapshot = Parse(path, folder);
+                snapshot.TableName = BuildUniqueTableName(snapshot.FileName, usedTableNames);
+                snapshots.Add(snapshot);
+            }
 
-            // Client inventory TableIndex is a concatenated namespace. ItemClient starts at 0 and
-            // UseItemClient starts immediately after the final ItemClient row. Keeping this in the
-            // imported snapshot removes protocol-index guesses from the game server.
             var itemClient = snapshots.FirstOrDefault(x =>
                 string.Equals(Path.GetFileName(x.FileName), "ItemClient.tdf", StringComparison.OrdinalIgnoreCase));
             var useItemClient = snapshots.FirstOrDefault(x =>
@@ -95,33 +97,32 @@ namespace ServerManager
             }.ConnectionString;
 
             long totalRows = 0;
-            long totalCells = 0;
             var lookupCount = 0;
 
             using (var connection = new SqlConnection(connectionString))
             {
                 connection.Open();
-                EnsureSchema(connection);
 
                 using (var tx = connection.BeginTransaction())
                 {
                     try
                     {
-                        using (var clear = new SqlCommand(@"
-DELETE FROM dbo.client_item_lookup;
-DELETE FROM dbo.client_tdf_cells;
-DELETE FROM dbo.client_tdf_rows;
-DELETE FROM dbo.client_tdf_manifest;", connection, tx))
-                        {
-                            clear.CommandTimeout = 120;
-                            clear.ExecuteNonQuery();
-                        }
+                        DropPreviousImportedTables(connection, tx);
+                        DropLegacyGenericTables(connection, tx);
+                        EnsureCoreSchema(connection, tx);
+
+                        using (var clearLookup = new SqlCommand("DELETE FROM dbo.client_item_lookup;", connection, tx))
+                            clearLookup.ExecuteNonQuery();
+                        using (var clearManifest = new SqlCommand("DELETE FROM dbo.client_tdf_manifest;", connection, tx))
+                            clearManifest.ExecuteNonQuery();
 
                         foreach (var snapshot in snapshots)
                         {
+                            CreateSnapshotTable(connection, tx, snapshot);
+                            BulkInsertSnapshot(connection, tx, snapshot);
                             InsertManifest(connection, tx, snapshot);
-                            BulkInsertSnapshot(connection, tx, snapshot, ref totalRows, ref totalCells);
                             lookupCount += BulkInsertLookup(connection, tx, snapshot);
+                            totalRows += snapshot.RowCount;
                         }
 
                         tx.Commit();
@@ -138,7 +139,6 @@ DELETE FROM dbo.client_tdf_manifest;", connection, tx))
             {
                 Files = snapshots.Count,
                 Rows = totalRows,
-                Cells = totalCells,
                 ItemLookupRows = lookupCount,
                 Folder = folder
             };
@@ -172,9 +172,6 @@ DELETE FROM dbo.client_tdf_manifest;", connection, tx))
             snapshot.HeaderOffset = BitConverter.ToUInt32(data, 12);
             snapshot.ColumnCount = checked((int)BitConverter.ToUInt32(data, 16));
             snapshot.RowCount = checked((int)BitConverter.ToUInt32(data, 20));
-
-            if (snapshot.ColumnCount < 0 || snapshot.RowCount < 0)
-                throw new InvalidDataException(snapshot.FileName + " contains a negative table size.");
 
             var offsetTableBytes = checked((long)snapshot.ColumnCount * snapshot.RowCount * 4L);
             if (24L + offsetTableBytes > data.Length)
@@ -218,7 +215,7 @@ DELETE FROM dbo.client_tdf_manifest;", connection, tx))
             return Encoding.Unicode.GetString(data, start, end - start);
         }
 
-        private static void EnsureSchema(SqlConnection connection)
+        private static void EnsureCoreSchema(SqlConnection connection, SqlTransaction tx)
         {
             const string sql = @"
 IF OBJECT_ID(N'dbo.client_tdf_manifest', N'U') IS NULL
@@ -226,6 +223,29 @@ BEGIN
     CREATE TABLE dbo.client_tdf_manifest
     (
         FileName NVARCHAR(260) NOT NULL CONSTRAINT PK_client_tdf_manifest PRIMARY KEY,
+        TableName SYSNAME NOT NULL,
+        FileHash CHAR(64) NOT NULL,
+        HeaderBytes INT NOT NULL,
+        VersionMajor SMALLINT NOT NULL,
+        VersionMinor SMALLINT NOT NULL,
+        SourceYear SMALLINT NOT NULL,
+        SourceMonth TINYINT NOT NULL,
+        SourceDay TINYINT NOT NULL,
+        Flag BIGINT NOT NULL,
+        HeaderOffset BIGINT NOT NULL,
+        ColumnCount INT NOT NULL,
+        RowCount INT NOT NULL,
+        GlobalBaseIndex INT NULL,
+        ImportedAt DATETIME2 NOT NULL CONSTRAINT DF_client_tdf_manifest_ImportedAt DEFAULT(SYSUTCDATETIME())
+    );
+END
+ELSE IF COL_LENGTH(N'dbo.client_tdf_manifest', N'TableName') IS NULL
+BEGIN
+    DROP TABLE dbo.client_tdf_manifest;
+    CREATE TABLE dbo.client_tdf_manifest
+    (
+        FileName NVARCHAR(260) NOT NULL CONSTRAINT PK_client_tdf_manifest PRIMARY KEY,
+        TableName SYSNAME NOT NULL,
         FileHash CHAR(64) NOT NULL,
         HeaderBytes INT NOT NULL,
         VersionMajor SMALLINT NOT NULL,
@@ -242,36 +262,13 @@ BEGIN
     );
 END;
 
-IF OBJECT_ID(N'dbo.client_tdf_rows', N'U') IS NULL
-BEGIN
-    CREATE TABLE dbo.client_tdf_rows
-    (
-        FileName NVARCHAR(260) NOT NULL,
-        RowIndex INT NOT NULL,
-        ClientTableIndex INT NULL,
-        CONSTRAINT PK_client_tdf_rows PRIMARY KEY(FileName, RowIndex)
-    );
-    CREATE INDEX IX_client_tdf_rows_ClientTableIndex ON dbo.client_tdf_rows(ClientTableIndex) WHERE ClientTableIndex IS NOT NULL;
-END;
-
-IF OBJECT_ID(N'dbo.client_tdf_cells', N'U') IS NULL
-BEGIN
-    CREATE TABLE dbo.client_tdf_cells
-    (
-        FileName NVARCHAR(260) NOT NULL,
-        RowIndex INT NOT NULL,
-        ColumnIndex INT NOT NULL,
-        CellValue NVARCHAR(MAX) NULL,
-        CONSTRAINT PK_client_tdf_cells PRIMARY KEY(FileName, RowIndex, ColumnIndex)
-    );
-END;
-
 IF OBJECT_ID(N'dbo.client_item_lookup', N'U') IS NULL
 BEGIN
     CREATE TABLE dbo.client_item_lookup
     (
         ClientTableIndex INT NOT NULL CONSTRAINT PK_client_item_lookup PRIMARY KEY,
         SourceFile NVARCHAR(260) NOT NULL,
+        SourceTable SYSNAME NOT NULL,
         RowIndex INT NOT NULL,
         ItemId NVARCHAR(128) NULL,
         Category NVARCHAR(128) NULL,
@@ -279,28 +276,128 @@ BEGIN
     );
     CREATE INDEX IX_client_item_lookup_ItemId ON dbo.client_item_lookup(ItemId);
     CREATE INDEX IX_client_item_lookup_Name ON dbo.client_item_lookup(Name);
+END
+ELSE IF COL_LENGTH(N'dbo.client_item_lookup', N'SourceTable') IS NULL
+BEGIN
+    ALTER TABLE dbo.client_item_lookup ADD SourceTable SYSNAME NULL;
 END;";
 
-            using (var cmd = new SqlCommand(sql, connection))
+            using (var cmd = new SqlCommand(sql, connection, tx))
             {
                 cmd.CommandTimeout = 120;
                 cmd.ExecuteNonQuery();
             }
         }
 
+        private static void DropPreviousImportedTables(SqlConnection connection, SqlTransaction tx)
+        {
+            if (!TableHasColumn(connection, tx, "dbo.client_tdf_manifest", "TableName"))
+                return;
+
+            var tableNames = new List<string>();
+            using (var cmd = new SqlCommand("SELECT TableName FROM dbo.client_tdf_manifest WHERE TableName IS NOT NULL;", connection, tx))
+            using (var reader = cmd.ExecuteReader())
+            {
+                while (reader.Read())
+                    tableNames.Add(Convert.ToString(reader.GetValue(0), CultureInfo.InvariantCulture));
+            }
+
+            foreach (var tableName in tableNames.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                if (string.IsNullOrWhiteSpace(tableName)) continue;
+                using (var cmd = new SqlCommand(
+                    "IF OBJECT_ID(N'dbo." + EscapeSqlLiteral(tableName) + "', N'U') IS NOT NULL DROP TABLE dbo." + QuoteIdentifier(tableName) + ";",
+                    connection, tx))
+                {
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
+        private static void DropLegacyGenericTables(SqlConnection connection, SqlTransaction tx)
+        {
+            const string sql = @"
+IF OBJECT_ID(N'dbo.client_tdf_cells', N'U') IS NOT NULL DROP TABLE dbo.client_tdf_cells;
+IF OBJECT_ID(N'dbo.client_tdf_rows', N'U') IS NOT NULL DROP TABLE dbo.client_tdf_rows;";
+            using (var cmd = new SqlCommand(sql, connection, tx))
+                cmd.ExecuteNonQuery();
+        }
+
+        private static bool TableHasColumn(SqlConnection connection, SqlTransaction tx, string tableName, string columnName)
+        {
+            using (var cmd = new SqlCommand("SELECT CASE WHEN COL_LENGTH(@tableName, @columnName) IS NULL THEN 0 ELSE 1 END;", connection, tx))
+            {
+                cmd.Parameters.AddWithValue("@tableName", tableName);
+                cmd.Parameters.AddWithValue("@columnName", columnName);
+                return Convert.ToInt32(cmd.ExecuteScalar(), CultureInfo.InvariantCulture) == 1;
+            }
+        }
+
+        private static void CreateSnapshotTable(SqlConnection connection, SqlTransaction tx, TdfSnapshot snapshot)
+        {
+            var sql = new StringBuilder();
+            sql.Append("CREATE TABLE dbo.").Append(QuoteIdentifier(snapshot.TableName)).AppendLine(" (");
+            sql.AppendLine("    RowIndex INT NOT NULL PRIMARY KEY,");
+            sql.AppendLine("    ClientTableIndex INT NULL,");
+            for (var i = 0; i < snapshot.ColumnCount; i++)
+            {
+                sql.Append("    ").Append(QuoteIdentifier("Col" + i.ToString("000", CultureInfo.InvariantCulture)))
+                   .Append(" NVARCHAR(MAX) NULL");
+                sql.AppendLine(i == snapshot.ColumnCount - 1 ? string.Empty : ",");
+            }
+            sql.AppendLine(");");
+
+            if (snapshot.GlobalBaseIndex.HasValue)
+                sql.Append("CREATE UNIQUE INDEX ").Append(QuoteIdentifier("IX_" + snapshot.TableName + "_ClientTableIndex"))
+                   .Append(" ON dbo.").Append(QuoteIdentifier(snapshot.TableName)).AppendLine("(ClientTableIndex);");
+
+            using (var cmd = new SqlCommand(sql.ToString(), connection, tx))
+            {
+                cmd.CommandTimeout = 120;
+                cmd.ExecuteNonQuery();
+            }
+        }
+
+        private static void BulkInsertSnapshot(SqlConnection connection, SqlTransaction tx, TdfSnapshot snapshot)
+        {
+            var table = new DataTable();
+            table.Columns.Add("RowIndex", typeof(int));
+            table.Columns.Add("ClientTableIndex", typeof(int));
+            for (var i = 0; i < snapshot.ColumnCount; i++)
+                table.Columns.Add("Col" + i.ToString("000", CultureInfo.InvariantCulture), typeof(string));
+
+            for (var rowIndex = 0; rowIndex < snapshot.Rows.Count; rowIndex++)
+            {
+                var values = new object[snapshot.ColumnCount + 2];
+                values[0] = rowIndex;
+                values[1] = snapshot.GlobalBaseIndex.HasValue
+                    ? (object)checked(snapshot.GlobalBaseIndex.Value + rowIndex)
+                    : DBNull.Value;
+
+                var source = snapshot.Rows[rowIndex];
+                for (var columnIndex = 0; columnIndex < snapshot.ColumnCount; columnIndex++)
+                    values[columnIndex + 2] = (object)source[columnIndex] ?? DBNull.Value;
+
+                table.Rows.Add(values);
+            }
+
+            BulkCopy(connection, tx, "dbo." + QuoteIdentifier(snapshot.TableName), table);
+        }
+
         private static void InsertManifest(SqlConnection connection, SqlTransaction tx, TdfSnapshot snapshot)
         {
             const string sql = @"
 INSERT INTO dbo.client_tdf_manifest
-(FileName, FileHash, HeaderBytes, VersionMajor, VersionMinor, SourceYear, SourceMonth, SourceDay,
+(FileName, TableName, FileHash, HeaderBytes, VersionMajor, VersionMinor, SourceYear, SourceMonth, SourceDay,
  Flag, HeaderOffset, ColumnCount, RowCount, GlobalBaseIndex, ImportedAt)
 VALUES
-(@FileName, @FileHash, @HeaderBytes, @VersionMajor, @VersionMinor, @SourceYear, @SourceMonth, @SourceDay,
+(@FileName, @TableName, @FileHash, @HeaderBytes, @VersionMajor, @VersionMinor, @SourceYear, @SourceMonth, @SourceDay,
  @Flag, @HeaderOffset, @ColumnCount, @RowCount, @GlobalBaseIndex, SYSUTCDATETIME());";
 
             using (var cmd = new SqlCommand(sql, connection, tx))
             {
                 cmd.Parameters.AddWithValue("@FileName", snapshot.FileName);
+                cmd.Parameters.AddWithValue("@TableName", snapshot.TableName);
                 cmd.Parameters.AddWithValue("@FileHash", snapshot.Hash);
                 cmd.Parameters.AddWithValue("@HeaderBytes", snapshot.HeaderBytes);
                 cmd.Parameters.AddWithValue("@VersionMajor", snapshot.VersionMajor);
@@ -317,38 +414,6 @@ VALUES
             }
         }
 
-        private static void BulkInsertSnapshot(SqlConnection connection, SqlTransaction tx, TdfSnapshot snapshot,
-            ref long totalRows, ref long totalCells)
-        {
-            var rows = new DataTable();
-            rows.Columns.Add("FileName", typeof(string));
-            rows.Columns.Add("RowIndex", typeof(int));
-            rows.Columns.Add("ClientTableIndex", typeof(int));
-
-            var cells = new DataTable();
-            cells.Columns.Add("FileName", typeof(string));
-            cells.Columns.Add("RowIndex", typeof(int));
-            cells.Columns.Add("ColumnIndex", typeof(int));
-            cells.Columns.Add("CellValue", typeof(string));
-
-            for (var rowIndex = 0; rowIndex < snapshot.Rows.Count; rowIndex++)
-            {
-                var tableIndex = snapshot.GlobalBaseIndex.HasValue
-                    ? (object)checked(snapshot.GlobalBaseIndex.Value + rowIndex)
-                    : DBNull.Value;
-                rows.Rows.Add(snapshot.FileName, rowIndex, tableIndex);
-
-                var row = snapshot.Rows[rowIndex];
-                for (var columnIndex = 0; columnIndex < row.Length; columnIndex++)
-                    cells.Rows.Add(snapshot.FileName, rowIndex, columnIndex, (object)row[columnIndex] ?? DBNull.Value);
-            }
-
-            BulkCopy(connection, tx, "dbo.client_tdf_rows", rows);
-            BulkCopy(connection, tx, "dbo.client_tdf_cells", cells);
-            totalRows += rows.Rows.Count;
-            totalCells += cells.Rows.Count;
-        }
-
         private static int BulkInsertLookup(SqlConnection connection, SqlTransaction tx, TdfSnapshot snapshot)
         {
             var baseName = Path.GetFileName(snapshot.FileName);
@@ -360,6 +425,7 @@ VALUES
             var table = new DataTable();
             table.Columns.Add("ClientTableIndex", typeof(int));
             table.Columns.Add("SourceFile", typeof(string));
+            table.Columns.Add("SourceTable", typeof(string));
             table.Columns.Add("RowIndex", typeof(int));
             table.Columns.Add("ItemId", typeof(string));
             table.Columns.Add("Category", typeof(string));
@@ -385,8 +451,14 @@ VALUES
                     name = GetCell(row, 2);
                 }
 
-                table.Rows.Add(checked(snapshot.GlobalBaseIndex.Value + rowIndex), snapshot.FileName, rowIndex,
-                    DbText(id), DbText(category), DbText(name));
+                table.Rows.Add(
+                    checked(snapshot.GlobalBaseIndex.Value + rowIndex),
+                    snapshot.FileName,
+                    snapshot.TableName,
+                    rowIndex,
+                    DbText(id),
+                    DbText(category),
+                    DbText(name));
             }
 
             BulkCopy(connection, tx, "dbo.client_item_lookup", table);
@@ -410,12 +482,46 @@ VALUES
             using (var bulk = new SqlBulkCopy(connection, SqlBulkCopyOptions.TableLock, tx))
             {
                 bulk.DestinationTableName = destination;
-                bulk.BatchSize = 5000;
-                bulk.BulkCopyTimeout = 180;
+                bulk.BatchSize = 2000;
+                bulk.BulkCopyTimeout = 300;
                 foreach (DataColumn column in table.Columns)
                     bulk.ColumnMappings.Add(column.ColumnName, column.ColumnName);
                 bulk.WriteToServer(table);
             }
+        }
+
+        private static string BuildUniqueTableName(string fileName, ISet<string> used)
+        {
+            var stem = Path.GetFileNameWithoutExtension(fileName) ?? "Tdf";
+            if (stem.EndsWith("_Client", StringComparison.OrdinalIgnoreCase))
+                stem = stem.Substring(0, stem.Length - "_Client".Length);
+            else if (stem.EndsWith("Client", StringComparison.OrdinalIgnoreCase))
+                stem = stem.Substring(0, stem.Length - "Client".Length);
+
+            var clean = new StringBuilder();
+            foreach (var ch in stem)
+                clean.Append(char.IsLetterOrDigit(ch) || ch == '_' ? ch : '_');
+
+            var root = "client_" + clean.ToString().Trim('_');
+            if (root.Length > 110) root = root.Substring(0, 110);
+            var candidate = root;
+            var suffix = 2;
+            while (!used.Add(candidate))
+            {
+                candidate = root + "_" + suffix.ToString(CultureInfo.InvariantCulture);
+                suffix++;
+            }
+            return candidate;
+        }
+
+        private static string QuoteIdentifier(string value)
+        {
+            return "[" + (value ?? string.Empty).Replace("]", "]]" ) + "]";
+        }
+
+        private static string EscapeSqlLiteral(string value)
+        {
+            return (value ?? string.Empty).Replace("'", "''");
         }
 
         private static string MakeRelativePath(string root, string path)
