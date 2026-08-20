@@ -17,6 +17,7 @@ namespace GameServer.Network.Handlers.Dealership
     {
         // Confirmed from a real client purchase of Mittron Fuel (5L):
         // protocol TableIndex = 0x580 + (zero-based UseItems.xml index + 1).
+        // Vehicle keys are special: their pc_XXXX ItemId contains the client key index.
         private const int UseItemProtocolBase = 0x580;
 
         [Packet(Packets.CmdBuyCar)]
@@ -267,7 +268,24 @@ namespace GameServer.Network.Handlers.Dealership
 
                 keyCatalogIndex = i;
                 keyUseItemIndex = i - firstUseItemCatalogIndex;
-                keyProtocolTableIndex = checked(UseItemProtocolBase + keyUseItemIndex + 1);
+
+                var xmlOrdinalProtocolIndex = checked(UseItemProtocolBase + keyUseItemIndex + 1);
+                int keyIdNumber;
+                if (TryGetVehicleKeyNumber(useItem.Id, out keyIdNumber))
+                    keyProtocolTableIndex = checked(UseItemProtocolBase + keyIdNumber + 1);
+                else
+                    keyProtocolTableIndex = xmlOrdinalProtocolIndex;
+
+                Log.Info(
+                    "Vehicle key protocol mapping: CarType={0} ItemId={1} Name='{2}' XmlUseItemIndex={3} XmlProtocol={4} KeyIdNumber={5} SelectedProtocol={6}",
+                    vehicle.CarType,
+                    useItem.Id,
+                    useItem.Name,
+                    keyUseItemIndex,
+                    xmlOrdinalProtocolIndex,
+                    keyIdNumber,
+                    keyProtocolTableIndex);
+
                 keyData = useItem;
                 break;
             }
@@ -299,6 +317,28 @@ namespace GameServer.Network.Handlers.Dealership
                 grantedKey.InventoryIndex);
 
             return true;
+        }
+
+        private static bool TryGetVehicleKeyNumber(string itemId, out int keyNumber)
+        {
+            keyNumber = -1;
+            if (string.IsNullOrWhiteSpace(itemId) ||
+                !itemId.StartsWith("pc_", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            var start = 3;
+            var end = start;
+            while (end < itemId.Length && char.IsDigit(itemId[end]))
+                end++;
+
+            if (end == start)
+                return false;
+
+            return int.TryParse(
+                itemId.Substring(start, end - start),
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out keyNumber);
         }
 
         private static int FindFirstUseItemCatalogIndex()
