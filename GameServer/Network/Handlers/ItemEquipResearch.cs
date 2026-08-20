@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using GameServer.Network.Handlers.Dealership;
 using Shared.Models;
 using Shared.Network;
 using Shared.Network.GameServer;
@@ -76,10 +77,6 @@ namespace GameServer.Network.Handlers
             if (raw.Length >= 8) b = BitConverter.ToUInt32(raw, 4);
             if (raw.Length >= 12) c = BitConverter.ToUInt32(raw, 8);
 
-            // Confirmed from the dealership sale flow:
-            //   a = InventoryIndex of the equipped part
-            //   b = CarId whose part is being unequipped
-            // The car can be non-active, so never restrict this lookup to ActiveCar.
             var targetCarId = raw.Length >= 8 && b != 0
                 ? b
                 : character.ActiveCar != null ? character.ActiveCar.CarId : 0u;
@@ -90,17 +87,14 @@ namespace GameServer.Network.Handlers
 
             InventoryItem item = equipped.FirstOrDefault(x => x.InventoryIndex == a);
             if (item == null) item = equipped.FirstOrDefault(x => x.Slot == a);
-
             if (item == null && raw.Length >= 12 && c != targetCarId)
                 item = equipped.FirstOrDefault(x => x.InventoryIndex == c || x.Slot == c);
-
             if (item == null && equipped.Count == 1)
                 item = equipped[0];
 
             if (item == null)
             {
-                Log.Warning(
-                    "CmdUnEquipItem: could not resolve equipped item from payload a={0} b={1} c={2} TargetCarId={3} Candidates={4}.",
+                Log.Warning("CmdUnEquipItem: could not resolve equipped item from payload a={0} b={1} c={2} TargetCarId={3} Candidates={4}.",
                     a, b, c, targetCarId, equipped.Count);
                 return;
             }
@@ -108,11 +102,6 @@ namespace GameServer.Network.Handlers
             using (var connection = GameServer.Instance.Database.Connection)
             {
                 var previousCarId = item.CarId;
-
-                // Once the part is unequipped it must no longer carry any transient association
-                // to the old vehicle in packets sent back to the client. Keeping LastCarId set to
-                // the vehicle being sold leaves the dealership client-side validation thinking
-                // that the part is still attached and it never proceeds to CmdSellCar.
                 item.LastCarId = 0;
                 item.CarId = 0;
                 item.State = 0;
@@ -121,14 +110,10 @@ namespace GameServer.Network.Handlers
                 ItemModel.Update(connection, item);
                 character.AddItemMod(item, true);
 
-                Log.Info(
-                    "Item unequipped: InvenIdx={0} TableIndex={1} PreviousCarId={2} TargetCarId={3} -> CarId=0 LastCarId=0 State=0 Slot=0",
+                Log.Info("Item unequipped: InvenIdx={0} TableIndex={1} PreviousCarId={2} TargetCarId={3} -> CarId=0 LastCarId=0 State=0 Slot=0",
                     item.InventoryIndex, item.TableIndex, previousCarId, targetCarId);
             }
 
-            // Keep both inventory synchronization paths in agreement. The dealership performs a
-            // burst of CmdUnEquipItem packets and expects each part to be visibly detached before
-            // it submits CmdSellCar.
             ResyncInventory(packet, character);
             character.FlushItemModBuffer(packet.Sender);
             CheckStat.Handle(packet);
@@ -136,6 +121,16 @@ namespace GameServer.Network.Handlers
             var remainingOnCar = character.InventoryItems.Count(x =>
                 x != null && x.State == 1 && x.CarId == targetCarId);
             Log.Info("CmdUnEquipItem complete: TargetCarId={0} RemainingEquipped={1}", targetCarId, remainingOnCar);
+
+            // In the dealership sale flow the client does not send CmdSellCar after it has asked
+            // the server to unequip the last part from a non-active vehicle. Finish the sale here
+            // so the UI does not remain locked on the selected vehicle.
+            var activeCarId = character.ActiveCar == null ? 0u : character.ActiveCar.CarId;
+            if (remainingOnCar == 0 && targetCarId != 0 &&
+                targetCarId != character.ActiveVehicleId && targetCarId != activeCarId)
+            {
+                SellCar.AutoCompleteAfterUnequip(packet, character, targetCarId);
+            }
         }
 
         private static void ResyncInventory(Packet packet, Shared.Objects.Character character)
