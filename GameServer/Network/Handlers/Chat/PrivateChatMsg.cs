@@ -11,6 +11,42 @@ namespace GameServer.Network.Handlers
 {
     public class PrivateChatMsg
     {
+        private static readonly object ProbeSync = new object();
+        private static string _deliveryMode = "whisper";
+
+        public static string DeliveryMode
+        {
+            get
+            {
+                lock (ProbeSync)
+                    return _deliveryMode;
+            }
+        }
+
+        public static bool ConfigureDeliveryMode(string mode)
+        {
+            if (string.IsNullOrWhiteSpace(mode))
+                return false;
+
+            mode = mode.Trim().ToLowerInvariant();
+            switch (mode)
+            {
+                case "whisper":
+                case "private":
+                case "normal":
+                case "channel":
+                case "149":
+                case "off":
+                    lock (ProbeSync)
+                        _deliveryMode = mode;
+                    WriteWhisperResearch("PROBE_MODE", 0, 0, null, null, null, null,
+                        "mode=" + mode);
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
         [Packet(Packets.CmdWhisper)]
         public static void Whisper(Packet packet)
         {
@@ -19,7 +55,7 @@ namespace GameServer.Network.Handlers
 
             var senderCharacter = packet.Sender.User.ActiveCharacter;
             WriteWhisperResearch("IN148", packet.Sender.User.VehicleSerial, 0,
-                senderCharacter.Name, null, null, packet);
+                senderCharacter.Name, null, null, packet, "mode=" + DeliveryMode);
 
             var stream = packet.Reader.BaseStream;
             string targetName;
@@ -31,7 +67,7 @@ namespace GameServer.Network.Handlers
             {
                 Log.Warning("CmdWhisper: failed to read target from {0}: {1}", senderCharacter.Name, ex.Message);
                 WriteWhisperResearch("PARSE_TARGET_ERROR", packet.Sender.User.VehicleSerial, 0,
-                    senderCharacter.Name, null, ex.Message, packet);
+                    senderCharacter.Name, null, ex.Message, packet, null);
                 return;
             }
 
@@ -41,17 +77,29 @@ namespace GameServer.Network.Handlers
 
             senderCharacter.LastMessageFrom = targetName;
 
+            var targetEndOffset = stream.CanSeek ? stream.Position : -1;
             string message;
-            if (!TryReadTrailingUnicodeMessage(stream, out message) || string.IsNullOrEmpty(message))
+            long messagePrefixOffset;
+            if (!TryReadTrailingUnicodeMessage(stream, out message, out messagePrefixOffset) || string.IsNullOrEmpty(message))
             {
                 Log.Debug("Whisper target selected without message: {0} -> {1}", senderCharacter.Name, targetName);
                 WriteWhisperResearch("NO_MESSAGE", packet.Sender.User.VehicleSerial, 0,
-                    senderCharacter.Name, targetName, null, packet);
+                    senderCharacter.Name, targetName, null, packet,
+                    "targetEnd=" + targetEndOffset);
                 return;
             }
 
+            var metadataBytes = targetEndOffset >= 0 && messagePrefixOffset >= targetEndOffset
+                ? messagePrefixOffset - targetEndOffset
+                : -1;
+
             WriteWhisperResearch("PARSED148", packet.Sender.User.VehicleSerial, 0,
-                senderCharacter.Name, targetName, message, packet);
+                senderCharacter.Name, targetName, message, packet,
+                "targetEnd=" + targetEndOffset +
+                " messagePrefix=" + messagePrefixOffset +
+                " metadataBytes=" + metadataBytes +
+                " mode=" + DeliveryMode);
+
             SendPrivate(packet, targetName, message);
         }
 
@@ -62,7 +110,9 @@ namespace GameServer.Network.Handlers
                 return;
 
             WriteWhisperResearch("IN149", packet.Sender.User.VehicleSerial, 0,
-                packet.Sender.User.ActiveCharacter.Name, packet.Sender.User.ActiveCharacter.LastMessageFrom, null, packet);
+                packet.Sender.User.ActiveCharacter.Name,
+                packet.Sender.User.ActiveCharacter.LastMessageFrom, null, packet,
+                "mode=" + DeliveryMode);
 
             var targetName = packet.Sender.User.ActiveCharacter.LastMessageFrom;
             string message;
@@ -74,6 +124,8 @@ namespace GameServer.Network.Handlers
             {
                 Log.Warning("CmdPrivateChatMsg: failed to read message from {0}: {1}",
                     packet.Sender.User.ActiveCharacter.Name, ex.Message);
+                WriteWhisperResearch("PARSE149_ERROR", packet.Sender.User.VehicleSerial, 0,
+                    packet.Sender.User.ActiveCharacter.Name, targetName, ex.Message, packet, null);
                 return;
             }
 
@@ -83,6 +135,8 @@ namespace GameServer.Network.Handlers
                 return;
             }
 
+            WriteWhisperResearch("PARSED149", packet.Sender.User.VehicleSerial, 0,
+                packet.Sender.User.ActiveCharacter.Name, targetName, message, packet, null);
             SendPrivate(packet, targetName, message);
         }
 
@@ -98,9 +152,10 @@ namespace GameServer.Network.Handlers
             return sb.ToString();
         }
 
-        private static bool TryReadTrailingUnicodeMessage(Stream stream, out string message)
+        private static bool TryReadTrailingUnicodeMessage(Stream stream, out string message, out long prefixOffset)
         {
             message = null;
+            prefixOffset = -1;
             if (stream == null || !stream.CanSeek) return false;
 
             var original = stream.Position;
@@ -128,6 +183,7 @@ namespace GameServer.Network.Handlers
                         return false;
 
                     message = Encoding.Unicode.GetString(bytes).TrimEnd('\0');
+                    prefixOffset = pos;
                     return true;
                 }
 
@@ -159,7 +215,7 @@ namespace GameServer.Network.Handlers
             if (target == null)
             {
                 WriteWhisperResearch("TARGET_OFFLINE", packet.Sender.User.VehicleSerial, 0,
-                    senderCharacter.Name, targetName, message, packet);
+                    senderCharacter.Name, targetName, message, packet, null);
                 packet.Sender.SendError(targetName + " is offline.");
                 return;
             }
@@ -168,30 +224,57 @@ namespace GameServer.Network.Handlers
             if (packet.Sender.User.GmFlag)
                 senderName = "GM " + senderName;
 
-            var ack = new ChatMessageAnswer
+            var mode = DeliveryMode;
+            if (mode == "off")
             {
-                MessageType = "whisper",
-                SenderCharacterName = senderName,
-                Message = message ?? string.Empty
-            }.CreatePacket();
+                WriteWhisperResearch("DELIVERY_DISABLED", packet.Sender.User.VehicleSerial,
+                    target.User.VehicleSerial, senderCharacter.Name,
+                    target.User.ActiveCharacter.Name, message, null, "mode=off");
+                return;
+            }
 
-            WriteWhisperResearch("OUT147_WHISPER", packet.Sender.User.VehicleSerial,
-                target.User.VehicleSerial, senderCharacter.Name, target.User.ActiveCharacter.Name, message, ack);
-            target.Send(ack);
+            Packet outgoing;
+            string stage;
+
+            if (mode == "149")
+            {
+                outgoing = new Packet(Packets.CmdPrivateChatMsg);
+                outgoing.Writer.WriteUnicodeStatic(senderName, 21, true);
+                outgoing.Writer.WriteUnicode(message ?? string.Empty);
+                stage = "OUT149";
+            }
+            else
+            {
+                outgoing = new ChatMessageAnswer
+                {
+                    MessageType = mode,
+                    SenderCharacterName = senderName,
+                    Message = message ?? string.Empty
+                }.CreatePacket();
+                stage = "OUT147_" + mode.ToUpperInvariant();
+            }
+
+            WriteWhisperResearch(stage, packet.Sender.User.VehicleSerial,
+                target.User.VehicleSerial, senderCharacter.Name,
+                target.User.ActiveCharacter.Name, message, outgoing,
+                "mode=" + mode);
+            target.Send(outgoing);
 
             senderCharacter.LastMessageFrom = target.User.ActiveCharacter.Name;
             target.User.ActiveCharacter.LastMessageFrom = senderCharacter.Name;
 
-            Log.Debug("Whisper delivered: <{0}> -> <{1}> {2}", senderCharacter.Name,
-                target.User.ActiveCharacter.Name, message);
+            Log.Debug("Whisper delivered mode={0}: <{1}> -> <{2}> {3}", mode,
+                senderCharacter.Name, target.User.ActiveCharacter.Name, message);
         }
 
         private static void WriteWhisperResearch(string stage, ushort sourceSerial, ushort targetSerial,
-            string sender, string target, string message, Packet packet)
+            string sender, string target, string message, Packet packet, string detail)
         {
             try
             {
-                var dir = Path.Combine("Logs", "Research");
+                var root = AppDomain.CurrentDomain.BaseDirectory;
+                var dir = Path.Combine(root, "Logs", DateTime.Now.ToString("yyyy-MM-dd"),
+                    "GameServer", "Research");
                 Directory.CreateDirectory(dir);
                 var path = Path.Combine(dir, "WhisperProtocol.txt");
                 var hex = packet == null || packet.Buffer == null
@@ -199,15 +282,18 @@ namespace GameServer.Network.Handlers
                     : BinaryWriterExt.HexDump(packet.Buffer);
 
                 var text = string.Format(
-                    "{0:O} {1} sourceSerial={2} targetSerial={3} sender='{4}' target='{5}' message='{6}' len={7}{8}{9}{8}{8}",
+                    "{0:O} {1} sourceSerial={2} targetSerial={3} sender='{4}' target='{5}' message='{6}' len={7} detail='{8}'{9}{10}{9}{9}",
                     DateTime.UtcNow, stage, sourceSerial, targetSerial,
                     sender ?? string.Empty, target ?? string.Empty, message ?? string.Empty,
                     packet == null || packet.Buffer == null ? 0 : packet.Buffer.Length,
+                    detail ?? string.Empty,
                     Environment.NewLine, hex);
-                File.AppendAllText(path, text);
+
+                File.AppendAllText(path, text, Encoding.UTF8);
             }
             catch
             {
+                // Research logging must never affect chat delivery.
             }
         }
     }
