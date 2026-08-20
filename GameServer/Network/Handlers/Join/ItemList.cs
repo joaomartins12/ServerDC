@@ -3,6 +3,7 @@ using Shared;
 using Shared.Models;
 using Shared.Network;
 using Shared.Network.GameServer;
+using Shared.Objects.GameDatas;
 using Shared.Util;
 
 namespace GameServer.Network.Handlers.Join
@@ -26,6 +27,7 @@ namespace GameServer.Network.Handlers.Join
             using (var connection = GameServer.Instance.Database.Connection)
             {
                 var items = ItemModel.RetrieveAll(connection, character.Id);
+                var firstUseItemIndex = FindFirstUseItemCatalogIndex();
 
                 character.InventoryItems.Clear();
                 character.InventoryItems.AddRange(items);
@@ -36,17 +38,49 @@ namespace GameServer.Network.Handlers.Join
                     string itemId = "UNKNOWN";
                     string itemName = "UNKNOWN";
                     string category = "UNKNOWN";
-                    Shared.Objects.GameDatas.BasicItem definition = null;
+                    BasicItem definition = null;
 
-                    if (ServerMain.Items != null && inventoryItem.TableIndex >= 0 && inventoryItem.TableIndex < ServerMain.Items.Count)
+                    // Keys are UseItems. Older builds persisted the index from the merged
+                    // ServerMain.Items catalog (804/805/...), but the protocol expects the
+                    // index local to UseItems.xml (7/8/...). Repair those rows on load.
+                    if (firstUseItemIndex >= 0 && inventoryItem.CarId != 0 && inventoryItem.State == 0)
+                    {
+                        if (inventoryItem.TableIndex >= firstUseItemIndex &&
+                            inventoryItem.TableIndex < ServerMain.Items.Count &&
+                            IsVehicleKey(ServerMain.Items[inventoryItem.TableIndex]))
+                        {
+                            var oldTableIndex = inventoryItem.TableIndex;
+                            inventoryItem.TableIndex = oldTableIndex - firstUseItemIndex;
+                            ItemModel.Update(connection, inventoryItem);
+                            Log.Info(
+                                "Vehicle key protocol-index migration: DbId={0} CarId={1} OldMergedIndex={2} NewUseItemIndex={3}",
+                                inventoryItem.DbId,
+                                inventoryItem.CarId,
+                                oldTableIndex,
+                                inventoryItem.TableIndex);
+                        }
+
+                        var useItemCatalogIndex = firstUseItemIndex + inventoryItem.TableIndex;
+                        if (inventoryItem.TableIndex >= 0 &&
+                            useItemCatalogIndex >= firstUseItemIndex &&
+                            useItemCatalogIndex < ServerMain.Items.Count &&
+                            IsVehicleKey(ServerMain.Items[useItemCatalogIndex]))
+                        {
+                            definition = ServerMain.Items[useItemCatalogIndex];
+                        }
+                    }
+
+                    if (definition == null && ServerMain.Items != null &&
+                        inventoryItem.TableIndex >= 0 && inventoryItem.TableIndex < ServerMain.Items.Count)
                     {
                         definition = ServerMain.Items[inventoryItem.TableIndex];
-                        if (definition != null)
-                        {
-                            itemId = definition.Id ?? "UNKNOWN";
-                            itemName = definition.Name ?? "UNKNOWN";
-                            category = definition.Category ?? "UNKNOWN";
-                        }
+                    }
+
+                    if (definition != null)
+                    {
+                        itemId = definition.Id ?? "UNKNOWN";
+                        itemName = definition.Name ?? "UNKNOWN";
+                        category = definition.Category ?? "UNKNOWN";
                     }
 
                     // Earlier server builds generated a deterministic but protocol-invalid Random
@@ -92,6 +126,28 @@ namespace GameServer.Network.Handlers.Join
                 var ack = new ItemListAnswer { InventoryItems = items.ToArray() };
                 packet.Sender.Send(ack.CreatePacket());
             }
+        }
+
+        private static int FindFirstUseItemCatalogIndex()
+        {
+            if (ServerMain.Items == null)
+                return -1;
+
+            for (var i = 0; i < ServerMain.Items.Count; i++)
+            {
+                if (ServerMain.Items[i] is UseItemTable.UseItem)
+                    return i;
+            }
+
+            return -1;
+        }
+
+        private static bool IsVehicleKey(BasicItem item)
+        {
+            if (item == null) return false;
+            if (!string.Equals((item.Category ?? string.Empty).Trim(), "car", StringComparison.OrdinalIgnoreCase))
+                return false;
+            return (item.Name ?? string.Empty).Trim().EndsWith("key", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsVehiclePart(string category)
