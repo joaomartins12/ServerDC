@@ -76,12 +76,10 @@ namespace GameServer.Network.Handlers
             if (raw.Length >= 8) b = BitConverter.ToUInt32(raw, 4);
             if (raw.Length >= 12) c = BitConverter.ToUInt32(raw, 8);
 
-            // Confirmed from the client when selling a non-active car:
-            //   a = equipped part slot/inventory selector
-            //   b = target CarId
-            // Example: a=3,b=18 means unequip slot 3 from CarId 18.
-            // Do not restrict this operation to ActiveCar; the dealership asks the client
-            // to unequip parts from the vehicle being sold, which may be non-active.
+            // Confirmed from the dealership sale flow:
+            //   a = InventoryIndex of the equipped part
+            //   b = CarId whose part is being unequipped
+            // The car can be non-active, so never restrict this lookup to ActiveCar.
             var targetCarId = raw.Length >= 8 && b != 0
                 ? b
                 : character.ActiveCar != null ? character.ActiveCar.CarId : 0u;
@@ -90,13 +88,9 @@ namespace GameServer.Network.Handlers
                 .Where(x => x != null && x.State == 1 && (targetCarId == 0 || x.CarId == targetCarId))
                 .ToList();
 
-            InventoryItem item = null;
-            item = equipped.FirstOrDefault(x => x.InventoryIndex == a);
+            InventoryItem item = equipped.FirstOrDefault(x => x.InventoryIndex == a);
             if (item == null) item = equipped.FirstOrDefault(x => x.Slot == a);
 
-            // Only treat b/c as selectors when they are not the already-resolved target CarId.
-            if (item == null && raw.Length >= 8 && b != targetCarId)
-                item = equipped.FirstOrDefault(x => x.InventoryIndex == b || x.Slot == b);
             if (item == null && raw.Length >= 12 && c != targetCarId)
                 item = equipped.FirstOrDefault(x => x.InventoryIndex == c || x.Slot == c);
 
@@ -114,20 +108,34 @@ namespace GameServer.Network.Handlers
             using (var connection = GameServer.Instance.Database.Connection)
             {
                 var previousCarId = item.CarId;
-                item.LastCarId = previousCarId;
+
+                // Once the part is unequipped it must no longer carry any transient association
+                // to the old vehicle in packets sent back to the client. Keeping LastCarId set to
+                // the vehicle being sold leaves the dealership client-side validation thinking
+                // that the part is still attached and it never proceeds to CmdSellCar.
+                item.LastCarId = 0;
                 item.CarId = 0;
                 item.State = 0;
                 item.Slot = 0;
                 item.Belonging = 0;
                 ItemModel.Update(connection, item);
+                character.AddItemMod(item, true);
 
                 Log.Info(
-                    "Item unequipped: InvenIdx={0} TableIndex={1} PreviousCarId={2} TargetCarId={3} -> CarId=0 State=0 Slot=0",
+                    "Item unequipped: InvenIdx={0} TableIndex={1} PreviousCarId={2} TargetCarId={3} -> CarId=0 LastCarId=0 State=0 Slot=0",
                     item.InventoryIndex, item.TableIndex, previousCarId, targetCarId);
             }
 
+            // Keep both inventory synchronization paths in agreement. The dealership performs a
+            // burst of CmdUnEquipItem packets and expects each part to be visibly detached before
+            // it submits CmdSellCar.
             ResyncInventory(packet, character);
+            character.FlushItemModBuffer(packet.Sender);
             CheckStat.Handle(packet);
+
+            var remainingOnCar = character.InventoryItems.Count(x =>
+                x != null && x.State == 1 && x.CarId == targetCarId);
+            Log.Info("CmdUnEquipItem complete: TargetCarId={0} RemainingEquipped={1}", targetCarId, remainingOnCar);
         }
 
         private static void ResyncInventory(Packet packet, Shared.Objects.Character character)
