@@ -107,7 +107,7 @@ namespace ServerManager
             page.Controls.Add(new Label
             {
                 AutoSize = true,
-                Text = "Global client-data import, logging and administrative synchronization",
+                Text = "Global client-data import, license catalog, logging and administrative synchronization",
                 ForeColor = MutedColor,
                 Font = new Font("Segoe UI", 9.5F),
                 Location = new Point(27, 56)
@@ -210,10 +210,115 @@ namespace ServerManager
 
             UpdateClientImportStatus(status);
 
-            var logCard = new Panel
+            var licenseStatus = new Label
+            {
+                AutoSize = false,
+                ForeColor = MutedColor,
+                Font = new Font("Segoe UI", 9F),
+                Location = new Point(20, 184),
+                Size = new Size(650, 48)
+            };
+
+            var licenseCard = new Panel
             {
                 BackColor = PanelColor,
                 Location = new Point(24, 340),
+                Size = new Size(700, 245),
+                Padding = new Padding(20)
+            };
+            licenseCard.Paint += delegate(object sender, PaintEventArgs e)
+            {
+                using (var pen = new Pen(BorderColor))
+                    e.Graphics.DrawRectangle(pen, 0, 0, licenseCard.Width - 1, licenseCard.Height - 1);
+            };
+            licenseCard.Controls.Add(new Label
+            {
+                AutoSize = true,
+                Text = "LICENSE / TITLE CATALOG",
+                ForeColor = TextColor,
+                Font = new Font("Segoe UI Semibold", 11F, FontStyle.Bold),
+                Location = new Point(20, 18)
+            });
+            licenseCard.Controls.Add(new Label
+            {
+                AutoSize = false,
+                Text = "Required client files: License.xlt, License_GC.xlt and License_ME.xlt. " +
+                       "The importer preserves every original cell in SQL Server and builds normalized license, requirement and effect tables for unlock validation.",
+                ForeColor = MutedColor,
+                Font = new Font("Segoe UI", 9F),
+                Location = new Point(20, 50),
+                Size = new Size(650, 66)
+            });
+            licenseCard.Controls.Add(new Label
+            {
+                AutoSize = false,
+                Text = "Copy the three files into the LicenseImporter folder next to DCServerManager.exe. Stop Game Server before importing.",
+                ForeColor = WarningColor,
+                Font = new Font("Segoe UI", 9F),
+                Location = new Point(20, 112),
+                Size = new Size(650, 36)
+            });
+
+            var importLicenseButton = MakeActionButton("IMPORT LICENSE XLT", new Point(20, 148), 200);
+            var openLicenseFolderButton = MakeActionButton("OPEN LICENSE FOLDER", new Point(230, 148), 210);
+            licenseCard.Controls.Add(importLicenseButton);
+            licenseCard.Controls.Add(openLicenseFolderButton);
+            licenseCard.Controls.Add(licenseStatus);
+            page.Controls.Add(licenseCard);
+
+            openLicenseFolderButton.Click += delegate
+            {
+                try
+                {
+                    var folder = LicenseDataImporter.EnsureImportDirectory();
+                    Process.Start("explorer.exe", folder);
+                }
+                catch (Exception ex)
+                {
+                    SetStatus(licenseStatus, "Could not open LicenseImporter folder: " + ex.Message, StoppedColor);
+                }
+            };
+
+            importLicenseButton.Click += async delegate
+            {
+                if (!CanImportOffline(licenseStatus)) return;
+
+                var missing = LicenseDataImporter.GetMissingRequiredFiles();
+                if (missing.Length != 0)
+                {
+                    SetStatus(licenseStatus, "Missing: " + string.Join(", ", missing) + ". Folder: " + LicenseDataImporter.ImportFolder, WarningColor);
+                    return;
+                }
+
+                importLicenseButton.Enabled = false;
+                openLicenseFolderButton.Enabled = false;
+                SetStatus(licenseStatus, "Importing license XLT data into DCServer...", WarningColor);
+
+                try
+                {
+                    var result = await Task.Run(delegate { return LicenseDataImporter.ImportAll(); });
+                    SetStatus(licenseStatus,
+                        "Imported " + result.Files + " XLT files, " + result.Licenses + " licenses, " +
+                        result.Requirements + " requirements and " + result.Effects + " effects.",
+                        RunningColor);
+                }
+                catch (Exception ex)
+                {
+                    SetStatus(licenseStatus, "License import failed: " + ex.Message, StoppedColor);
+                }
+                finally
+                {
+                    importLicenseButton.Enabled = true;
+                    openLicenseFolderButton.Enabled = true;
+                }
+            };
+
+            UpdateLicenseImportStatus(licenseStatus);
+
+            var logCard = new Panel
+            {
+                BackColor = PanelColor,
+                Location = new Point(24, 608),
                 Size = new Size(700, 130),
                 Padding = new Padding(20)
             };
@@ -300,6 +405,15 @@ namespace ServerManager
                 SetStatus(status, count + " TDF files found in Improter. Stop Game Server before importing.", RunningColor);
             else
                 SetStatus(status, "Improter folder ready. Copy the client .tdf files there.", WarningColor);
+        }
+
+        private static void UpdateLicenseImportStatus(Label status)
+        {
+            var missing = LicenseDataImporter.GetMissingRequiredFiles();
+            if (missing.Length == 0)
+                SetStatus(status, "All 3 required license XLT files are ready for import.", RunningColor);
+            else
+                SetStatus(status, "Waiting for: " + string.Join(", ", missing), WarningColor);
         }
 
         private static void SetStatus(Label label, string text, Color color)
