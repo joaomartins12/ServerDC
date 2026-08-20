@@ -4,7 +4,6 @@ using System.Data.Common;
 using MySql.Data.MySqlClient;
 using Shared.Database;
 using Shared.Objects;
-using Shared.Util;
 
 namespace Shared.Models
 {
@@ -64,8 +63,8 @@ namespace Shared.Models
                 var insertCommand = cmd;
                 item.WriteToDb(ref insertCommand);
                 var result = cmd.Execute();
-                if (result == 1 && cmd.LastInsertedId > 0)
-                    item.DbId = checked((int)cmd.LastInsertedId);
+                if (result == 1 && cmd.LastId > 0)
+                    item.DbId = checked((int)cmd.LastId);
                 return result == 1;
             }
         }
