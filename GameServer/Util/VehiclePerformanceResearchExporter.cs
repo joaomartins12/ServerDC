@@ -46,8 +46,9 @@ namespace GameServer.Util
                             "PartSpeed,PartCrash,PartAccel,PartBoost," +
                             "UserSpeed,UserCrash,UserAccel,UserBoost," +
                             "TotalSpeed,TotalCrash,TotalAccel,TotalBoost," +
-                            "Perf1,Perf2,Perf3,Perf4,VehicleSpeed,VehicleDurability,VehicleAcceleration,VehicleBoost,Perf9,Perf10," +
-                            "MitronCapacity,MitronEfficiency,PayloadBytes" + Environment.NewLine,
+                            "Perf1,Perf2,Perf3,Perf4,Perf5,Perf6,Perf7,Perf8," +
+                            "EnchantSpeed,EnchantCrash,EnchantAccel,EnchantBoost,EnchantAddSpeed," +
+                            "Drop,Exp,MitronCapacity,MitronEfficiency,Tail1,Tail2,PayloadBytes" + Environment.NewLine,
                             Encoding.UTF8);
                     }
 
@@ -85,10 +86,17 @@ namespace GameServer.Util
                         ack.VehicleDurability.ToString(CultureInfo.InvariantCulture),
                         ack.VehicleAcceleration.ToString(CultureInfo.InvariantCulture),
                         ack.VehicleBoost.ToString(CultureInfo.InvariantCulture),
-                        ack.PerformanceUnknown9.ToString(CultureInfo.InvariantCulture),
-                        ack.PerformanceUnknown10.ToString(CultureInfo.InvariantCulture),
+                        ack.Speed.ToString(CultureInfo.InvariantCulture),
+                        ack.Crash.ToString(CultureInfo.InvariantCulture),
+                        ack.Accel.ToString(CultureInfo.InvariantCulture),
+                        ack.Boost.ToString(CultureInfo.InvariantCulture),
+                        ack.AddSpeed.ToString(CultureInfo.InvariantCulture),
+                        ack.Drop.ToString(CultureInfo.InvariantCulture),
+                        ack.Exp.ToString(CultureInfo.InvariantCulture),
                         ack.MitronCapacity.ToString(CultureInfo.InvariantCulture),
                         ack.MitronEfficiency.ToString(CultureInfo.InvariantCulture),
+                        ack.TrailingUnknown1.ToString(CultureInfo.InvariantCulture),
+                        ack.TrailingUnknown2.ToString(CultureInfo.InvariantCulture),
                         payload.Length.ToString(CultureInfo.InvariantCulture)
                     });
                     File.AppendAllText(csvPath, row + Environment.NewLine, Encoding.UTF8);
@@ -105,10 +113,12 @@ namespace GameServer.Util
                     block.AppendLine("Parts      : S=" + equipped.Speed + " C=" + equipped.Crash + " A=" + equipped.Accel + " B=" + equipped.Boost);
                     block.AppendLine("User       : " + userBonus);
                     block.AppendLine("Total      : S=" + ack.TotalSpeed + " C=" + ack.TotalDurability + " A=" + ack.TotalAcceleration + " B=" + ack.TotalBoost);
-                    block.AppendLine("Perf ints  : " +
+                    block.AppendLine("Perf 0x50  : " +
                         ack.PerformanceUnknown1 + "," + ack.PerformanceUnknown2 + "," + ack.PerformanceUnknown3 + "," + ack.PerformanceUnknown4 + "," +
-                        ack.VehicleSpeed + "," + ack.VehicleDurability + "," + ack.VehicleAcceleration + "," + ack.VehicleBoost + "," +
-                        ack.PerformanceUnknown9 + "," + ack.PerformanceUnknown10);
+                        ack.VehicleSpeed + "," + ack.VehicleDurability + "," + ack.VehicleAcceleration + "," + ack.VehicleBoost);
+                    block.AppendLine("Enchant0x70: S=" + ack.Speed + " C=" + ack.Crash + " A=" + ack.Accel + " B=" + ack.Boost + " AddS=" + ack.AddSpeed +
+                                     " Drop=" + ack.Drop + " Exp=" + ack.Exp + " Capacity=" + ack.MitronCapacity + " Efficiency=" + ack.MitronEfficiency);
+                    block.AppendLine("Tail 0x94  : " + ack.TrailingUnknown1 + "," + ack.TrailingUnknown2);
                     block.AppendLine("Payload len: " + payload.Length);
                     block.AppendLine("Payload HEX:");
                     block.AppendLine(ToHex(payload));
