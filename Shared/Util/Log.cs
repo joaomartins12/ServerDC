@@ -74,10 +74,6 @@ namespace Shared.Util
             }
         }
 
-        /// <summary>
-        /// Initializes the unified Logs folder beside the running executables.
-        /// Debug builds therefore use bin\\Debug\\Logs and Release builds use bin\\Release\\Logs.
-        /// </summary>
         public static void InitializeStructuredLogging()
         {
             lock (FileLock)
@@ -136,10 +132,6 @@ namespace Shared.Util
             return Environment.CurrentDirectory;
         }
 
-        /// <summary>
-        /// Stores one exact packet as seen on the TCP wire. The supplied buffer must include
-        /// the two-byte packet length and two-byte packet id before the packet body.
-        /// </summary>
         public static void PacketTrace(string direction, int port, ushort id, byte[] wireBytes,
             string endpoint = null, string username = null, string characterName = null)
         {
@@ -236,20 +228,9 @@ namespace Shared.Util
             return value.Replace(' ', '_');
         }
 
-        public static void Info(string format, params object[] args)
-        {
-            WriteLine(LogLevel.Info, format, args);
-        }
-
-        public static void Warning(string format, params object[] args)
-        {
-            WriteLine(LogLevel.Warning, format, args);
-        }
-
-        public static void Error(string format, params object[] args)
-        {
-            WriteLine(LogLevel.Error, format, args);
-        }
+        public static void Info(string format, params object[] args) { WriteLine(LogLevel.Info, format, args); }
+        public static void Warning(string format, params object[] args) { WriteLine(LogLevel.Warning, format, args); }
+        public static void Error(string format, params object[] args) { WriteLine(LogLevel.Error, format, args); }
 
         public static void Debug(string format, params object[] args)
         {
@@ -258,15 +239,8 @@ namespace Shared.Util
 #endif
         }
 
-        public static void Debug(object obj)
-        {
-            WriteLine(LogLevel.Debug, obj.ToString());
-        }
-
-        public static void Status(string format, params object[] args)
-        {
-            WriteLine(LogLevel.Status, format, args);
-        }
+        public static void Debug(object obj) { WriteLine(LogLevel.Debug, obj.ToString()); }
+        public static void Status(string format, params object[] args) { WriteLine(LogLevel.Status, format, args); }
 
         public static void Exception(Exception ex, string description = null, params object[] args)
         {
@@ -281,34 +255,18 @@ namespace Shared.Util
             WriteLine(LogLevel.Exception, ex.ToString());
         }
 
-        public static void Unimplemented(string format, params object[] args)
-        {
-            WriteLine(LogLevel.Unimplemented, format, args);
-        }
+        public static void Unimplemented(string format, params object[] args) { WriteLine(LogLevel.Unimplemented, format, args); }
 
         public static void Progress(int current, int max)
         {
             var donePerc = 100f / max * current;
             var done = (int)Math.Min(20, Math.Ceiling(20f / max * current));
-
-            Write(LogLevel.Info, false, "[" + "".PadRight(done, '#') + "".PadLeft(20 - done, '.') + "] {0,5:0.0}%\r",
-                donePerc);
+            Write(LogLevel.Info, false, "[" + "".PadRight(done, '#') + "".PadLeft(20 - done, '.') + "] {0,5:0.0}%\r", donePerc);
         }
 
-        public static void WriteLine(LogLevel level, string format, params object[] args)
-        {
-            Write(level, format + Environment.NewLine, args);
-        }
-
-        public static void WriteLine()
-        {
-            WriteLine(LogLevel.None, "");
-        }
-
-        public static void Write(LogLevel level, string format, params object[] args)
-        {
-            Write(level, true, format, args);
-        }
+        public static void WriteLine(LogLevel level, string format, params object[] args) { Write(level, format + Environment.NewLine, args); }
+        public static void WriteLine() { WriteLine(LogLevel.None, ""); }
+        public static void Write(LogLevel level, string format, params object[] args) { Write(level, true, format, args); }
 
         private static void Write(LogLevel level, bool toFile, string format, params object[] args)
         {
@@ -317,6 +275,8 @@ namespace Shared.Util
                 try { InitializeStructuredLogging(); }
                 catch { }
             }
+
+            var now = DateTime.Now;
 
             lock (Console.Out)
             {
@@ -338,7 +298,10 @@ namespace Shared.Util
                     catch { }
 
                     if (level != LogLevel.None)
+                    {
+                        Console.Write("[{0:HH:mm:ss.fff}] ", now);
                         Console.Write("[{0}]", level);
+                    }
 
                     try { Console.ForegroundColor = ConsoleColor.Gray; } catch { }
 
@@ -356,7 +319,7 @@ namespace Shared.Util
             {
                 using (var file = new StreamWriter(_logFile, true, Encoding.UTF8))
                 {
-                    file.Write("{0:yyyy-MM-dd HH:mm:ss.fff} ", DateTime.Now);
+                    file.Write("{0:yyyy-MM-dd HH:mm:ss.fff} ", now);
                     if (level != LogLevel.None)
                         file.Write("[{0}] - ", level);
                     file.Write(format, args);
