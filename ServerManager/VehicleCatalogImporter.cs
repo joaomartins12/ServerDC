@@ -145,6 +145,7 @@ BEGIN
         BaseBoost INT NULL,
         RequiredLevel INT NULL,
         Level INT NULL,
+        KeyItemId VARCHAR(32) NULL,
         IsEnabled BIT NOT NULL CONSTRAINT DF_vehicle_catalog_IsEnabled DEFAULT(1),
         ServerBuyPrice INT NULL,
         ServerSellPrice INT NULL,
@@ -154,6 +155,11 @@ BEGIN
     CREATE UNIQUE INDEX UX_vehicle_catalog_RuntimeIndex ON dbo.vehicle_catalog(RuntimeIndex) WHERE RuntimeIndex IS NOT NULL;
     CREATE INDEX IX_vehicle_catalog_Name ON dbo.vehicle_catalog(Name);
     CREATE INDEX IX_vehicle_catalog_TypeString ON dbo.vehicle_catalog(TypeString);
+END
+ELSE
+BEGIN
+    IF COL_LENGTH(N'dbo.vehicle_catalog', N'KeyItemId') IS NULL
+        ALTER TABLE dbo.vehicle_catalog ADD KeyItemId VARCHAR(32) NULL;
 END;
 
 IF OBJECT_ID(N'dbo.vehicle_upgrade_catalog', N'U') IS NULL
