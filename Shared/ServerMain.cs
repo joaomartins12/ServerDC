@@ -158,9 +158,9 @@ ON target.CID = source.CID AND target.LicenseId = source.LicenseId
 WHEN NOT MATCHED THEN
     INSERT (CID, LicenseId, UnlockedDate, IsNew) VALUES (source.CID, source.LicenseId, 0, 0);
 
--- Dynamic SQL is required here. SQL Server compiles a batch before executing the
--- conditional ALTER TABLE statements, so a direct reference to a newly-added column
--- fails on the first startup of an existing database with "Invalid column name".
+-- Dynamic SQL is required here because SQL Server compiles a batch before executing
+-- conditional ALTER TABLE statements. A direct reference to the newly-added column
+-- would fail on the first startup of an existing database.
 EXEC(N'UPDATE dbo.characters SET CurrentLicenseId = 7000 WHERE CurrentLicenseId IS NULL OR CurrentLicenseId <= 0');
 
 EXEC sys.sp_releaseapplock
