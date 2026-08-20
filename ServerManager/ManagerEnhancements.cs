@@ -2,16 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
-using System.IO;
 using System.Reflection;
 using System.Windows.Forms;
 
 namespace ServerManager
 {
-    /// <summary>
-    /// Extra manager UI kept separate from MainForm. Provides the Settings page
-    /// and a robust repaint workaround for hidden RichTextBox log pages.
-    /// </summary>
     internal static class ManagerEnhancements
     {
         private static readonly Color BackgroundColor = Color.FromArgb(9, 11, 14);
@@ -27,7 +22,6 @@ namespace ServerManager
         public static void Attach(MainForm form)
         {
             if (form == null) return;
-
             var tabStrip = GetPrivateField<FlowLayoutPanel>(form, "_tabStrip");
             var logContent = GetPrivateField<Panel>(form, "_logContent");
             if (tabStrip == null || logContent == null) return;
@@ -49,31 +43,25 @@ namespace ServerManager
             foreach (Control control in tabStrip.Controls)
             {
                 var button = control as Button;
-                if (button == null || button == settingsButton) continue;
-                button.Click += serverTabRefresh;
+                if (button != null && button != settingsButton) button.Click += serverTabRefresh;
             }
 
             tabStrip.ControlAdded += delegate(object sender, ControlEventArgs args)
             {
                 var button = args.Control as Button;
-                if (button == null || button == settingsButton) return;
-                button.Click += serverTabRefresh;
+                if (button != null && button != settingsButton) button.Click += serverTabRefresh;
             };
 
             settingsButton.Click += delegate
             {
-                foreach (Control control in logContent.Controls)
-                    control.Visible = false;
-
+                foreach (Control control in logContent.Controls) control.Visible = false;
                 foreach (Control control in tabStrip.Controls)
                 {
                     var button = control as Button;
                     if (button != null) StyleTab(button, button == settingsButton);
                 }
-
                 settingsPage.Visible = true;
                 settingsPage.BringToFront();
-                settingsPage.PerformLayout();
                 settingsPage.Invalidate(true);
                 settingsPage.Update();
             };
@@ -83,17 +71,10 @@ namespace ServerManager
         {
             var button = new Button
             {
-                Text = "Settings",
-                Width = 130,
-                Height = 37,
-                Margin = new Padding(0),
-                FlatStyle = FlatStyle.Flat,
-                BackColor = SurfaceColor,
-                ForeColor = MutedColor,
-                Font = new Font("Segoe UI Semibold", 9F),
-                UseVisualStyleBackColor = false,
-                Cursor = Cursors.Hand,
-                TabStop = false
+                Text = "Settings", Width = 130, Height = 37, Margin = new Padding(0),
+                FlatStyle = FlatStyle.Flat, BackColor = SurfaceColor, ForeColor = MutedColor,
+                Font = new Font("Segoe UI Semibold", 9F), UseVisualStyleBackColor = false,
+                Cursor = Cursors.Hand, TabStop = false
             };
             button.FlatAppearance.BorderSize = 0;
             button.FlatAppearance.MouseOverBackColor = Color.FromArgb(25, 29, 36);
@@ -102,199 +83,165 @@ namespace ServerManager
 
         private static Panel BuildSettingsPage(MainForm form)
         {
-            var page = new Panel
-            {
-                Dock = DockStyle.Fill,
-                BackColor = BackgroundColor,
-                Padding = new Padding(24)
-            };
+            var page = new Panel { Dock = DockStyle.Fill, BackColor = BackgroundColor, Padding = new Padding(24), AutoScroll = true };
 
-            var title = new Label
+            page.Controls.Add(new Label
             {
-                AutoSize = true,
-                Text = "SERVER SETTINGS",
-                ForeColor = Color.White,
-                Font = new Font("Segoe UI Semibold", 16F, FontStyle.Bold),
-                Location = new Point(24, 22)
-            };
-            page.Controls.Add(title);
+                AutoSize = true, Text = "SERVER SETTINGS", ForeColor = Color.White,
+                Font = new Font("Segoe UI Semibold", 16F, FontStyle.Bold), Location = new Point(24, 22)
+            });
+            page.Controls.Add(new Label
+            {
+                AutoSize = true, Text = "Offline catalog imports and administrative database synchronization",
+                ForeColor = MutedColor, Font = new Font("Segoe UI", 9.5F), Location = new Point(27, 56)
+            });
 
-            var subtitle = new Label
-            {
-                AutoSize = true,
-                Text = "Administrative tools and offline database synchronization",
-                ForeColor = MutedColor,
-                Font = new Font("Segoe UI", 9.5F),
-                Location = new Point(27, 56)
-            };
-            page.Controls.Add(subtitle);
+            var itemStatus = new Label();
+            var itemCard = BuildCatalogCard(
+                "ITEM CATALOG DATABASE",
+                "Import the generated ItemCatalog.json into dbo.item_catalog. The Game Server must be stopped. Existing administrative price/enable overrides are preserved.",
+                "IMPORT ITEMS TO DB", new Point(24, 92), itemStatus);
+            page.Controls.Add(itemCard);
 
-            var card = new Panel
-            {
-                BackColor = PanelColor,
-                Location = new Point(24, 92),
-                Size = new Size(690, 238),
-                Padding = new Padding(20)
-            };
-            card.Paint += delegate(object sender, PaintEventArgs e)
-            {
-                using (var pen = new Pen(BorderColor))
-                    e.Graphics.DrawRectangle(pen, 0, 0, card.Width - 1, card.Height - 1);
-            };
-            page.Controls.Add(card);
+            var vehicleStatus = new Label();
+            var vehicleCard = BuildCatalogCard(
+                "VEHICLE CATALOG DATABASE",
+                "Import VehicleCatalog.json into dbo.vehicle_catalog and dbo.vehicle_upgrade_catalog, including real base stats and every V1-V9 upgrade definition.",
+                "IMPORT VEHICLES TO DB", new Point(24, 310), vehicleStatus);
+            page.Controls.Add(vehicleCard);
 
-            var cardTitle = new Label
+            var itemButton = FindButton(itemCard);
+            itemButton.Click += delegate
             {
-                AutoSize = true,
-                Text = "ITEM CATALOG DATABASE",
-                ForeColor = TextColor,
-                Font = new Font("Segoe UI Semibold", 11F, FontStyle.Bold),
-                Location = new Point(20, 18)
-            };
-            card.Controls.Add(cardTitle);
-
-            var description = new Label
-            {
-                AutoSize = false,
-                Text = "The Game Server generates Logs\\Catalogs\\ItemCatalog.json from Items.xml + UseItems.xml. The database import is intentionally OFFLINE: stop Game Server, then import the saved JSON into dbo.item_catalog.",
-                ForeColor = MutedColor,
-                Font = new Font("Segoe UI", 9F),
-                Location = new Point(20, 50),
-                Size = new Size(645, 55)
-            };
-            card.Controls.Add(description);
-
-            var jsonLabel = new Label
-            {
-                AutoSize = false,
-                Text = "JSON: " + ShortPath(ItemCatalogImporter.CatalogPath),
-                ForeColor = MutedColor,
-                Font = new Font("Consolas", 8.5F),
-                Location = new Point(20, 105),
-                Size = new Size(645, 22)
-            };
-            card.Controls.Add(jsonLabel);
-
-            var importButton = new Button
-            {
-                Text = "IMPORT ITEMS TO DB",
-                FlatStyle = FlatStyle.Flat,
-                BackColor = Color.FromArgb(24, 46, 34),
-                ForeColor = Color.White,
-                Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold),
-                Location = new Point(20, 137),
-                Size = new Size(176, 38),
-                Cursor = Cursors.Hand,
-                UseVisualStyleBackColor = false
-            };
-            importButton.FlatAppearance.BorderColor = Color.FromArgb(58, 93, 72);
-            importButton.FlatAppearance.BorderSize = 1;
-            importButton.FlatAppearance.MouseOverBackColor = Color.FromArgb(31, 59, 43);
-            card.Controls.Add(importButton);
-
-            var status = new Label
-            {
-                AutoSize = false,
-                Text = GetInitialImportStatus(),
-                ForeColor = GetInitialImportStatusColor(),
-                Font = new Font("Segoe UI", 9F),
-                Location = new Point(20, 190),
-                Size = new Size(645, 34)
-            };
-            card.Controls.Add(status);
-
-            importButton.Click += delegate
-            {
-                if (IsGameServerRunning())
-                {
-                    status.ForeColor = StoppedColor;
-                    status.Text = "Stop Game Server before importing. Offline import is blocked while GameServer.exe is running.";
-                    return;
-                }
-
+                if (!CanImportOffline(itemStatus)) return;
                 if (!ItemCatalogImporter.CatalogExists())
                 {
-                    status.ForeColor = StoppedColor;
-                    status.Text = "ItemCatalog.json not found. Start Game Server once to generate it, then STOP Game Server and import.";
+                    SetStatus(itemStatus, "ItemCatalog.json not found. Start Game Server once to generate it, then STOP it and import.", StoppedColor);
                     return;
                 }
-
-                importButton.Enabled = false;
-                var oldCursor = form.Cursor;
-                form.Cursor = Cursors.WaitCursor;
-                status.ForeColor = WarningColor;
-                status.Text = "Importing ItemCatalog.json into dbo.item_catalog...";
-                status.Refresh();
-
                 try
                 {
+                    SetStatus(itemStatus, "Importing ItemCatalog.json...", WarningColor);
+                    Application.DoEvents();
                     var result = ItemCatalogImporter.Import();
-                    status.ForeColor = RunningColor;
-                    status.Text = "Import complete: " + result.Count + " item definitions synchronized to dbo.item_catalog.";
+                    SetStatus(itemStatus, "Imported " + result.Count + " item definitions successfully.", RunningColor);
                 }
                 catch (Exception ex)
                 {
-                    status.ForeColor = StoppedColor;
-                    status.Text = "Import failed: " + ex.Message;
-                    MessageBox.Show(form, ex.ToString(), "Item catalog import failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
-                finally
-                {
-                    form.Cursor = oldCursor;
-                    importButton.Enabled = true;
+                    SetStatus(itemStatus, "Import failed: " + ex.Message, StoppedColor);
                 }
             };
 
-            var steps = new Label
+            var vehicleButton = FindButton(vehicleCard);
+            vehicleButton.Click += delegate
+            {
+                if (!CanImportOffline(vehicleStatus)) return;
+                if (!VehicleCatalogImporter.CatalogExists())
+                {
+                    SetStatus(vehicleStatus, "VehicleCatalog.json not found. Start Game Server once to generate it, then STOP it and import.", StoppedColor);
+                    return;
+                }
+                try
+                {
+                    SetStatus(vehicleStatus, "Importing VehicleCatalog.json...", WarningColor);
+                    Application.DoEvents();
+                    var result = VehicleCatalogImporter.Import();
+                    SetStatus(vehicleStatus, "Imported " + result.Vehicles + " vehicles and " + result.Upgrades + " upgrade rows.", RunningColor);
+                }
+                catch (Exception ex)
+                {
+                    SetStatus(vehicleStatus, "Import failed: " + ex.Message, StoppedColor);
+                }
+            };
+
+            page.Controls.Add(new Label
             {
                 AutoSize = false,
-                Text = "Workflow:  1) Start Game Server to generate/update JSON   2) Stop Game Server   3) Open Settings   4) Import Items to DB   5) Refresh Tables in SSMS",
-                ForeColor = WarningColor,
-                Font = new Font("Segoe UI", 9F),
-                Location = new Point(24, 352),
-                Size = new Size(900, 48)
-            };
-            page.Controls.Add(steps);
+                Text = "Workflow: START Game Server once to regenerate JSON catalogs → STOP Game Server → import from Settings. Imports are intentionally blocked while GameServer.exe is running.",
+                ForeColor = WarningColor, Font = new Font("Segoe UI", 9F), Location = new Point(24, 535), Size = new Size(850, 45)
+            });
 
+            UpdateCatalogStatus(itemStatus, ItemCatalogImporter.CatalogExists(), "ItemCatalog.json");
+            UpdateCatalogStatus(vehicleStatus, VehicleCatalogImporter.CatalogExists(), "VehicleCatalog.json");
             return page;
         }
 
-        private static string GetInitialImportStatus()
+        private static Panel BuildCatalogCard(string title, string description, string buttonText, Point location, Label status)
         {
-            if (IsGameServerRunning())
-                return "Game Server is running. Stop it before importing the JSON catalog.";
-            if (!ItemCatalogImporter.CatalogExists())
-                return "ItemCatalog.json is missing. Start Game Server once to generate it.";
-            return "Ready for offline import. ItemCatalog.json exists and Game Server is stopped.";
+            var card = new Panel { BackColor = PanelColor, Location = location, Size = new Size(700, 195), Padding = new Padding(20) };
+            card.Paint += delegate(object sender, PaintEventArgs e)
+            {
+                using (var pen = new Pen(BorderColor)) e.Graphics.DrawRectangle(pen, 0, 0, card.Width - 1, card.Height - 1);
+            };
+            card.Controls.Add(new Label
+            {
+                AutoSize = true, Text = title, ForeColor = TextColor,
+                Font = new Font("Segoe UI Semibold", 11F, FontStyle.Bold), Location = new Point(20, 18)
+            });
+            card.Controls.Add(new Label
+            {
+                AutoSize = false, Text = description, ForeColor = MutedColor,
+                Font = new Font("Segoe UI", 9F), Location = new Point(20, 50), Size = new Size(650, 52)
+            });
+            var button = new Button
+            {
+                Text = buttonText, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(24, 46, 34),
+                ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold),
+                Location = new Point(20, 112), Size = new Size(195, 38), Cursor = Cursors.Hand,
+                UseVisualStyleBackColor = false
+            };
+            button.FlatAppearance.BorderColor = Color.FromArgb(58, 93, 72);
+            button.FlatAppearance.BorderSize = 1;
+            button.FlatAppearance.MouseOverBackColor = Color.FromArgb(31, 59, 43);
+            card.Controls.Add(button);
+
+            status.AutoSize = true;
+            status.ForeColor = MutedColor;
+            status.Font = new Font("Segoe UI", 9F);
+            status.Location = new Point(20, 162);
+            card.Controls.Add(status);
+            return card;
         }
 
-        private static Color GetInitialImportStatusColor()
+        private static Button FindButton(Control root)
         {
-            if (IsGameServerRunning()) return StoppedColor;
-            return ItemCatalogImporter.CatalogExists() ? RunningColor : WarningColor;
+            foreach (Control control in root.Controls)
+            {
+                var button = control as Button;
+                if (button != null) return button;
+            }
+            return null;
         }
 
-        private static bool IsGameServerRunning()
+        private static bool CanImportOffline(Label status)
         {
-            var processes = Process.GetProcessesByName("GameServer");
+            Process[] processes = null;
             try
             {
-                return processes.Length > 0;
+                processes = Process.GetProcessesByName("GameServer");
+                if (processes.Length > 0)
+                {
+                    SetStatus(status, "Stop Game Server before importing. Offline import is blocked while GameServer.exe is running.", StoppedColor);
+                    return false;
+                }
+                return true;
             }
             finally
             {
-                foreach (var process in processes)
-                    process.Dispose();
+                if (processes != null) foreach (var process in processes) process.Dispose();
             }
         }
 
-        private static string ShortPath(string path)
+        private static void UpdateCatalogStatus(Label status, bool exists, string name)
         {
-            if (string.IsNullOrWhiteSpace(path)) return string.Empty;
-            var baseDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            if (path.StartsWith(baseDir, StringComparison.OrdinalIgnoreCase))
-                return "." + path.Substring(baseDir.Length);
-            return path;
+            if (exists) SetStatus(status, name + " found. Stop Game Server before importing.", RunningColor);
+            else SetStatus(status, name + " not found. Start Game Server once to generate it.", WarningColor);
+        }
+
+        private static void SetStatus(Label label, string text, Color color)
+        {
+            label.Text = text;
+            label.ForeColor = color;
         }
 
         private static void QueueLogRefresh(MainForm form, Panel logContent)
@@ -304,56 +251,31 @@ namespace ServerManager
                 form.BeginInvoke(new Action(delegate
                 {
                     if (form.IsDisposed) return;
-
-                    logContent.SuspendLayout();
-                    logContent.ResumeLayout(true);
-                    logContent.PerformLayout();
-                    logContent.Invalidate(true);
-                    logContent.Update();
-
+                    logContent.Invalidate(true); logContent.Update();
                     foreach (var box in FindControls<RichTextBox>(logContent))
                     {
                         if (!box.Visible) continue;
-
-                        // WinForms RichTextBox may keep a stale hidden backing surface.
-                        // Force the visible page through a complete layout + redraw cycle.
-                        var parent = box.Parent;
-                        if (parent != null)
-                        {
-                            parent.PerformLayout();
-                            parent.Invalidate(true);
-                            parent.Update();
-                        }
-
-                        box.SuspendLayout();
-                        box.ResumeLayout(true);
-                        box.Invalidate(true);
-                        box.Update();
-                        box.Refresh();
-
+                        box.Visible = false;
+                        box.Visible = true;
+                        box.Invalidate(true); box.Update(); box.Refresh();
                         if (box.TextLength > 0)
                         {
                             box.SelectionStart = box.TextLength;
                             box.SelectionLength = 0;
                             box.ScrollToCaret();
                         }
-
-                        // A second queued repaint is intentional: it runs after the
-                        // custom page Visibility/BringToFront window messages settle.
-                        box.BeginInvoke(new Action(delegate
-                        {
-                            if (box.IsDisposed || !box.Visible) return;
-                            box.Invalidate(true);
-                            box.Update();
-                            box.Refresh();
-                        }));
                     }
+                    form.BeginInvoke(new Action(delegate
+                    {
+                        foreach (var box in FindControls<RichTextBox>(logContent))
+                        {
+                            if (!box.Visible) continue;
+                            box.Invalidate(true); box.Refresh();
+                        }
+                    }));
                 }));
             }
-            catch
-            {
-                // Form may be shutting down.
-            }
+            catch { }
         }
 
         private static IEnumerable<T> FindControls<T>(Control root) where T : Control
@@ -362,9 +284,7 @@ namespace ServerManager
             {
                 var match = child as T;
                 if (match != null) yield return match;
-
-                foreach (var nested in FindControls<T>(child))
-                    yield return nested;
+                foreach (var nested in FindControls<T>(child)) yield return nested;
             }
         }
 
@@ -380,7 +300,6 @@ namespace ServerManager
             button.BackColor = active ? PanelColor : SurfaceColor;
             button.ForeColor = active ? TextColor : MutedColor;
             button.Invalidate();
-            button.Update();
         }
     }
 }
