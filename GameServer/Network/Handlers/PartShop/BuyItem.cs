@@ -62,8 +62,10 @@ namespace GameServer.Network.Handlers
             }
 
             // GiveItem needs the merged server catalog index so it can resolve the XML definition.
-            // For UseItems we immediately persist the protocol TableIndex afterwards, because that
-            // is the value XiStrMyItem must send back to the client on ItemList/ItemMod packets.
+            // Shop purchases must enter the inventory as completely unequipped items. GiveItem's
+            // generic constructor historically associates a new item with the active car; when that
+            // CarId is sent to the client before the first equip, the client interprets it as part of
+            // the displayed stat (for example CarId 10078 + Small(+1) showed as Speed +10079).
             var inventoryItem = character.GiveItem(
                 GameServer.Instance.Database.Connection,
                 catalogIndex,
@@ -74,14 +76,16 @@ namespace GameServer.Network.Handlers
                 return;
             }
 
+            var requiresPersist = false;
+
             if (isUseItem && inventoryItem.TableIndex != protocolTableIndex)
             {
                 var oldIndex = inventoryItem.TableIndex;
                 inventoryItem.TableIndex = protocolTableIndex;
-                ItemModel.Update(GameServer.Instance.Database.Connection, inventoryItem);
+                requiresPersist = true;
 
                 Log.Info(
-                    "UseItem protocol index persisted: DbId={0} InvenIdx={1} CatalogIndex={2} OldTableIndex={3} ProtocolTableIndex={4} ItemId={5} Name={6}",
+                    "UseItem protocol index resolved: DbId={0} InvenIdx={1} CatalogIndex={2} OldTableIndex={3} ProtocolTableIndex={4} ItemId={5} Name={6}",
                     inventoryItem.DbId,
                     inventoryItem.InventoryIndex,
                     catalogIndex,
@@ -91,11 +95,45 @@ namespace GameServer.Network.Handlers
                     itemData.Name);
             }
 
+            // A freshly purchased item is not installed in any vehicle yet.
+            // Keep every relationship/state field neutral until CmdEquipItem explicitly assigns it.
+            if (inventoryItem.CarId != 0 ||
+                inventoryItem.LastCarId != 0 ||
+                inventoryItem.State != 0 ||
+                inventoryItem.Slot != 0 ||
+                inventoryItem.Belonging != 0)
+            {
+                Log.Debug(
+                    "PartShop clearing new item linkage: DbId={0} InvenIdx={1} CarId={2} LastCarId={3} State={4} Slot={5} Belonging={6}",
+                    inventoryItem.DbId,
+                    inventoryItem.InventoryIndex,
+                    inventoryItem.CarId,
+                    inventoryItem.LastCarId,
+                    inventoryItem.State,
+                    inventoryItem.Slot,
+                    inventoryItem.Belonging);
+
+                inventoryItem.CarId = 0;
+                inventoryItem.LastCarId = 0;
+                inventoryItem.State = 0;
+                inventoryItem.Slot = 0;
+                inventoryItem.Belonging = 0;
+                requiresPersist = true;
+            }
+
+            if (requiresPersist)
+                ItemModel.Update(GameServer.Instance.Database.Connection, inventoryItem);
+
             Log.Debug(
-                "PartShop item instance: DbId={0} InvenIdx={1} TableIndex={2} Random={3} Upgrade={4} UpgradePoint={5}",
+                "PartShop item instance: DbId={0} InvenIdx={1} TableIndex={2} CarId={3} LastCarId={4} State={5} Slot={6} Belonging={7} Random={8} Upgrade={9} UpgradePoint={10}",
                 inventoryItem.DbId,
                 inventoryItem.InventoryIndex,
                 inventoryItem.TableIndex,
+                inventoryItem.CarId,
+                inventoryItem.LastCarId,
+                inventoryItem.State,
+                inventoryItem.Slot,
+                inventoryItem.Belonging,
                 inventoryItem.Random,
                 inventoryItem.Upgrade,
                 inventoryItem.UpgradePoint);
