@@ -37,7 +37,11 @@ namespace AreaServer.Network.Handlers
                         continue;
                 }
 
-                var replay = new Packet(Packets.CmdMoveVehicle);
+                // Client sends CmdMoveVehicle (541), server relays MoveVehicleAck (542).
+                // Replaying the command id back to clients makes their interpolation/state
+                // machine treat remote movement as local/input traffic and causes visible
+                // position prediction errors.
+                var replay = new Packet(Packets.MoveVehicleAck);
                 replay.Writer.Write(pair.Key);
                 replay.Writer.Write(pair.Value);
                 client.Send(replay);
@@ -55,7 +59,8 @@ namespace AreaServer.Network.Handlers
                 LastMovement[vehicleSerial] = movement;
             }
 
-            var move = new Packet(Packets.CmdMoveVehicle);
+            // 541 is client -> server. Remote clients must receive 542.
+            var move = new Packet(Packets.MoveVehicleAck);
             move.Writer.Write(vehicleSerial);
             move.Writer.Write(movement);
 
