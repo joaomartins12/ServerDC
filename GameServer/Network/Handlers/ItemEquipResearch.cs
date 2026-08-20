@@ -177,9 +177,7 @@ namespace GameServer.Network.Handlers
                 character.GarageVehicles != null &&
                 character.GarageVehicles.Any(v => v != null && v.CarId == targetCarId))
             {
-                Log.Info("SellCar auto-complete triggered after final unequip: CID={0} CarId={1}",
-                    character.Id, targetCarId);
-                GameServer.Network.Handlers.Dealership.SellCar.CompleteSale(packet, targetCarId, true);
+                Dealership.SellCar.AutoCompleteAfterUnequip(packet, character, targetCarId);
             }
         }
 
