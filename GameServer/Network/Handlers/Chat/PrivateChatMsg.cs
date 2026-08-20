@@ -3,6 +3,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using Shared.Network;
+using Shared.Network.GameServer;
 using Shared.Objects;
 using Shared.Util;
 
@@ -146,7 +147,6 @@ namespace GameServer.Network.Handlers
 
             if (target == null)
             {
-                // Keep the already-working offline feedback on the sender only.
                 packet.Sender.SendError(targetName + " is offline.");
                 return;
             }
@@ -155,14 +155,16 @@ namespace GameServer.Network.Handlers
             if (packet.Sender.User.GmFlag)
                 senderName = "GM " + senderName;
 
-            // Whisper/private chat has its own protocol path. ChatMsgAck (147) is the
-            // public/room/channel chat format and the client renders it as normal chat.
-            // The client already echoes an outgoing whisper locally, so only deliver the
-            // dedicated private packet to the recipient.
-            var privatePacket = new Packet(Packets.CmdPrivateChatMsg);
-            privatePacket.Writer.WriteUnicodeStatic(senderName, 21, true);
-            privatePacket.Writer.WriteUnicode(message ?? string.Empty);
-            target.Send(privatePacket);
+            // The client already echoes the outgoing whisper locally. Deliver only to
+            // the recipient, using ChatMsgAck with the dedicated "whisper" chat type.
+            // "private" is not recognized by this client and packet 149 is ignored.
+            var whisper = new ChatMessageAnswer
+            {
+                MessageType = "whisper",
+                SenderCharacterName = senderName,
+                Message = message ?? string.Empty
+            }.CreatePacket();
+            target.Send(whisper);
 
             senderCharacter.LastMessageFrom = target.User.ActiveCharacter.Name;
             target.User.ActiveCharacter.LastMessageFrom = senderCharacter.Name;
