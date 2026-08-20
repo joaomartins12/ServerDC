@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
@@ -27,7 +28,6 @@ namespace ServerManager
         {
             if (form == null) return;
             LoadSettings();
-            ClientDataImporter.EnsureImportDirectory();
 
             var tabStrip = GetPrivateField<FlowLayoutPanel>(form, "_tabStrip");
             var logContent = GetPrivateField<Panel>(form, "_logContent");
@@ -147,7 +147,7 @@ namespace ServerManager
             {
                 AutoSize = false,
                 Text = "Place every client .tdf file inside the Improter folder next to DCServerManager.exe. " +
-                       "The import stores every TDF row and cell losslessly in dbo.client_tdf_* and builds dbo.client_item_lookup for ItemClient/UseItemClient protocol indexes.",
+                       "Each TDF is imported into its own dbo.client_* table with RowIndex, ClientTableIndex where applicable, and one SQL column per original TDF column.",
                 ForeColor = MutedColor,
                 Font = new Font("Segoe UI", 9F),
                 Location = new Point(20, 50),
@@ -193,8 +193,8 @@ namespace ServerManager
                 {
                     var result = await Task.Run(delegate { return ClientDataImporter.ImportAll(); });
                     SetStatus(status,
-                        "Imported " + result.Files + " files, " + result.Rows + " rows, " + result.Cells +
-                        " cells. Item lookup rows: " + result.ItemLookupRows + ".",
+                        "Imported " + result.Files + " TDF tables and " + result.Rows +
+                        " rows. Item lookup rows: " + result.ItemLookupRows + ".",
                         RunningColor);
                 }
                 catch (Exception ex)
@@ -219,27 +219,19 @@ namespace ServerManager
             };
             logCard.Paint += delegate(object sender, PaintEventArgs e)
             {
-                using (var pen = new Pen(BorderColor))
-                    e.Graphics.DrawRectangle(pen, 0, 0, logCard.Width - 1, logCard.Height - 1);
+                using (var pen = new Pen(BorderColor)) e.Graphics.DrawRectangle(pen, 0, 0, logCard.Width - 1, logCard.Height - 1);
             };
             logCard.Controls.Add(new Label
             {
-                AutoSize = true,
-                Text = "LOG BEHAVIOR",
-                ForeColor = TextColor,
-                Font = new Font("Segoe UI Semibold", 11F, FontStyle.Bold),
-                Location = new Point(20, 18)
+                AutoSize = true, Text = "LOG BEHAVIOR", ForeColor = TextColor,
+                Font = new Font("Segoe UI Semibold", 11F, FontStyle.Bold), Location = new Point(20, 18)
             });
             logCard.Controls.Add(new Label
             {
                 AutoSize = false,
                 Text = "Clear the visible log panel for a server whenever that server starts. Structured packet/session files under Logs\\ are never deleted by this option.",
-                ForeColor = MutedColor,
-                Font = new Font("Segoe UI", 9F),
-                Location = new Point(20, 48),
-                Size = new Size(650, 38)
+                ForeColor = MutedColor, Font = new Font("Segoe UI", 9F), Location = new Point(20, 48), Size = new Size(650, 38)
             });
-
             var clearLogs = new CheckBox
             {
                 AutoSize = true,
@@ -258,16 +250,6 @@ namespace ServerManager
             };
             logCard.Controls.Add(clearLogs);
             page.Controls.Add(logCard);
-
-            page.Controls.Add(new Label
-            {
-                AutoSize = false,
-                Text = "The client-data import is a full snapshot: every run replaces the previous dbo.client_tdf_* snapshot with exactly the TDF files currently present in Improter. GameServer.exe must be stopped while importing.",
-                ForeColor = WarningColor,
-                Font = new Font("Segoe UI", 9F),
-                Location = new Point(24, 495),
-                Size = new Size(850, 45)
-            });
 
             return page;
         }
@@ -300,34 +282,24 @@ namespace ServerManager
                 processes = Process.GetProcessesByName("GameServer");
                 if (processes.Length > 0)
                 {
-                    SetStatus(status,
-                        "Stop Game Server before importing client data. Import is blocked while GameServer.exe is running.",
-                        StoppedColor);
+                    SetStatus(status, "Stop Game Server before importing client data.", StoppedColor);
                     return false;
                 }
                 return true;
             }
             finally
             {
-                if (processes != null)
-                    foreach (var process in processes) process.Dispose();
+                if (processes != null) foreach (var process in processes) process.Dispose();
             }
         }
 
         private static void UpdateClientImportStatus(Label status)
         {
-            try
-            {
-                var count = ClientDataImporter.CountTdfFiles();
-                if (count > 0)
-                    SetStatus(status, count + " TDF files ready in " + ClientDataImporter.ImportFolder, RunningColor);
-                else
-                    SetStatus(status, "Improter folder ready. Copy the client .tdf files into: " + ClientDataImporter.ImportFolder, WarningColor);
-            }
-            catch (Exception ex)
-            {
-                SetStatus(status, "Importer folder error: " + ex.Message, StoppedColor);
-            }
+            var count = ClientDataImporter.CountTdfFiles();
+            if (count > 0)
+                SetStatus(status, count + " TDF files found in Improter. Stop Game Server before importing.", RunningColor);
+            else
+                SetStatus(status, "Improter folder ready. Copy the client .tdf files there.", WarningColor);
         }
 
         private static void SetStatus(Label label, string text, Color color)
@@ -349,8 +321,7 @@ namespace ServerManager
                     if (parts[0].Trim().Equals("ClearVisibleLogsOnServerStart", StringComparison.OrdinalIgnoreCase))
                     {
                         bool value;
-                        if (bool.TryParse(parts[1].Trim(), out value))
-                            ClearVisibleLogsOnServerStart = value;
+                        if (bool.TryParse(parts[1].Trim(), out value)) ClearVisibleLogsOnServerStart = value;
                     }
                 }
             }
