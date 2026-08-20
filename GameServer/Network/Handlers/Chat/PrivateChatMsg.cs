@@ -204,11 +204,14 @@ namespace GameServer.Network.Handlers
                 return;
             }
 
-            // ChatMsgAck already contains the protocol discriminator in MessageType
-            // ("private" for whisper, just as the blue server message uses "channel").
-            // The current client does not render a visible whisper caption for "private",
-            // so keep the proven packet type and add a compact textual marker.
-            var displayMessage = "[Whisper] " + (message ?? string.Empty);
+            // Keep MessageType=private because this is the client-proven whisper route.
+            // The client itself renders SenderCharacterName as [Name]:, so use "Whisper"
+            // there and put direction/player/message in the body. Result:
+            // [Whisper]: [From] [Portuga] (message)
+            // [Whisper]: [To]   [Port]    (message)
+            var rawMessage = message ?? string.Empty;
+            var recipientDisplayMessage = "[From] [" + senderName + "] (" + rawMessage + ")";
+            var senderDisplayMessage = "[To] [" + targetDisplayName + "] (" + rawMessage + ")";
 
             Packet recipientPacket;
             Packet senderEchoPacket;
@@ -217,12 +220,12 @@ namespace GameServer.Network.Handlers
             if (mode == "149")
             {
                 recipientPacket = new Packet(Packets.CmdPrivateChatMsg);
-                recipientPacket.Writer.WriteUnicodeStatic(senderName, 21, true);
-                recipientPacket.Writer.WriteUnicode(displayMessage);
+                recipientPacket.Writer.WriteUnicodeStatic("Whisper", 21, true);
+                recipientPacket.Writer.WriteUnicode(recipientDisplayMessage);
 
                 senderEchoPacket = new Packet(Packets.CmdPrivateChatMsg);
-                senderEchoPacket.Writer.WriteUnicodeStatic(targetDisplayName, 21, true);
-                senderEchoPacket.Writer.WriteUnicode(displayMessage);
+                senderEchoPacket.Writer.WriteUnicodeStatic("Whisper", 21, true);
+                senderEchoPacket.Writer.WriteUnicode(senderDisplayMessage);
                 stage = "OUT149";
             }
             else
@@ -230,18 +233,15 @@ namespace GameServer.Network.Handlers
                 recipientPacket = new ChatMessageAnswer
                 {
                     MessageType = mode,
-                    SenderCharacterName = senderName,
-                    Message = displayMessage
+                    SenderCharacterName = "Whisper",
+                    Message = recipientDisplayMessage
                 }.CreatePacket();
 
-                // The sender must receive its own whisper too. For the local echo the
-                // player field is the conversation partner, not the sender itself;
-                // this matches how the client groups/displays private messages.
                 senderEchoPacket = new ChatMessageAnswer
                 {
                     MessageType = mode,
-                    SenderCharacterName = targetDisplayName,
-                    Message = displayMessage
+                    SenderCharacterName = "Whisper",
+                    Message = senderDisplayMessage
                 }.CreatePacket();
                 stage = "OUT147_" + mode.ToUpperInvariant();
             }
