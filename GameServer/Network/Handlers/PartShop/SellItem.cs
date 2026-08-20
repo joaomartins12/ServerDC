@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Linq;
+using GameServer.Util;
 using MySql.Data.MySqlClient;
 using Shared;
 using Shared.Models;
@@ -23,9 +24,6 @@ namespace GameServer.Network.Handlers
                 return;
             }
 
-            // Trust the owned inventory slot as the authoritative item instance. The packet's
-            // TableIndex is still logged/echoed, but price resolution follows the exact item the
-            // character actually owns so a forged/mismatched packet cannot select another price.
             var inventoryItem = character.InventoryItems == null
                 ? null
                 : character.InventoryItems.FirstOrDefault(i => i != null && i.InventoryIndex == sellItemPacket.Slot);
@@ -59,8 +57,9 @@ namespace GameServer.Network.Handlers
 
             var price = checked(unitPrice * sellItemPacket.Quantity);
 
-            Log.Info(
-                "SellItem resolve: Slot={0} PacketTableIndex={1} InventoryTableIndex={2} CatalogIndex={3} ItemId={4} Name={5} UnitSellValue={6} Quantity={7} Total={8}",
+            QuietLog.Write(
+                "ShopSell",
+                "Slot={0} PacketTableIndex={1} InventoryTableIndex={2} CatalogIndex={3} ItemId={4} Name={5} UnitSellValue={6} Quantity={7} Total={8}",
                 sellItemPacket.Slot,
                 sellItemPacket.TableIndex,
                 clientTableIndex,
@@ -122,8 +121,6 @@ namespace GameServer.Network.Handlers
                     itemId);
             }
 
-            // Compatibility fallback for old inventories/imports where the runtime index still
-            // happens to be identical to the client index.
             if (clientTableIndex < ServerMain.Items.Count && ServerMain.Items[clientTableIndex] != null)
             {
                 catalogIndex = clientTableIndex;
