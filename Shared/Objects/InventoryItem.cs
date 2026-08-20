@@ -163,7 +163,14 @@ namespace Shared.Objects
             writer.Write(State);
             writer.Write(Slot);
             writer.Write(StackNum);
-            writer.Write(LastCarId);
+
+            // Vehicle keys and other passive vehicle-linked inventory entries carry CarId while
+            // LastCarId is not persisted by the legacy item table. The current client uses both
+            // relationship fields when resolving vehicle-specific inventory information/tooltips.
+            // Do not affect normal unequipped parts: their CarId is explicitly cleared to zero.
+            var serializedLastCarId = LastCarId != 0 ? LastCarId : (State == 0 ? CarId : 0u);
+            writer.Write(serializedLastCarId);
+
             writer.Write(AssistA);
             writer.Write(AssistB);
             writer.Write(AssistC);
