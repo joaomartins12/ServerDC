@@ -3,9 +3,11 @@ using Shared.Network.GameServer;
 namespace GameServer.Util
 {
     /// <summary>
-    /// Temporary runtime probe used to map the eight unknown ints in the 32-byte
-    /// XiStrStatInfo tail against the current client's vehicle-performance UI.
-    /// Field 0 disables probing.
+    /// Temporary runtime probe used to map StatUpdate fields against the current
+    /// client's vehicle-performance UI. Fields 1-8 cover the 32-byte XiStrStatInfo
+    /// tail. Runtime testing confirmed field 9 is Speed and field 10 is Crash/
+    /// Durability in XiStrEnchantBonus; fields 11 and 12 are the corresponding
+    /// Accel and Boost candidates. Field 0 disables probing.
     /// </summary>
     internal static class VehiclePerformanceProbe
     {
@@ -59,6 +61,10 @@ namespace GameServer.Util
                 case 6: ack.VehicleDurability = value; break;
                 case 7: ack.VehicleAcceleration = value; break;
                 case 8: ack.VehicleBoost = value; break;
+                case 9: ack.Speed = value; break;
+                case 10: ack.Crash = value; break;
+                case 11: ack.Accel = value; break;
+                case 12: ack.Boost = value; break;
                 default: return false;
             }
 
