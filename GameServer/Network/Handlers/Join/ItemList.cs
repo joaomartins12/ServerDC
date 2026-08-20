@@ -14,7 +14,7 @@ namespace GameServer.Network.Handlers.Join
             var character = packet.Sender.User.ActiveCharacter;
             if (character == null)
             {
-                packet.Sender.Error("no_active_character");
+                Log.Warning("ItemList requested without an active character. Endpoint={0}", packet.Sender.EndPoint);
                 return;
             }
 
