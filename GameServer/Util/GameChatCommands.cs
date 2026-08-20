@@ -1,4 +1,5 @@
 ﻿using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using Shared.Models;
 using Shared.Network;
@@ -32,8 +33,8 @@ namespace GameServer.Util
             Add("tempmute", "/mute [Character Name]", 0x8000, "Mutes/Unmutes the character from chat", MuteCommandHandler);
 
             Add("gm", "/gm", 0x1000, "Toggles your GM Status", ToggleGmStatusCommandHandler);
-            Add("perfprobe", "/perfprobe [1-12] [value] | /perfprobe off", 0x8000,
-                "Temporarily probes one StatUpdate research field", PerformanceProbeCommandHandler);
+            Add("perfprobe", "/perfprobe int [1-19] [value] | /perfprobe float [1-19] [value] | /perfprobe off", 0x8000,
+                "Temporarily probes raw StatUpdate fields as int or IEEE-754 float", PerformanceProbeCommandHandler);
         }
 
         private static CommandResult PerformanceProbeCommandHandler(DefaultServer server, Client sender, string command,
@@ -50,20 +51,63 @@ namespace GameServer.Util
                 return CommandResult.Okay;
             }
 
-            if (args.Count < 2)
+            // Backwards-compatible syntax: /perfprobe 11 300
+            if (!string.Equals(args[0], "int", System.StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(args[0], "float", System.StringComparison.OrdinalIgnoreCase))
+            {
+                if (args.Count < 2)
+                    return CommandResult.InvalidArgument;
+
+                int legacyField;
+                int legacyValue;
+                if (!int.TryParse(args[0], out legacyField) || legacyField < 1 || legacyField > 19)
+                    return CommandResult.InvalidArgument;
+                if (!int.TryParse(args[1], out legacyValue))
+                    return CommandResult.InvalidArgument;
+
+                VehiclePerformanceProbe.ConfigureInt(legacyField, legacyValue);
+                QuietLog.Write("VehiclePerformanceProbe", "Configured field={0} mode=Int value={1} by {2}",
+                    legacyField, legacyValue, sender.User == null ? "UNKNOWN" : sender.User.Username);
+                sender.SendChatMessage("Performance probe INT field " + legacyField + " = " + legacyValue + ". Reopen the inventory/stat panel.");
+                return CommandResult.Okay;
+            }
+
+            if (args.Count < 3)
                 return CommandResult.InvalidArgument;
 
             int field;
-            int value;
-            if (!int.TryParse(args[0], out field) || field < 1 || field > 12)
-                return CommandResult.InvalidArgument;
-            if (!int.TryParse(args[1], out value))
+            if (!int.TryParse(args[1], out field) || field < 1 || field > 19)
                 return CommandResult.InvalidArgument;
 
-            VehiclePerformanceProbe.Configure(field, value);
-            QuietLog.Write("VehiclePerformanceProbe", "Configured field={0} value={1} by {2}",
-                field, value, sender.User == null ? "UNKNOWN" : sender.User.Username);
-            sender.SendChatMessage("Performance probe field " + field + " = " + value + ". Reopen the inventory/stat panel to trigger CmdCheckStat.");
+            if (string.Equals(args[0], "int", System.StringComparison.OrdinalIgnoreCase))
+            {
+                int value;
+                if (!int.TryParse(args[2], out value))
+                    return CommandResult.InvalidArgument;
+
+                VehiclePerformanceProbe.ConfigureInt(field, value);
+                QuietLog.Write("VehiclePerformanceProbe", "Configured field={0} mode=Int rawInt={1} by {2}",
+                    field, value, sender.User == null ? "UNKNOWN" : sender.User.Username);
+                sender.SendChatMessage("Performance probe INT field " + field + " = " + value + ". Reopen the inventory/stat panel.");
+                return CommandResult.Okay;
+            }
+
+            float floatValue;
+            if (!float.TryParse(args[2], NumberStyles.Float, CultureInfo.InvariantCulture, out floatValue) &&
+                !float.TryParse(args[2], NumberStyles.Float, CultureInfo.CurrentCulture, out floatValue))
+                return CommandResult.InvalidArgument;
+
+            VehiclePerformanceProbe.ConfigureFloat(field, floatValue);
+            var raw = VehiclePerformanceProbe.RawValue;
+            QuietLog.Write("VehiclePerformanceProbe", "Configured field={0} mode=Float float={1} rawInt={2} rawHex=0x{3:X8} by {4}",
+                field,
+                floatValue.ToString("R", CultureInfo.InvariantCulture),
+                raw,
+                unchecked((uint)raw),
+                sender.User == null ? "UNKNOWN" : sender.User.Username);
+            sender.SendChatMessage("Performance probe FLOAT field " + field + " = " +
+                                   floatValue.ToString("R", CultureInfo.InvariantCulture) +
+                                   " (raw 0x" + unchecked((uint)raw).ToString("X8") + "). Reopen the inventory/stat panel.");
             return CommandResult.Okay;
         }
 
