@@ -73,6 +73,10 @@ namespace GameServer.Network.Handlers.Join
             packet.Sender.Send(ack.CreatePacket());
 
             SendInitialStats(packet, character);
+
+            // Guarantee the default Rookie ownership and exercise the dedicated client
+            // NewLicenseNoti path. Detailed state is written to Logs/Research/LicenseProtocol.txt.
+            GameServer.Network.Handlers.LicenseProtocol.Bootstrap(packet.Sender, character);
         }
 
         private static void SendInitialStats(Packet packet, Character character)
