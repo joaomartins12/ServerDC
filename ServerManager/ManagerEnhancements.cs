@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.IO;
 using System.Reflection;
 using System.Windows.Forms;
 
@@ -18,10 +19,15 @@ namespace ServerManager
         private static readonly Color RunningColor = Color.FromArgb(51, 204, 119);
         private static readonly Color WarningColor = Color.FromArgb(236, 180, 71);
         private static readonly Color StoppedColor = Color.FromArgb(238, 82, 83);
+        private static readonly string SettingsPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ServerManager.settings");
+
+        public static bool ClearVisibleLogsOnServerStart { get; private set; }
 
         public static void Attach(MainForm form)
         {
             if (form == null) return;
+            LoadSettings();
+
             var tabStrip = GetPrivateField<FlowLayoutPanel>(form, "_tabStrip");
             var logContent = GetPrivateField<Panel>(form, "_logContent");
             if (tabStrip == null || logContent == null) return;
@@ -92,7 +98,7 @@ namespace ServerManager
             });
             page.Controls.Add(new Label
             {
-                AutoSize = true, Text = "Offline catalog imports and administrative database synchronization",
+                AutoSize = true, Text = "Offline catalog imports, logging and administrative database synchronization",
                 ForeColor = MutedColor, Font = new Font("Segoe UI", 9.5F), Location = new Point(27, 56)
             });
 
@@ -109,6 +115,41 @@ namespace ServerManager
                 "Import VehicleCatalog.json into dbo.vehicle_catalog and dbo.vehicle_upgrade_catalog, including real base stats and every V1-V9 upgrade definition.",
                 "IMPORT VEHICLES TO DB", new Point(24, 310), vehicleStatus);
             page.Controls.Add(vehicleCard);
+
+            var logCard = new Panel { BackColor = PanelColor, Location = new Point(24, 528), Size = new Size(700, 130), Padding = new Padding(20) };
+            logCard.Paint += delegate(object sender, PaintEventArgs e)
+            {
+                using (var pen = new Pen(BorderColor)) e.Graphics.DrawRectangle(pen, 0, 0, logCard.Width - 1, logCard.Height - 1);
+            };
+            logCard.Controls.Add(new Label
+            {
+                AutoSize = true, Text = "LOG BEHAVIOR", ForeColor = TextColor,
+                Font = new Font("Segoe UI Semibold", 11F, FontStyle.Bold), Location = new Point(20, 18)
+            });
+            logCard.Controls.Add(new Label
+            {
+                AutoSize = false,
+                Text = "Clear the visible log panel for a server whenever that server starts. Structured packet/session files under Logs\\ are never deleted by this option.",
+                ForeColor = MutedColor, Font = new Font("Segoe UI", 9F), Location = new Point(20, 48), Size = new Size(650, 38)
+            });
+            var clearLogs = new CheckBox
+            {
+                AutoSize = true,
+                Text = "Clear visible logs on server start",
+                Checked = ClearVisibleLogsOnServerStart,
+                ForeColor = TextColor,
+                BackColor = Color.Transparent,
+                Font = new Font("Segoe UI Semibold", 9F),
+                Location = new Point(20, 94),
+                Cursor = Cursors.Hand
+            };
+            clearLogs.CheckedChanged += delegate
+            {
+                ClearVisibleLogsOnServerStart = clearLogs.Checked;
+                SaveSettings();
+            };
+            logCard.Controls.Add(clearLogs);
+            page.Controls.Add(logCard);
 
             var itemButton = FindButton(itemCard);
             itemButton.Click += delegate
@@ -157,8 +198,8 @@ namespace ServerManager
             page.Controls.Add(new Label
             {
                 AutoSize = false,
-                Text = "Workflow: START Game Server once to regenerate JSON catalogs → STOP Game Server → import from Settings. Imports are intentionally blocked while GameServer.exe is running.",
-                ForeColor = WarningColor, Font = new Font("Segoe UI", 9F), Location = new Point(24, 535), Size = new Size(850, 45)
+                Text = "Catalog workflow: START Game Server once to regenerate JSON catalogs → STOP Game Server → import from Settings. Imports are blocked while GameServer.exe is running.",
+                ForeColor = WarningColor, Font = new Font("Segoe UI", 9F), Location = new Point(24, 680), Size = new Size(850, 45)
             });
 
             UpdateCatalogStatus(itemStatus, ItemCatalogImporter.CatalogExists(), "ItemCatalog.json");
@@ -242,6 +283,36 @@ namespace ServerManager
         {
             label.Text = text;
             label.ForeColor = color;
+        }
+
+        private static void LoadSettings()
+        {
+            ClearVisibleLogsOnServerStart = false;
+            try
+            {
+                if (!File.Exists(SettingsPath)) return;
+                foreach (var line in File.ReadAllLines(SettingsPath))
+                {
+                    var parts = line.Split(new[] { '=' }, 2);
+                    if (parts.Length != 2) continue;
+                    if (parts[0].Trim().Equals("ClearVisibleLogsOnServerStart", StringComparison.OrdinalIgnoreCase))
+                    {
+                        bool value;
+                        if (bool.TryParse(parts[1].Trim(), out value)) ClearVisibleLogsOnServerStart = value;
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private static void SaveSettings()
+        {
+            try
+            {
+                File.WriteAllText(SettingsPath,
+                    "ClearVisibleLogsOnServerStart=" + ClearVisibleLogsOnServerStart + Environment.NewLine);
+            }
+            catch { }
         }
 
         private static void QueueLogRefresh(MainForm form, Panel logContent)
