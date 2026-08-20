@@ -3,8 +3,9 @@ using Shared.Network.GameServer;
 namespace GameServer.Util
 {
     /// <summary>
-    /// Temporary runtime probe used to map the ten unknown StatUpdate performance fields
-    /// against the four values displayed by the current client. Field 0 disables probing.
+    /// Temporary runtime probe used to map the eight unknown ints in the 32-byte
+    /// XiStrStatInfo tail against the current client's vehicle-performance UI.
+    /// Field 0 disables probing.
     /// </summary>
     internal static class VehiclePerformanceProbe
     {
@@ -58,8 +59,6 @@ namespace GameServer.Util
                 case 6: ack.VehicleDurability = value; break;
                 case 7: ack.VehicleAcceleration = value; break;
                 case 8: ack.VehicleBoost = value; break;
-                case 9: ack.PerformanceUnknown9 = value; break;
-                case 10: ack.PerformanceUnknown10 = value; break;
                 default: return false;
             }
 
