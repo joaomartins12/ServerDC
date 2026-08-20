@@ -10,6 +10,7 @@ namespace GameServer.Network.Handlers.Join
     public class ItemList
     {
         [Packet(Packets.CmdItemList)]
+        [Packet((ushort)1156)] // CmdInventoryRequest observed after equip/unequip and purchases.
         public static void Handle(Packet packet)
         {
             var character = packet.Sender.User.ActiveCharacter;
@@ -18,6 +19,9 @@ namespace GameServer.Network.Handlers.Join
                 Log.Warning("ItemList requested without an active character. Endpoint={0}", packet.Sender.EndPoint);
                 return;
             }
+
+            if (packet.Id == 1156)
+                Log.Debug("CmdInventoryRequest refresh: CID={0} Name={1}", character.Id, character.Name);
 
             using (var connection = GameServer.Instance.Database.Connection)
             {
@@ -45,8 +49,6 @@ namespace GameServer.Network.Handlers.Join
                         }
                     }
 
-                    // Older inventory rows were created with Random=0. Stabilize vehicle parts once
-                    // and persist the seed so the client sees the exact same instance every login.
                     if (definition != null && IsVehiclePart(category) && inventoryItem.Random == 0)
                     {
                         inventoryItem.Random = CreateStablePartSeed(inventoryItem);
@@ -62,7 +64,7 @@ namespace GameServer.Network.Handlers.Join
                     }
 
                     Log.Debug(
-                        "Inventory item: DbId={0} InvenIdx={1} TableIndex={2} ItemId={3} Name={4} Category={5} Stack={6} CarId={7} State={8} Slot={9} Upgrade={10} UpgradePoint={11} Durability={12} Random={13}",
+                        "Inventory item: DbId={0} InvenIdx={1} TableIndex={2} ItemId={3} Name={4} Category={5} Stack={6} CarId={7} State={8} Slot={9} Upgrade={10} UpgradePoint={11} Durability={12} Random={13} LastCarId={14}",
                         inventoryItem.DbId,
                         inventoryItem.InventoryIndex,
                         inventoryItem.TableIndex,
@@ -76,7 +78,8 @@ namespace GameServer.Network.Handlers.Join
                         inventoryItem.Upgrade,
                         inventoryItem.UpgradePoint,
                         inventoryItem.Durability,
-                        inventoryItem.Random);
+                        inventoryItem.Random,
+                        inventoryItem.LastCarId);
                 }
 
                 var ack = new ItemListAnswer { InventoryItems = items.ToArray() };
