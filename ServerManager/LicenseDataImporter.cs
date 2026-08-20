@@ -195,8 +195,6 @@ namespace ServerManager
             if (columnCount <= 0 || columnCount > 512)
                 throw new InvalidDataException(fileName + " contains invalid column count " + columnCount + ".");
 
-            // Normalise all rows to the widest row so raw SQL storage preserves a stable
-            // ColumnIndex even when a text editor removed trailing TABs from some records.
             for (var i = 0; i < rows.Count; i++)
             {
                 if (rows[i].Length == columnCount) continue;
@@ -311,8 +309,6 @@ namespace ServerManager
                 result.Add(fields.ToArray());
             }
 
-            // Keep meaningful blank columns, but trailing entirely-empty records after the
-            // declared data are editor padding and are not part of the logical XLT table.
             while (result.Count > 3 && result[result.Count - 1].All(string.IsNullOrEmpty))
                 result.RemoveAt(result.Count - 1);
 
@@ -387,90 +383,90 @@ IF OBJECT_ID(N'dbo.license_source_files', N'U') IS NULL
 BEGIN
     CREATE TABLE dbo.license_source_files
     (
-        FileName NVARCHAR(64) NOT NULL CONSTRAINT PK_license_source_files PRIMARY KEY,
-        FileHash CHAR(64) NOT NULL,
-        HeaderBytes INT NOT NULL,
-        VersionMajor SMALLINT NOT NULL,
-        VersionMinor SMALLINT NOT NULL,
-        SourceYear SMALLINT NOT NULL,
-        SourceMonth TINYINT NOT NULL,
-        SourceDay TINYINT NOT NULL,
-        Flag BIGINT NOT NULL,
-        HeaderOffset BIGINT NOT NULL,
-        ColumnCount INT NOT NULL,
-        RowCount INT NOT NULL,
-        ImportedAt DATETIME2 NOT NULL CONSTRAINT DF_license_source_files_ImportedAt DEFAULT(SYSUTCDATETIME())
+        [FileName] NVARCHAR(64) NOT NULL CONSTRAINT PK_license_source_files PRIMARY KEY,
+        [FileHash] CHAR(64) NOT NULL,
+        [HeaderBytes] INT NOT NULL,
+        [VersionMajor] SMALLINT NOT NULL,
+        [VersionMinor] SMALLINT NOT NULL,
+        [SourceYear] SMALLINT NOT NULL,
+        [SourceMonth] TINYINT NOT NULL,
+        [SourceDay] TINYINT NOT NULL,
+        [Flag] BIGINT NOT NULL,
+        [HeaderOffset] BIGINT NOT NULL,
+        [ColumnCount] INT NOT NULL,
+        [RowCount] INT NOT NULL,
+        [ImportedAt] DATETIME2 NOT NULL CONSTRAINT DF_license_source_files_ImportedAt DEFAULT(SYSUTCDATETIME())
     );
 END;
 IF OBJECT_ID(N'dbo.license_source_cells', N'U') IS NULL
 BEGIN
     CREATE TABLE dbo.license_source_cells
     (
-        FileName NVARCHAR(64) NOT NULL,
-        RowIndex INT NOT NULL,
-        ColumnIndex INT NOT NULL,
-        CellValue NVARCHAR(MAX) NULL,
-        CONSTRAINT PK_license_source_cells PRIMARY KEY (FileName, RowIndex, ColumnIndex)
+        [FileName] NVARCHAR(64) NOT NULL,
+        [RowIndex] INT NOT NULL,
+        [ColumnIndex] INT NOT NULL,
+        [CellValue] NVARCHAR(MAX) NULL,
+        CONSTRAINT PK_license_source_cells PRIMARY KEY ([FileName], [RowIndex], [ColumnIndex])
     );
 END;
 IF OBJECT_ID(N'dbo.license_catalog', N'U') IS NULL
 BEGIN
     CREATE TABLE dbo.license_catalog
     (
-        LicenseId INT NOT NULL CONSTRAINT PK_license_catalog PRIMARY KEY,
-        SourceRow INT NOT NULL,
-        Name NVARCHAR(256) NULL,
-        Category NVARCHAR(128) NULL,
-        Grade NVARCHAR(32) NULL,
-        RawData NVARCHAR(MAX) NOT NULL,
-        UpdatedAt DATETIME2 NOT NULL CONSTRAINT DF_license_catalog_UpdatedAt DEFAULT(SYSUTCDATETIME())
+        [LicenseId] INT NOT NULL CONSTRAINT PK_license_catalog PRIMARY KEY,
+        [SourceRow] INT NOT NULL,
+        [Name] NVARCHAR(256) NULL,
+        [Category] NVARCHAR(128) NULL,
+        [Grade] NVARCHAR(32) NULL,
+        [RawData] NVARCHAR(MAX) NOT NULL,
+        [UpdatedAt] DATETIME2 NOT NULL CONSTRAINT DF_license_catalog_UpdatedAt DEFAULT(SYSUTCDATETIME())
     );
 END;
 IF OBJECT_ID(N'dbo.license_requirements', N'U') IS NULL
 BEGIN
     CREATE TABLE dbo.license_requirements
     (
-        LicenseId INT NOT NULL,
-        Slot INT NOT NULL,
-        RequirementKey NVARCHAR(128) NOT NULL,
-        RequirementValue BIGINT NULL,
-        RequirementParam NVARCHAR(512) NULL,
-        SourceColumn INT NOT NULL,
-        RawData NVARCHAR(1024) NULL,
-        CONSTRAINT PK_license_requirements PRIMARY KEY (LicenseId, Slot)
+        [LicenseId] INT NOT NULL,
+        [Slot] INT NOT NULL,
+        [RequirementKey] NVARCHAR(128) NOT NULL,
+        [RequirementValue] BIGINT NULL,
+        [RequirementParam] NVARCHAR(512) NULL,
+        [SourceColumn] INT NOT NULL,
+        [RawData] NVARCHAR(1024) NULL,
+        CONSTRAINT PK_license_requirements PRIMARY KEY ([LicenseId], [Slot])
     );
 END;
 IF OBJECT_ID(N'dbo.license_effects', N'U') IS NULL
 BEGIN
     CREATE TABLE dbo.license_effects
     (
-        LicenseId INT NOT NULL,
-        Slot INT NOT NULL,
-        EffectKey NVARCHAR(128) NOT NULL,
-        EffectValue BIGINT NULL,
-        SourceColumn INT NOT NULL,
-        RawData NVARCHAR(1024) NULL,
-        CONSTRAINT PK_license_effects PRIMARY KEY (LicenseId, Slot)
+        [LicenseId] INT NOT NULL,
+        [Slot] INT NOT NULL,
+        [EffectKey] NVARCHAR(128) NOT NULL,
+        [EffectValue] BIGINT NULL,
+        [SourceColumn] INT NOT NULL,
+        [RawData] NVARCHAR(1024) NULL,
+        CONSTRAINT PK_license_effects PRIMARY KEY ([LicenseId], [Slot])
     );
 END;
 IF OBJECT_ID(N'dbo.license_condition_catalog', N'U') IS NULL
 BEGIN
     CREATE TABLE dbo.license_condition_catalog
     (
-        ConditionKey NVARCHAR(128) NOT NULL CONSTRAINT PK_license_condition_catalog PRIMARY KEY,
-        SourceRow INT NOT NULL,
-        DisplayName NVARCHAR(256) NULL,
-        RawData NVARCHAR(MAX) NOT NULL
+        [ConditionKey] NVARCHAR(128) NOT NULL CONSTRAINT PK_license_condition_catalog PRIMARY KEY,
+        [SourceRow] INT NOT NULL,
+        [DisplayName] NVARCHAR(256) NULL,
+        [RawData] NVARCHAR(MAX) NOT NULL
     );
 END;
 IF OBJECT_ID(N'dbo.license_effect_catalog', N'U') IS NULL
 BEGIN
     CREATE TABLE dbo.license_effect_catalog
     (
-        EffectKey NVARCHAR(128) NOT NULL CONSTRAINT PK_license_effect_catalog PRIMARY KEY,
-        SourceRow INT NOT NULL,
-        DisplayName NVARCHAR(256) NULL,
-        RawData NVARCHAR(MAX) NOT NULL
+        [EffectKey] NVARCHAR(128) NOT NULL CONSTRAINT PK_license_effect_catalog PRIMARY KEY,
+        [SourceRow] INT NOT NULL,
+        [DisplayName] NVARCHAR(256) NULL,
+        [RawData] NVARCHAR(MAX) NOT NULL
     );
 END;";
             using (var cmd = new SqlCommand(sql, connection, tx))
@@ -497,8 +493,8 @@ DELETE FROM dbo.license_source_files;";
         {
             const string sql = @"
 INSERT INTO dbo.license_source_files
-(FileName, FileHash, HeaderBytes, VersionMajor, VersionMinor, SourceYear, SourceMonth, SourceDay,
- Flag, HeaderOffset, ColumnCount, RowCount, ImportedAt)
+([FileName], [FileHash], [HeaderBytes], [VersionMajor], [VersionMinor], [SourceYear], [SourceMonth], [SourceDay],
+ [Flag], [HeaderOffset], [ColumnCount], [RowCount], [ImportedAt])
 VALUES(@file,@hash,@header,@major,@minor,@year,@month,@day,@flag,@offset,@columns,@rows,SYSUTCDATETIME());";
             using (var cmd = new SqlCommand(sql, connection, tx))
             {
