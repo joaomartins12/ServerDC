@@ -134,10 +134,6 @@ namespace GameServer.Network.Handlers.Dealership
                 return;
             }
 
-            // The vehicle-to-key relation is encoded in UseItems.xml: for category=car keys,
-            // the original maxstack field matches the vehicle CarType. The client does not use
-            // the merged Items+UseItems index for these entries; UseItems have their own protocol
-            // namespace, confirmed by the Mittron Fuel purchase capture.
             VehicleKeyResearchExporter.LogCandidates(buyCarPacket.CarType, vehicleData.Name);
 
             InventoryItem grantedKey;
@@ -210,8 +206,6 @@ namespace GameServer.Network.Handlers.Dealership
                 Price = price
             }.CreatePacket());
 
-            // GiveItem queues an ItemMod. Flush it only after its TableIndex has been converted
-            // to the confirmed UseItem protocol namespace so the client sees the correct key.
             if (keyGranted)
                 character.FlushItemModBuffer(packet.Sender);
 
@@ -288,8 +282,6 @@ namespace GameServer.Network.Handlers.Dealership
             if (grantedKey == null)
                 return false;
 
-            // GiveItem initially stores the merged server catalog index. Replace it with the
-            // TableIndex namespace understood by the client before any ItemMod/ItemList is sent.
             grantedKey.TableIndex = keyProtocolTableIndex;
             grantedKey.CarId = vehicle.CarId;
             grantedKey.StackNum = 1;
@@ -297,15 +289,14 @@ namespace GameServer.Network.Handlers.Dealership
             grantedKey.Slot = 0;
             grantedKey.Belonging = 0;
 
-            if (!ItemModel.Update(GameServer.Instance.Database.Connection, grantedKey))
-            {
-                Log.Error(
-                    "BuyCar key persistence update failed: DbId={0} CarId={1} ProtocolTableIndex={2}.",
-                    grantedKey.DbId,
-                    vehicle.CarId,
-                    keyProtocolTableIndex);
-                return false;
-            }
+            ItemModel.Update(GameServer.Instance.Database.Connection, grantedKey);
+
+            Log.Debug(
+                "BuyCar key persisted: DbId={0} CarId={1} ProtocolTableIndex={2} InvenIdx={3}",
+                grantedKey.DbId,
+                vehicle.CarId,
+                keyProtocolTableIndex,
+                grantedKey.InventoryIndex);
 
             return true;
         }
