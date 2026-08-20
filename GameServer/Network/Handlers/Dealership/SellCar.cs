@@ -92,17 +92,53 @@ namespace GameServer.Network.Handlers.Dealership
                 return;
             }
 
+            // A car can legally be sold while it still has performance parts equipped.
+            // Do not call the normal client-driven unequip handler here: the sale flow is already
+            // in progress and that handler expects a separate CmdUnEquipItem packet. Instead,
+            // detach every equipped inventory item linked to this vehicle directly and persist the
+            // authoritative inventory state before removing the vehicle itself.
+            var unequippedPartSlots = new List<uint>();
+            if (character.InventoryItems != null)
+            {
+                var equippedParts = character.InventoryItems
+                    .Where(item => item != null && item.CarId == vehicleId && item.State != 0)
+                    .ToList();
+
+                foreach (var item in equippedParts)
+                {
+                    var oldSlot = item.Slot;
+                    item.LastCarId = vehicleId;
+                    item.CarId = 0;
+                    item.State = 0;
+                    item.Slot = 0;
+
+                    ItemModel.Update(GameServer.Instance.Database.Connection, item);
+                    character.AddItemMod(item, true);
+                    unequippedPartSlots.Add(item.InventoryIndex);
+
+                    Log.Info(
+                        "SellCar auto-unequip: CID={0} CarId={1} InvenIdx={2} TableIndex={3} OldSlot={4} -> inventory",
+                        character.Id,
+                        vehicleId,
+                        item.InventoryIndex,
+                        item.TableIndex,
+                        oldSlot);
+                }
+            }
+
             if (!VehicleModel.Remove(GameServer.Instance.Database.Connection, vehicleId))
             {
-                Log.Error("SellCar: couldn't remove CarId={0} from DB.", vehicleId);
+                Log.Error("SellCar: couldn't remove CarId={0} from DB after auto-unequipping {1} parts.",
+                    vehicleId, unequippedPartSlots.Count);
                 packet.Sender.SendError("Failed to sell the car.");
                 return;
             }
 
             character.GarageVehicles.Remove(vehicle);
 
-            // Remove the inventory key that belongs to the sold vehicle. Keep the inventory list
-            // and DB synchronized so the key cannot remain as an orphan after the car disappears.
+            // Remove the inventory key that belongs to the sold vehicle. Equipped parts were
+            // already detached above (CarId=0), therefore only passive linked items such as the
+            // physical vehicle key are removed here.
             var removedKeySlots = new List<uint>();
             if (character.InventoryItems != null)
             {
@@ -130,7 +166,8 @@ namespace GameServer.Network.Handlers.Dealership
                 SellPrice = price
             }.CreatePacket());
 
-            // Send the authoritative inventory after deleting the vehicle key.
+            // Send the authoritative inventory after auto-unequipping the parts and deleting
+            // the vehicle key. This avoids the client retaining stale equipped slots.
             packet.Sender.Send(new ItemListAnswer
             {
                 InventoryItems = character.InventoryItems == null
@@ -141,7 +178,7 @@ namespace GameServer.Network.Handlers.Dealership
             character.FlushItemModBuffer(packet.Sender);
 
             Log.Info(
-                "SellCar complete: CID={0} CarId={1} CarType={2} Grade=V{3} GradeIndex={4} SellPrice={5} Mito={6} RemovedLinkedItems={7}",
+                "SellCar complete: CID={0} CarId={1} CarType={2} Grade=V{3} GradeIndex={4} SellPrice={5} Mito={6} AutoUnequippedParts={7} RemovedLinkedItems={8}",
                 character.Id,
                 vehicleId,
                 vehicle.CarType,
@@ -149,6 +186,7 @@ namespace GameServer.Network.Handlers.Dealership
                 gradeIndex,
                 price,
                 character.MitoMoney,
+                unequippedPartSlots.Count,
                 removedKeySlots.Count);
         }
     }
