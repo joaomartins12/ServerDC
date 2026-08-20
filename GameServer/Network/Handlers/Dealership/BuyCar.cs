@@ -133,6 +133,14 @@ namespace GameServer.Network.Handlers.Dealership
             }
 
             VehicleKeyResearchExporter.LogCandidates(buyCarPacket.CarType, vehicleData.Name);
+            VehiclePurchaseResearchExporter.LogPurchase(
+                character.Id,
+                newVehicle.CarId,
+                vehicleRuntimeIndex,
+                newVehicle.CarType,
+                vehicleData.Name,
+                newVehicle.Grade,
+                newVehicle.Color);
 
             InventoryItem grantedKey;
             BasicItem keyData;
