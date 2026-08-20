@@ -37,12 +37,7 @@ namespace GameServer.Network.Handlers
                 return;
             }
 
-            // Parts are deliberately kept separate from the base vehicle values. Once CmdEquipItem/UnEquipItem
-            // is decoded, Equip* will contain the sum of the parts currently attached to this CarId.
-            var equipSpeed = 0;
-            var equipCrash = 0;
-            var equipAccel = 0;
-            var equipBoost = 0;
+            var equipped = EquippedItemStatResolver.Resolve(character, activeCar);
 
             var ack = new CheckStatAnswer
             {
@@ -51,22 +46,22 @@ namespace GameServer.Network.Handlers
                 BasedAcceleration = stats.Accel,
                 BasedBoost = stats.Boost,
 
-                EquipSpeed = equipSpeed,
-                EquipDurability = equipCrash,
-                EquipAcceleration = equipAccel,
-                EquipBoost = equipBoost,
+                EquipSpeed = equipped.Speed,
+                EquipDurability = equipped.Crash,
+                EquipAcceleration = equipped.Accel,
+                EquipBoost = equipped.Boost,
 
-                TotalSpeed = stats.Speed + equipSpeed,
-                TotalDurability = stats.Crash + equipCrash,
-                TotalAcceleration = stats.Accel + equipAccel,
-                TotalBoost = stats.Boost + equipBoost,
+                TotalSpeed = stats.Speed + equipped.Speed,
+                TotalDurability = stats.Crash + equipped.Crash,
+                TotalAcceleration = stats.Accel + equipped.Accel,
+                TotalBoost = stats.Boost + equipped.Boost,
 
                 MitronCapacity = stats.MitronCapacity,
                 MitronEfficiency = stats.MitronEfficiency
             };
 
             Log.Info(
-                "StatUpdate: CID={0} CarDbId={1} VehicleId={2} Name={3} Grade=V{4} Source={5} Base[S={6},C={7},A={8},B={9}] Mitron[Capacity={10},Efficiency={11}]",
+                "StatUpdate: CID={0} CarDbId={1} VehicleId={2} Name={3} Grade=V{4} Source={5} Base[S={6},C={7},A={8},B={9}] Equip[S={10},C={11},A={12},B={13}] Total[S={14},C={15},A={16},B={17}] Mitron[Capacity={18},Efficiency={19}]",
                 character.Id,
                 activeCar.CarId,
                 stats.VehicleId,
@@ -77,6 +72,14 @@ namespace GameServer.Network.Handlers
                 stats.Crash,
                 stats.Accel,
                 stats.Boost,
+                equipped.Speed,
+                equipped.Crash,
+                equipped.Accel,
+                equipped.Boost,
+                stats.Speed + equipped.Speed,
+                stats.Crash + equipped.Crash,
+                stats.Accel + equipped.Accel,
+                stats.Boost + equipped.Boost,
                 stats.MitronCapacity,
                 stats.MitronEfficiency);
 
