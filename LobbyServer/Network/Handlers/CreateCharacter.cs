@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using Shared.Models;
 using Shared.Network;
 using Shared.Network.LobbyServer;
@@ -80,19 +81,34 @@ namespace LobbyServer.Network.Handlers
                 return;
             }
 
-            // CheckInLobby loads this collection once. Keep it synchronized so
-            // a UserInfo request immediately after CreateChar sees the new char.
+            // License.xlt defines 7000 / Rookie as the first license issued to every
+            // driver. Grant and equip it immediately instead of waiting for a restart
+            // migration to seed the new character.
+            using (var connection = LobbyServer.Instance.Database.Connection)
+            {
+                CharacterProgressModel.UnlockLicense(
+                    connection,
+                    character.Id,
+                    CharacterProgressModel.DefaultLicenseId,
+                    DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+                CharacterProgressModel.SetCurrentLicense(
+                    connection,
+                    character.Id,
+                    CharacterProgressModel.DefaultLicenseId);
+            }
+
             if (packet.Sender.User.Characters == null)
                 packet.Sender.User.Characters = new List<Character>();
 
             packet.Sender.User.Characters.RemoveAll(c => c.Id == character.Id);
             packet.Sender.User.Characters.Add(character);
 
-            Log.Info("CreateCharacter: created CID={0} Name={1} VehicleID={2} UID={3}",
+            Log.Info("CreateCharacter: created CID={0} Name={1} VehicleID={2} UID={3} License={4}",
                 character.Id,
                 character.Name,
                 character.ActiveVehicleId,
-                character.Uid);
+                character.Uid,
+                CharacterProgressModel.DefaultLicenseId);
 
             packet.Sender.Send(new CreateCharAnswerPacket
             {
