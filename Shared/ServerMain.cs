@@ -75,12 +75,33 @@ namespace Shared
                 db.Init(conf.Database.Host, conf.Database.Port, conf.Database.User, conf.Database.Pass,
                     conf.Database.Db);
                 NormalizeDboSchema(db);
+                EnsureVehicleCatalogKeyItemId(db);
             }
             catch (Exception ex)
             {
                 Log.Error("Unable to open database connection. ({0})", ex.Message);
                 ConsoleUtil.Exit(1);
             }
+        }
+
+        /// <summary>
+        /// Adds the manually maintained vehicle key item id mapping column.
+        /// Existing values are never overwritten by server startup migrations.
+        /// </summary>
+        private static void EnsureVehicleCatalogKeyItemId(BaseDatabase db)
+        {
+            const string sql = @"
+IF OBJECT_ID(N'dbo.vehicle_catalog', N'U') IS NOT NULL
+   AND COL_LENGTH(N'dbo.vehicle_catalog', N'KeyItemId') IS NULL
+BEGIN
+    ALTER TABLE dbo.vehicle_catalog ADD KeyItemId VARCHAR(32) NULL;
+END;";
+
+            using (var connection = db.Connection)
+            using (var command = new Shared.Models.MySqlCommand(sql, connection))
+                command.ExecuteNonQuery();
+
+            Log.Debug("Vehicle catalog KeyItemId migration complete.");
         }
 
         /// <summary>
