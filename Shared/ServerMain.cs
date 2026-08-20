@@ -109,21 +109,21 @@ IF @LockResult < 0
 IF OBJECT_ID(N'dbo.characters', N'U') IS NOT NULL
 BEGIN
     IF COL_LENGTH(N'dbo.characters', N'CurrentLicenseId') IS NULL
-        ALTER TABLE dbo.characters ADD CurrentLicenseId INT NOT NULL CONSTRAINT DF_characters_CurrentLicenseId DEFAULT (7000);
+        EXEC(N'ALTER TABLE dbo.characters ADD CurrentLicenseId INT NOT NULL CONSTRAINT DF_characters_CurrentLicenseId DEFAULT (7000)');
     IF COL_LENGTH(N'dbo.characters', N'PvpCount') IS NULL
-        ALTER TABLE dbo.characters ADD PvpCount BIGINT NOT NULL CONSTRAINT DF_characters_PvpCount DEFAULT (0);
+        EXEC(N'ALTER TABLE dbo.characters ADD PvpCount BIGINT NOT NULL CONSTRAINT DF_characters_PvpCount DEFAULT (0)');
     IF COL_LENGTH(N'dbo.characters', N'PvpWinCount') IS NULL
-        ALTER TABLE dbo.characters ADD PvpWinCount BIGINT NOT NULL CONSTRAINT DF_characters_PvpWinCount DEFAULT (0);
+        EXEC(N'ALTER TABLE dbo.characters ADD PvpWinCount BIGINT NOT NULL CONSTRAINT DF_characters_PvpWinCount DEFAULT (0)');
     IF COL_LENGTH(N'dbo.characters', N'PvpPoint') IS NULL
-        ALTER TABLE dbo.characters ADD PvpPoint BIGINT NOT NULL CONSTRAINT DF_characters_PvpPoint DEFAULT (0);
+        EXEC(N'ALTER TABLE dbo.characters ADD PvpPoint BIGINT NOT NULL CONSTRAINT DF_characters_PvpPoint DEFAULT (0)');
     IF COL_LENGTH(N'dbo.characters', N'TeamPvpCount') IS NULL
-        ALTER TABLE dbo.characters ADD TeamPvpCount BIGINT NOT NULL CONSTRAINT DF_characters_TeamPvpCount DEFAULT (0);
+        EXEC(N'ALTER TABLE dbo.characters ADD TeamPvpCount BIGINT NOT NULL CONSTRAINT DF_characters_TeamPvpCount DEFAULT (0)');
     IF COL_LENGTH(N'dbo.characters', N'TeamPvpWinCount') IS NULL
-        ALTER TABLE dbo.characters ADD TeamPvpWinCount BIGINT NOT NULL CONSTRAINT DF_characters_TeamPvpWinCount DEFAULT (0);
+        EXEC(N'ALTER TABLE dbo.characters ADD TeamPvpWinCount BIGINT NOT NULL CONSTRAINT DF_characters_TeamPvpWinCount DEFAULT (0)');
     IF COL_LENGTH(N'dbo.characters', N'TeamPvpPoint') IS NULL
-        ALTER TABLE dbo.characters ADD TeamPvpPoint BIGINT NOT NULL CONSTRAINT DF_characters_TeamPvpPoint DEFAULT (0);
+        EXEC(N'ALTER TABLE dbo.characters ADD TeamPvpPoint BIGINT NOT NULL CONSTRAINT DF_characters_TeamPvpPoint DEFAULT (0)');
     IF COL_LENGTH(N'dbo.characters', N'QuickCount') IS NULL
-        ALTER TABLE dbo.characters ADD QuickCount BIGINT NOT NULL CONSTRAINT DF_characters_QuickCount DEFAULT (0);
+        EXEC(N'ALTER TABLE dbo.characters ADD QuickCount BIGINT NOT NULL CONSTRAINT DF_characters_QuickCount DEFAULT (0)');
 END;
 
 IF OBJECT_ID(N'dbo.character_licenses', N'U') IS NULL
@@ -158,7 +158,10 @@ ON target.CID = source.CID AND target.LicenseId = source.LicenseId
 WHEN NOT MATCHED THEN
     INSERT (CID, LicenseId, UnlockedDate, IsNew) VALUES (source.CID, source.LicenseId, 0, 0);
 
-UPDATE dbo.characters SET CurrentLicenseId = 7000 WHERE CurrentLicenseId IS NULL OR CurrentLicenseId <= 0;
+-- Dynamic SQL is required here. SQL Server compiles a batch before executing the
+-- conditional ALTER TABLE statements, so a direct reference to a newly-added column
+-- fails on the first startup of an existing database with "Invalid column name".
+EXEC(N'UPDATE dbo.characters SET CurrentLicenseId = 7000 WHERE CurrentLicenseId IS NULL OR CurrentLicenseId <= 0');
 
 EXEC sys.sp_releaseapplock
     @Resource=N'DCServer.CharacterProgressMigration',
