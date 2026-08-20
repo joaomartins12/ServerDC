@@ -1,9 +1,8 @@
 using System;
+using System;
 using System.Diagnostics;
 using System.IO;
-using System.Linq;
 using System.Security.Principal;
-using System.Text;
 
 namespace ServerManager
 {
@@ -14,7 +13,6 @@ namespace ServerManager
         public static readonly int[] KnownPorts = { 11005, 11011, 11021, 11031, 11041, 11078 };
 
         private static Process _clientProcess;
-        private static bool _redirectOwnedByManager;
 
         public static bool IsClientRunning
         {
@@ -71,53 +69,20 @@ namespace ServerManager
 
         public static void EnableRedirect(Action<string> log)
         {
-            if (!IsAdministrator())
-                throw new InvalidOperationException("GAME START redirect requires DCServerManager to be started as Administrator.");
-
-            if (HasLocalOfficialAddress())
-            {
-                if (log != null) log("[Client] Redirect address " + OfficialServerIp + " is already local.");
-                _redirectOwnedByManager = false;
-                return;
-            }
-
-            var script =
-                "$route = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop | " +
-                "Where-Object { $_.NextHop -ne '0.0.0.0' } | Sort-Object RouteMetric,InterfaceMetric | Select-Object -First 1; " +
-                "if ($null -eq $route) { throw 'No active IPv4 default route found.' }; " +
-                "$existing = Get-NetIPAddress -AddressFamily IPv4 -IPAddress '" + OfficialServerIp + "' -ErrorAction SilentlyContinue; " +
-                "if ($null -eq $existing) { New-NetIPAddress -InterfaceIndex $route.InterfaceIndex -IPAddress '" + OfficialServerIp + "' -PrefixLength 32 -SkipAsSource $true -ErrorAction Stop | Out-Null };";
-
-            RunPowerShell(script);
-            if (!HasLocalOfficialAddress())
-                throw new InvalidOperationException("Windows did not register the local redirect address " + OfficialServerIp + ".");
-
-            _redirectOwnedByManager = true;
+            // IMPORTANT: Do not add the official address to a Windows network adapter.
+            // New-NetIPAddress can disable DHCP on a DHCP-managed interface, which can
+            // remove the default gateway and break the host's Internet connectivity.
+            // Redirecting the Korean client must be implemented process-locally instead.
             if (log != null)
-            {
-                log("[Client] Network redirect ACTIVE: " + OfficialServerIp + " -> local machine");
-                log("[Client] Known ports: " + string.Join(", ", KnownPorts.Select(p => p.ToString()).ToArray()));
-            }
+                log("[Client] Global IP redirect disabled for safety. No Windows network settings were changed.");
         }
 
         public static void DisableRedirect(Action<string> log)
         {
-            if (!_redirectOwnedByManager) return;
-            if (!IsAdministrator()) return;
-
-            try
-            {
-                var script =
-                    "Get-NetIPAddress -AddressFamily IPv4 -IPAddress '" + OfficialServerIp + "' -ErrorAction SilentlyContinue | " +
-                    "Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue;";
-                RunPowerShell(script);
-                _redirectOwnedByManager = false;
-                if (log != null) log("[Client] Network redirect removed.");
-            }
-            catch (Exception ex)
-            {
-                if (log != null) log("[Client] Failed to remove redirect: " + ex.Message);
-            }
+            // Kept for compatibility with the existing UI/cleanup flow. The manager no
+            // longer owns or changes a global network redirect.
+            if (log != null)
+                log("[Client] No global network redirect to remove.");
         }
 
         public static Process StartClient(string clientFolder, string executablePath, Action<string> log, Action exited)
@@ -151,51 +116,6 @@ namespace ServerManager
 
             if (log != null) log("[Client] Started skidrush.exe PID=" + _clientProcess.Id + " from " + workingDirectory);
             return _clientProcess;
-        }
-
-        private static bool HasLocalOfficialAddress()
-        {
-            try
-            {
-                var output = RunPowerShell(
-                    "$x = Get-NetIPAddress -AddressFamily IPv4 -IPAddress '" + OfficialServerIp + "' -ErrorAction SilentlyContinue; " +
-                    "if ($null -ne $x) { 'YES' } else { 'NO' }");
-                return output.IndexOf("YES", StringComparison.OrdinalIgnoreCase) >= 0;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        private static string RunPowerShell(string script)
-        {
-            var encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
-            var psi = new ProcessStartInfo
-            {
-                FileName = "powershell.exe",
-                Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand " + encoded,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            };
-
-            using (var process = Process.Start(psi))
-            {
-                if (process == null) throw new InvalidOperationException("Unable to start PowerShell for client redirect.");
-                var stdout = process.StandardOutput.ReadToEnd();
-                var stderr = process.StandardError.ReadToEnd();
-                process.WaitForExit(15000);
-                if (!process.HasExited)
-                {
-                    try { process.Kill(); } catch { }
-                    throw new TimeoutException("Timed out while configuring the client network redirect.");
-                }
-                if (process.ExitCode != 0)
-                    throw new InvalidOperationException(string.IsNullOrWhiteSpace(stderr) ? "PowerShell redirect command failed." : stderr.Trim());
-                return stdout ?? string.Empty;
-            }
         }
     }
 }
