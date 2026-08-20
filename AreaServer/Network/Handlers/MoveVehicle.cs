@@ -1,5 +1,7 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using Shared.Network;
+using Shared.Util;
 
 namespace AreaServer.Network.Handlers
 {
@@ -35,12 +37,35 @@ namespace AreaServer.Network.Handlers
                         continue;
                 }
 
-                // This client discovers remote vehicles from the same movement packet id
-                // it emits (541). Replaying 542 prevents remote-player discovery.
-                var replay = new Packet(Packets.CmdMoveVehicle);
-                replay.Writer.Write(pair.Key);
-                replay.Writer.Write(pair.Value);
-                client.Send(replay);
+                SendMovement(client, pair.Key, pair.Value);
+                WritePresenceLog("REPLAY", pair.Key, ownSerial, areaId, pair.Value.Length);
+            }
+        }
+
+        public static void AnnounceCurrentToArea(Client enteringClient, ushort serial, int areaId)
+        {
+            byte[] movement;
+            lock (Sync)
+            {
+                if (!LastMovement.TryGetValue(serial, out movement))
+                    return;
+            }
+
+            foreach (var client in AreaServer.Instance.Server.GetClients())
+            {
+                if (client == null || client == enteringClient || client.User == null)
+                    continue;
+
+                var targetSerial = client.User.VehicleSerial;
+                int targetArea;
+                lock (Sync)
+                {
+                    if (!SerialArea.TryGetValue(targetSerial, out targetArea) || targetArea != areaId)
+                        continue;
+                }
+
+                SendMovement(client, serial, movement);
+                WritePresenceLog("ANNOUNCE", serial, targetSerial, areaId, movement.Length);
             }
         }
 
@@ -48,21 +73,63 @@ namespace AreaServer.Network.Handlers
         public static void Handle(Packet packet)
         {
             var vehicleSerial = packet.Reader.ReadUInt16();
+            var stream = packet.Reader.BaseStream;
+            var remaining = (int)Math.Max(0, stream.Length - stream.Position);
+            var movement = packet.Reader.ReadBytes(remaining);
 
-            // Movement bodies are not always the same size in this client (the captured
-            // wire packets vary). Preserve every remaining byte instead of truncating or
-            // padding to a guessed 112-byte structure.
-            var remaining = (int)(packet.Reader.BaseStream.Length - packet.Reader.BaseStream.Position);
-            var movement = remaining > 0 ? packet.Reader.ReadBytes(remaining) : new byte[0];
-
+            int areaId = -1;
             lock (Sync)
+            {
                 LastMovement[vehicleSerial] = movement;
+                SerialArea.TryGetValue(vehicleSerial, out areaId);
+            }
 
+            // Relay only to clients registered in the same area. Preserve the full body
+            // exactly as this client sent it; this build uses 541 for remote discovery.
+            foreach (var client in AreaServer.Instance.Server.GetClients())
+            {
+                if (client == null || client == packet.Sender || client.User == null)
+                    continue;
+
+                var targetSerial = client.User.VehicleSerial;
+                int targetArea;
+                lock (Sync)
+                {
+                    if (!SerialArea.TryGetValue(targetSerial, out targetArea) || targetArea != areaId)
+                        continue;
+                }
+
+                SendMovement(client, vehicleSerial, movement);
+                WritePresenceLog("LIVE", vehicleSerial, targetSerial, areaId, movement.Length);
+            }
+
+            // Also refresh the sender's view of everybody else in the area. This makes
+            // recovery deterministic after entering/leaving shops or when discovery was
+            // missed because another driver was stationary.
+            if (areaId >= 0)
+                ReplayExisting(packet.Sender, vehicleSerial, areaId);
+        }
+
+        private static void SendMovement(Client client, ushort serial, byte[] movement)
+        {
             var move = new Packet(Packets.CmdMoveVehicle);
-            move.Writer.Write(vehicleSerial);
-            move.Writer.Write(movement);
+            move.Writer.Write(serial);
+            move.Writer.Write(movement ?? new byte[0]);
+            client.Send(move);
+        }
 
-            AreaServer.Instance.Server.Broadcast(move, packet.Sender);
+        private static void WritePresenceLog(string action, ushort sourceSerial, ushort targetSerial, int areaId, int bodyLength)
+        {
+            try
+            {
+                FileAuditLog.Write("PresenceSync.txt",
+                    string.Format("{0:O} {1} source={2} target={3} area={4} body={5}",
+                        DateTime.UtcNow, action, sourceSerial, targetSerial, areaId, bodyLength));
+            }
+            catch
+            {
+                // Research/audit logging must never affect gameplay.
+            }
         }
     }
 }
