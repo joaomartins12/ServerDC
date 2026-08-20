@@ -146,7 +146,8 @@ namespace GameServer
             // performed offline from DCServerManager while GameServer.exe is stopped.
             GameDataCatalogExporter.Export(Items, VisualItems, Vehicles, Quests, LevelTable);
             ItemCatalogJsonExporter.Export(Items);
-            Log.Info("ItemCatalog.json ready for offline database import from Server Manager.");
+            VehicleCatalogJsonExporter.Export(Vehicles);
+            Log.Info("ItemCatalog.json and VehicleCatalog.json ready for offline database import from Server Manager.");
 
             Server = new DefaultServer(Config.Game.Port);
             Server.Start();
