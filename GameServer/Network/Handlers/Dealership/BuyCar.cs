@@ -15,11 +15,6 @@ namespace GameServer.Network.Handlers.Dealership
 {
     public class BuyCar
     {
-        // Confirmed from a real client purchase of Mittron Fuel (5L):
-        // protocol TableIndex = 0x580 + (zero-based UseItems.xml index + 1).
-        // Vehicle keys are special: their pc_XXXX ItemId contains the client key index.
-        private const int UseItemProtocolBase = 0x580;
-
         [Packet(Packets.CmdBuyCar)]
         public static void Handle(Packet packet)
         {
@@ -154,7 +149,7 @@ namespace GameServer.Network.Handlers.Dealership
             if (keyGranted)
             {
                 Log.Info(
-                    "BuyCar key granted: CID={0} CarId={1} CarType={2} Vehicle='{3}' CatalogIndex={4} UseItemIndex={5} ProtocolTableIndex={6} ItemId={7} Name='{8}' InvenIdx={9}",
+                    "BuyCar key granted: CID={0} CarId={1} CarType={2} Vehicle='{3}' RuntimeTableIndex={4} UseItemIndex={5} StoredTableIndex={6} ItemId={7} Name='{8}' InvenIdx={9}",
                     character.Id,
                     newVehicle.CarId,
                     newVehicle.CarType,
@@ -269,24 +264,19 @@ namespace GameServer.Network.Handlers.Dealership
                 keyCatalogIndex = i;
                 keyUseItemIndex = i - firstUseItemCatalogIndex;
 
-                var xmlOrdinalProtocolIndex = checked(UseItemProtocolBase + keyUseItemIndex + 1);
-                int keyIdNumber;
-                if (TryGetVehicleKeyNumber(useItem.Id, out keyIdNumber))
-                    keyProtocolTableIndex = checked(UseItemProtocolBase + keyIdNumber + 1);
-                else
-                    keyProtocolTableIndex = xmlOrdinalProtocolIndex;
+                // Car keys are stored using the combined runtime catalog TableIndex.
+                // This is the same TableIndex exported by ItemCatalog.json / Items_RuntimeTable.csv.
+                // Example from the captured catalog: pc_0068s Nevera key = runtime TableIndex 874.
+                keyProtocolTableIndex = keyCatalogIndex;
+                keyData = useItem;
 
                 Log.Info(
-                    "Vehicle key protocol mapping: CarType={0} ItemId={1} Name='{2}' XmlUseItemIndex={3} XmlProtocol={4} KeyIdNumber={5} SelectedProtocol={6}",
+                    "Vehicle key runtime mapping: CarType={0} ItemId={1} Name='{2}' RuntimeTableIndex={3} UseItemIndex={4}",
                     vehicle.CarType,
                     useItem.Id,
                     useItem.Name,
-                    keyUseItemIndex,
-                    xmlOrdinalProtocolIndex,
-                    keyIdNumber,
-                    keyProtocolTableIndex);
-
-                keyData = useItem;
+                    keyCatalogIndex,
+                    keyUseItemIndex);
                 break;
             }
 
@@ -310,35 +300,13 @@ namespace GameServer.Network.Handlers.Dealership
             ItemModel.Update(GameServer.Instance.Database.Connection, grantedKey);
 
             Log.Debug(
-                "BuyCar key persisted: DbId={0} CarId={1} ProtocolTableIndex={2} InvenIdx={3}",
+                "BuyCar key persisted: DbId={0} CarId={1} RuntimeTableIndex={2} InvenIdx={3}",
                 grantedKey.DbId,
                 vehicle.CarId,
                 keyProtocolTableIndex,
                 grantedKey.InventoryIndex);
 
             return true;
-        }
-
-        private static bool TryGetVehicleKeyNumber(string itemId, out int keyNumber)
-        {
-            keyNumber = -1;
-            if (string.IsNullOrWhiteSpace(itemId) ||
-                !itemId.StartsWith("pc_", StringComparison.OrdinalIgnoreCase))
-                return false;
-
-            var start = 3;
-            var end = start;
-            while (end < itemId.Length && char.IsDigit(itemId[end]))
-                end++;
-
-            if (end == start)
-                return false;
-
-            return int.TryParse(
-                itemId.Substring(start, end - start),
-                NumberStyles.Integer,
-                CultureInfo.InvariantCulture,
-                out keyNumber);
         }
 
         private static int FindFirstUseItemCatalogIndex()
