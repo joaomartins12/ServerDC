@@ -147,6 +147,7 @@ namespace GameServer.Network.Handlers.Dealership
             int keyCatalogIndex;
             int keyUseItemIndex;
             int keyProtocolTableIndex;
+            string configuredKeyItemId;
             var keyGranted = TryGrantVehicleKey(
                 character,
                 newVehicle,
@@ -154,16 +155,18 @@ namespace GameServer.Network.Handlers.Dealership
                 out keyData,
                 out keyCatalogIndex,
                 out keyUseItemIndex,
-                out keyProtocolTableIndex);
+                out keyProtocolTableIndex,
+                out configuredKeyItemId);
 
             if (keyGranted)
             {
                 Log.Info(
-                    "BuyCar key granted: CID={0} CarId={1} CarType={2} Vehicle='{3}' CatalogTableIndex={4} UseItemIndex={5} ProtocolTableIndex={6} ItemId={7} Name='{8}' InvenIdx={9}",
+                    "BuyCar key granted from vehicle_catalog: CID={0} CarId={1} CarType={2} Vehicle='{3}' ConfiguredKeyItemId={4} CatalogTableIndex={5} UseItemIndex={6} ProtocolTableIndex={7} ResolvedItemId={8} Name='{9}' InvenIdx={10}",
                     character.Id,
                     newVehicle.CarId,
                     newVehicle.CarType,
                     vehicleData.Name,
+                    configuredKeyItemId,
                     keyCatalogIndex,
                     keyUseItemIndex,
                     keyProtocolTableIndex,
@@ -174,10 +177,11 @@ namespace GameServer.Network.Handlers.Dealership
             else
             {
                 Log.Warning(
-                    "BuyCar key not granted: CarId={0} CarType={1} Vehicle='{2}'. No matching category=car key with original maxstack={1} was found or persistence failed.",
+                    "BuyCar key not granted: CarId={0} CarType={1} Vehicle='{2}' ConfiguredKeyItemId='{3}'. Check vehicle_catalog.KeyItemId and UseItems.xml.",
                     newVehicle.CarId,
                     newVehicle.CarType,
-                    vehicleData.Name);
+                    vehicleData.Name,
+                    configuredKeyItemId ?? string.Empty);
             }
 
             var carInfo = new XiStrCarInfo
@@ -238,16 +242,25 @@ namespace GameServer.Network.Handlers.Dealership
             out BasicItem keyData,
             out int keyCatalogIndex,
             out int keyUseItemIndex,
-            out int keyProtocolTableIndex)
+            out int keyProtocolTableIndex,
+            out string configuredKeyItemId)
         {
             grantedKey = null;
             keyData = null;
             keyCatalogIndex = -1;
             keyUseItemIndex = -1;
             keyProtocolTableIndex = -1;
+            configuredKeyItemId = null;
 
             if (character == null || vehicle == null || ServerMain.Items == null)
                 return false;
+
+            configuredKeyItemId = GetConfiguredKeyItemId(vehicle.CarType);
+            if (string.IsNullOrWhiteSpace(configuredKeyItemId))
+            {
+                Log.Warning("Vehicle key lookup: no KeyItemId configured in vehicle_catalog for CarType={0}.", vehicle.CarType);
+                return false;
+            }
 
             var firstUseItemCatalogIndex = FindFirstUseItemCatalogIndex();
             if (firstUseItemCatalogIndex < 0)
@@ -259,35 +272,20 @@ namespace GameServer.Network.Handlers.Dealership
                 if (useItem == null)
                     continue;
 
-                if (!string.Equals(useItem.Category, "car", StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                if (string.IsNullOrWhiteSpace(useItem.Name) ||
-                    !useItem.Name.EndsWith("key", StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                // IMPORTANT: for vehicle keys the original UseItems.xml maxstack is not
-                // a stack size. It is the vehicle CarType mapping used by the client data.
-                uint mappedCarType;
-                if (!uint.TryParse(useItem.MaxStack, NumberStyles.Integer, CultureInfo.InvariantCulture, out mappedCarType) ||
-                    mappedCarType != vehicle.CarType)
+                if (!string.Equals(useItem.Id, configuredKeyItemId, StringComparison.OrdinalIgnoreCase))
                     continue;
 
                 keyCatalogIndex = i;
                 keyUseItemIndex = i - firstUseItemCatalogIndex;
-
-                // UseItems do NOT use the combined ItemCatalog index on the wire.
-                // The protocol namespace confirmed by normal UseItem purchases is:
-                //   0x580 + (zero-based UseItems.xml ordinal + 1)
-                // Keep exactly the same rule for car keys. Do not derive this from pc_XXXX.
                 keyProtocolTableIndex = checked(UseItemProtocolBase + keyUseItemIndex + 1);
                 keyData = useItem;
 
                 Log.Info(
-                    "Vehicle key mapping: CarType={0} ItemId={1} Name='{2}' CatalogTableIndex={3} UseItemIndex={4} ProtocolTableIndex={5}",
+                    "Vehicle key exact ItemId lookup: CarType={0} ConfiguredKeyItemId={1} ResolvedName='{2}' Category='{3}' CatalogTableIndex={4} UseItemIndex={5} LegacyProtocolTableIndex={6}",
                     vehicle.CarType,
-                    useItem.Id,
+                    configuredKeyItemId,
                     useItem.Name,
+                    useItem.Category,
                     keyCatalogIndex,
                     keyUseItemIndex,
                     keyProtocolTableIndex);
@@ -295,9 +293,14 @@ namespace GameServer.Network.Handlers.Dealership
             }
 
             if (keyCatalogIndex < 0 || keyData == null)
+            {
+                Log.Warning(
+                    "Vehicle key exact ItemId lookup failed: CarType={0} KeyItemId={1} was not found in loaded UseItems.",
+                    vehicle.CarType,
+                    configuredKeyItemId);
                 return false;
+            }
 
-            // GiveItem needs the combined server catalog index to resolve metadata/persistence.
             grantedKey = character.GiveItem(
                 GameServer.Instance.Database.Connection,
                 keyCatalogIndex,
@@ -305,7 +308,6 @@ namespace GameServer.Network.Handlers.Dealership
             if (grantedKey == null)
                 return false;
 
-            // The inventory packet/client needs the UseItems protocol TableIndex instead.
             grantedKey.TableIndex = keyProtocolTableIndex;
             grantedKey.CarId = vehicle.CarId;
             grantedKey.StackNum = 1;
@@ -316,15 +318,44 @@ namespace GameServer.Network.Handlers.Dealership
             ItemModel.Update(GameServer.Instance.Database.Connection, grantedKey);
 
             Log.Debug(
-                "BuyCar key persisted: DbId={0} CarId={1} CarType={2} CatalogTableIndex={3} ProtocolTableIndex={4} InvenIdx={5}",
+                "BuyCar key persisted: DbId={0} CarId={1} CarType={2} KeyItemId={3} CatalogTableIndex={4} ProtocolTableIndex={5} InvenIdx={6}",
                 grantedKey.DbId,
                 vehicle.CarId,
                 vehicle.CarType,
+                configuredKeyItemId,
                 keyCatalogIndex,
                 keyProtocolTableIndex,
                 grantedKey.InventoryIndex);
 
             return true;
+        }
+
+        private static string GetConfiguredKeyItemId(uint carType)
+        {
+            try
+            {
+                using (var conn = GameServer.Instance.Database.Connection)
+                using (var cmd = new MySqlCommand(@"
+IF OBJECT_ID(N'dbo.vehicle_catalog', N'U') IS NOT NULL
+   AND COL_LENGTH(N'dbo.vehicle_catalog', N'KeyItemId') IS NOT NULL
+BEGIN
+    SELECT KeyItemId
+    FROM dbo.vehicle_catalog
+    WHERE VehicleId=@vehicleId;
+END", conn))
+                {
+                    cmd.Parameters.AddWithValue("@vehicleId", carType);
+                    var value = cmd.ExecuteScalar();
+                    return value == null || value == DBNull.Value
+                        ? null
+                        : Convert.ToString(value, CultureInfo.InvariantCulture).Trim();
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Warning("Vehicle key DB lookup failed for CarType={0}: {1}", carType, ex.Message);
+                return null;
+            }
         }
 
         private static int FindFirstUseItemCatalogIndex()
