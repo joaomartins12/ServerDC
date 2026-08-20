@@ -52,11 +52,11 @@ namespace AreaServer.Network.Handlers
                 AreaId = enterAreaPacket.AreaId
             }.CreatePacket());
 
-            // A player that enters after another driver stopped moving would otherwise
-            // never receive that driver's serial/movement and therefore never request
-            // PlayerInfo 801. Replay the last known movement of drivers already in the
-            // same area so discovery works regardless of login order.
+            // Refresh both directions. The entering client discovers drivers already in
+            // this map, while drivers already present are reminded of this serial when a
+            // cached movement exists (important after Dealership/Garage/Shop transitions).
             MoveVehicle.ReplayExisting(packet.Sender, enterAreaPacket.VehicleSerial, enterAreaPacket.AreaId);
+            MoveVehicle.AnnounceCurrentToArea(packet.Sender, enterAreaPacket.VehicleSerial, enterAreaPacket.AreaId);
         }
     }
 }
