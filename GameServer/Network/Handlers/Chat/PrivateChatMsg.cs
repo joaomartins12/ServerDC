@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -204,14 +204,9 @@ namespace GameServer.Network.Handlers
                 return;
             }
 
-            // Keep MessageType=private because this is the client-proven whisper route.
-            // The client itself renders SenderCharacterName as [Name]:, so use "Whisper"
-            // there and put direction/player/message in the body. Result:
-            // [Whisper]: [From] [Portuga] (message)
-            // [Whisper]: [To]   [Port]    (message)
             var rawMessage = message ?? string.Empty;
-            var recipientDisplayMessage = "[From] [" + senderName + "] (" + rawMessage + ")";
-            var senderDisplayMessage = "[To] [" + targetDisplayName + "] (" + rawMessage + ")";
+            var recipientDisplayMessage = "(" + senderName + "): " + rawMessage;
+            var senderDisplayMessage = "(" + targetDisplayName + "): " + rawMessage;
 
             Packet recipientPacket;
             Packet senderEchoPacket;
@@ -220,40 +215,48 @@ namespace GameServer.Network.Handlers
             if (mode == "149")
             {
                 recipientPacket = new Packet(Packets.CmdPrivateChatMsg);
-                recipientPacket.Writer.WriteUnicodeStatic("Whisper", 21, true);
+                recipientPacket.Writer.WriteUnicodeStatic("Whisper From", 21, true);
                 recipientPacket.Writer.WriteUnicode(recipientDisplayMessage);
 
                 senderEchoPacket = new Packet(Packets.CmdPrivateChatMsg);
-                senderEchoPacket.Writer.WriteUnicodeStatic("Whisper", 21, true);
+                senderEchoPacket.Writer.WriteUnicodeStatic("Whisper To", 21, true);
                 senderEchoPacket.Writer.WriteUnicode(senderDisplayMessage);
                 stage = "OUT149";
             }
             else
             {
+                // The packet format itself does not contain RGB values. This client maps
+                // colours from MessageType. "debug" is a native ChatMsgAck type already
+                // documented by the packet structure, so use it as the whisper visual
+                // style while keeping LastMessageFrom for whisper routing/replies.
+                const string visualType = "debug";
+
                 recipientPacket = new ChatMessageAnswer
                 {
-                    MessageType = mode,
-                    SenderCharacterName = "Whisper",
+                    MessageType = visualType,
+                    SenderCharacterName = "Whisper From",
                     Message = recipientDisplayMessage
                 }.CreatePacket();
 
                 senderEchoPacket = new ChatMessageAnswer
                 {
-                    MessageType = mode,
-                    SenderCharacterName = "Whisper",
+                    MessageType = visualType,
+                    SenderCharacterName = "Whisper To",
                     Message = senderDisplayMessage
                 }.CreatePacket();
-                stage = "OUT147_" + mode.ToUpperInvariant();
+                stage = "OUT147_DEBUG_WHISPER";
             }
 
             WriteWhisperResearch(stage, packet.Sender.User.VehicleSerial,
                 target.User.VehicleSerial, senderCharacter.Name,
-                target.User.ActiveCharacter.Name, message, recipientPacket, "mode=" + mode + " direction=recipient");
+                target.User.ActiveCharacter.Name, message, recipientPacket,
+                "mode=" + mode + " visual=debug direction=recipient");
             target.Send(recipientPacket);
 
             WriteWhisperResearch(stage + "_ECHO", packet.Sender.User.VehicleSerial,
                 packet.Sender.User.VehicleSerial, target.User.ActiveCharacter.Name,
-                senderCharacter.Name, message, senderEchoPacket, "mode=" + mode + " direction=sender");
+                senderCharacter.Name, message, senderEchoPacket,
+                "mode=" + mode + " visual=debug direction=sender");
             packet.Sender.Send(senderEchoPacket);
 
             senderCharacter.LastMessageFrom = target.User.ActiveCharacter.Name;
