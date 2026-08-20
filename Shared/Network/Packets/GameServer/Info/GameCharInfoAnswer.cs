@@ -8,7 +8,7 @@ namespace Shared.Network.GameServer
 {
     /// <summary>
     /// sub_529160
-    /// PKTSIZE: Wrong Packet Size. CMD(661) CmdLen: : 1177, AnalysisSize: 831
+    /// PKTSIZE: 1177-byte body.
     /// </summary>
     public class GameCharInfoAnswer : OutPacket
     {
@@ -16,7 +16,7 @@ namespace Shared.Network.GameServer
         public Vehicle Vehicle;
         public XiStrStatInfo StatisticInfo;
         public Crew Crew;
-        public uint Serial; // ushort (2)?
+        public uint Serial;
         public int LocType = 2;
         public char ChId;
         public ushort LocId;
@@ -33,66 +33,50 @@ namespace Shared.Network.GameServer
         {
             return base.CreatePacket(Packets.GameCharInfoAck);
         }
-        
+
         public override int ExpectedSize() => 1177;
 
         /// <summary>
-        /// 346 Bytes missing
-        /// 
-        /// packetId => 2
-        /// field_0 => 4 (CharId?)
-        /// field_1 => 155 (0x6->0xA1)
-        /// field_2 => 4
-        /// field_3 => 8 (0xA5->0xAD)
-        /// field_4 => 4
-        /// field_5 => 146 (0xB1->0x143) - Char Info end?! (321)
-        /// -----------------------------------------------------
-        /// field_6 => 50 (0x143->0x175) - VEHICLE INFO!! (50)
-        /// -----------------------------------------------------
-        /// field_7 => 112 (0x175->0x1E5) - Statistic Info
-        /// -----------------------------------------------------
-        /// field_8 => 4 - TeamId
-        /// field_9 => 660 (0x1E9->0x47D) - Team
-        /// -----------------------------------------------------
-        /// field_10 => 12 (0x47D->0x489)
-        /// field_11 => 6 (0x489->0x48F)
-        ///     field_0 => 4
-        ///     field_1 => 2
-        /// field_12 => 6 (0x48F->0x495)
-        ///     field_0 => 4
-        ///     field_1 => 2
-        /// field_13 => 4 - LocType
-        /// 
-        /// If LocType == 1 -> LocId == AreaId
+        /// Layout after the main character/vehicle/stat/crew blocks:
+        /// field_10 = 12 reserved bytes
+        /// field_11 = session vehicle serial (uint) + channel id (ushort)
+        /// field_12 = reserved int + location id (ushort)
+        /// field_13 = location type (int)
+        ///
+        /// The previous implementation wrote zeroes into field_11/field_12 even though
+        /// Serial, ChId and LocId were populated by the handler. That prevented the client
+        /// from associating the profile vehicle with the player's live vehicle/session.
         /// </summary>
-        /// <returns></returns>
         public override byte[] GetBytes()
         {
             using (var ms = new MemoryStream())
             {
                 using (var bs = new BinaryWriterExt(ms))
                 {
-                    Character.Serialize(bs); // 321 here, 363 in rice.
+                    Character.Serialize(bs);
                     Vehicle.Serialize(bs);
-                    StatisticInfo.Serialize(bs); // 112 vs 80 -> 32 bytes missing?
-                    if (Crew == null) // Character is in not team.
+                    StatisticInfo.Serialize(bs);
+
+                    if (Crew == null)
                         bs.Write(new byte[664]);
                     else
                         Crew.Serialize(bs);
-                    
-                    // field_10
+
+                    // field_10 - reserved
                     bs.Write(new byte[12]);
-                    
-                    // field_11
-                    bs.Write((int)0);
-                    bs.Write((short)0);
-                    
-                    // field_12
-                    bs.Write((int)0);
-                    bs.Write((short)0);
-                    
+
+                    // field_11 - live player/session identity used by the profile preview.
+                    bs.Write(Serial);
+                    bs.Write((ushort)ChId);
+
+                    // field_12 - keep the unknown int reserved, but preserve LocId.
+                    bs.Write(0);
+                    bs.Write(LocId);
+
+                    // field_13
                     bs.Write(LocType);
                 }
+
                 return ms.ToArray();
             }
         }
