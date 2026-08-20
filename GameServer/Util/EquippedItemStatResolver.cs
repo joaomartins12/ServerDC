@@ -86,8 +86,9 @@ namespace GameServer.Util
                         break;
                 }
 
-                Log.Debug(
-                    "Equipped part stats: InvenIdx={0} ClientTableIndex={1} ResolvedItemId={2} Name={3} Category={4} BasePoints={5} UpgradePoint={6} Applied={7}",
+                QuietLog.Write(
+                    "PartStats",
+                    "InvenIdx={0} ClientTableIndex={1} ResolvedItemId={2} Name={3} Category={4} BasePoints={5} UpgradePoint={6} Applied={7}",
                     inventoryItem.InventoryIndex,
                     inventoryItem.TableIndex,
                     definition.Id,
@@ -142,7 +143,7 @@ END", GameServer.Instance.Database.Connection))
                         }
                     }
 
-                    Log.Info("Client item stat mapping loaded: {0} ItemClient indexes resolved to server item definitions.", map.Count);
+                    QuietLog.Write("PartStats", "Client item stat mapping loaded: {0} indexes resolved to server definitions.", map.Count);
                 }
                 catch (Exception ex)
                 {
