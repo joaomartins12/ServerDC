@@ -13,12 +13,8 @@ namespace GameServer.Util
         public GameChatCommands()
         {
             // As per legal requirements, this shall not be removed or changed!
-            // As per legal requirements, this shall not be removed or changed!
-            // As per legal requirements, this shall not be removed or changed!
             Add("copyright", "/copyright", 0x0, "Gets the copyright", CopyrightCommandHandler);
             Add("about", "/about", 0x0, "Gets the copyright", CopyrightCommandHandler);
-            // As per legal requirements, this shall not be removed or changed!
-            // As per legal requirements, this shall not be removed or changed!
             // As per legal requirements, this shall not be removed or changed!
 
             Add("help", "/help [Command]", 0x1000, "Shows help about a command", HelpCommandHandler);
@@ -28,7 +24,6 @@ namespace GameServer.Util
                 WeatherCommandHandler);
             Add("kick", "/kick [Character Name]", 0x1000, "Kicks the user", KickCommandHandler);
             Add("ban", "/ban [Character Name]", 0x8000, "Bans the user forever", BanCommandHandler);
-            //Add("tempban", "/tempban [Character Name]", 0x8000, "Bans the user", BanCommandHandler);
             Add("money", "/money [Character Name] [Amount]", 0x8000, "Gives the charactername money",
                 MoneyCommandHandler);
             Add("exp", "/exp [Character Name] [Amount]", 0x8000, "Gives the user experience", ExpCommandHandler);
@@ -37,6 +32,39 @@ namespace GameServer.Util
             Add("tempmute", "/mute [Character Name]", 0x8000, "Mutes/Unmutes the character from chat", MuteCommandHandler);
 
             Add("gm", "/gm", 0x1000, "Toggles your GM Status", ToggleGmStatusCommandHandler);
+            Add("perfprobe", "/perfprobe [1-10] [value] | /perfprobe off", 0x8000,
+                "Temporarily probes one StatUpdate vehicle-performance field", PerformanceProbeCommandHandler);
+        }
+
+        private static CommandResult PerformanceProbeCommandHandler(DefaultServer server, Client sender, string command,
+            IList<string> args)
+        {
+            if (args.Count < 1)
+                return CommandResult.InvalidArgument;
+
+            if (string.Equals(args[0], "off", System.StringComparison.OrdinalIgnoreCase))
+            {
+                VehiclePerformanceProbe.Disable();
+                QuietLog.Write("VehiclePerformanceProbe", "Probe disabled by {0}", sender.User == null ? "UNKNOWN" : sender.User.Username);
+                sender.SendChatMessage("Vehicle performance probe disabled. Reopen the inventory/stat panel to refresh.");
+                return CommandResult.Okay;
+            }
+
+            if (args.Count < 2)
+                return CommandResult.InvalidArgument;
+
+            int field;
+            int value;
+            if (!int.TryParse(args[0], out field) || field < 1 || field > 10)
+                return CommandResult.InvalidArgument;
+            if (!int.TryParse(args[1], out value))
+                return CommandResult.InvalidArgument;
+
+            VehiclePerformanceProbe.Configure(field, value);
+            QuietLog.Write("VehiclePerformanceProbe", "Configured field={0} value={1} by {2}",
+                field, value, sender.User == null ? "UNKNOWN" : sender.User.Username);
+            sender.SendChatMessage("Performance probe field " + field + " = " + value + ". Reopen the inventory/stat panel to trigger CmdCheckStat.");
+            return CommandResult.Okay;
         }
 
         private static CommandResult MuteCommandHandler(DefaultServer server, Client sender, string command,
@@ -52,7 +80,7 @@ namespace GameServer.Util
             if(client.User.Status == UserStatus.Banned) return CommandResult.Fail;
 
             client.User.Status = client.User.Status == UserStatus.Muted ? UserStatus.Normal : UserStatus.Muted;
-            if(command == "mute") // temp mute doesn't save to the db!
+            if(command == "mute")
                 AccountModel.Update(GameServer.Instance.Database.Connection, client.User);
 
             var newStatusStr = client.User.Status == UserStatus.Muted ? "muted" : "unmuted";
@@ -99,22 +127,13 @@ namespace GameServer.Util
         private static CommandResult CopyrightCommandHandler(DefaultServer server, Client sender, string command,
             IList<string> args)
         {
-            // As per legal requirements, this shall not be removed or changed!
-            // As per legal requirements, this shall not be removed or changed!
-            // As per legal requirements, this shall not be removed or changed!
-
             sender.SendChatMessage($"Drift City Neo City v{Shared.Util.Version.GetVersion()} Copyright 2016 GigaToni");
             return CommandResult.Okay;
-
-            // As per legal requirements, this shall not be removed or changed!
-            // As per legal requirements, this shall not be removed or changed!
-            // As per legal requirements, this shall not be removed or changed!
         }
 
         private static CommandResult NoticeCommandHandler(DefaultServer server, Client sender, string command,
             IList<string> args)
         {
-            // Doesn't work right. Sending /notice notice does work. But "prints out notice XYZ" to chat..
             if (args.Count == 0)
                 return CommandResult.InvalidArgument;
 
@@ -140,27 +159,15 @@ namespace GameServer.Util
             var ack = new Packet(Packets.WeatherAck);
             switch (args[0])
             {
-                case "fine":
-                    ack.Writer.Write(0);
-                    break;
-                case "cloudy":
-                    ack.Writer.Write(1);
-                    break;
-                case "foggy":
-                    ack.Writer.Write(2);
-                    break;
-                case "rain":
-                    ack.Writer.Write(3);
-                    break;
-                case "sunset":
-                    ack.Writer.Write(4);
-                    break;
-                default:
-                    return CommandResult.InvalidArgument;
+                case "fine": ack.Writer.Write(0); break;
+                case "cloudy": ack.Writer.Write(1); break;
+                case "foggy": ack.Writer.Write(2); break;
+                case "rain": ack.Writer.Write(3); break;
+                case "sunset": ack.Writer.Write(4); break;
+                default: return CommandResult.InvalidArgument;
             }
 
             GameServer.Instance.Server.Broadcast(ack);
-
             return CommandResult.Okay;
         }
 
@@ -171,31 +178,26 @@ namespace GameServer.Util
                 return CommandResult.InvalidArgument;
 
             var characterName = args[0];
-
             var client = GameServer.Instance.Server.GetClient(characterName);
             if (client?.User == null) return CommandResult.Fail;
 
             client.KillConnection($"Kicked by {sender.User.Username}");
             sender.SendChatMessage($"User {characterName} ({client.User.Username}) kicked!");
-
             return CommandResult.Okay;
         }
 
         private static CommandResult MoneyCommandHandler(DefaultServer server, Client sender, string command,
             IList<string> args)
         {
-            //const char *CName, __int64 Money, const char *szEventCode
             if (args.Count < 2)
                 return CommandResult.InvalidArgument;
 
             var characterName = args[0];
             long amount;
             if (!long.TryParse(args[1], out amount)) return CommandResult.InvalidArgument;
-            if (amount <= 0) // Allow only positive numbers
-                return CommandResult.InvalidArgument;
+            if (amount <= 0) return CommandResult.InvalidArgument;
 
             var client = GameServer.Instance.Server.GetClient(characterName);
-            // Client / Character is not online! (This activeChar check is redundant, see GetClient(characterName)
             if (client?.User.ActiveCharacter == null) return CommandResult.Fail;
 
             client.User.ActiveCharacter.MitoMoney += amount;
@@ -220,20 +222,15 @@ namespace GameServer.Util
             var characterName = args[0];
             int amount;
             if (!int.TryParse(args[1], out amount)) return CommandResult.InvalidArgument;
-            if (amount <= 0) // Allow only positive numbers
-                return CommandResult.InvalidArgument;
+            if (amount <= 0) return CommandResult.InvalidArgument;
 
             var client = GameServer.Instance.Server.GetClient(characterName);
-
-            // Client / Character is not online! (This activeChar check is redundant, see GetClient(characterName)
             if (client?.User.ActiveCharacter == null) return CommandResult.Fail;
 
             bool levelUp;
             bool useBonus = false;
             bool useBonus500Mita = false;
             client.User.ActiveCharacter.CalculateExp(amount, out levelUp, useBonus, useBonus500Mita);
-            // TODO: Check if user has leveled up, if so send levelup packet!
-
             CharacterModel.Update(GameServer.Instance.Database.Connection, client.User.ActiveCharacter);
 
             sender.SendChatMessage($"{amount} EXP given to {characterName} ({client.User.Username})");
@@ -253,7 +250,6 @@ namespace GameServer.Util
                 return CommandResult.InvalidArgument;
 
             var characterName = args[0];
-
             var client = GameServer.Instance.Server.GetClient(characterName);
             if (client?.User == null) return CommandResult.Fail;
 
