@@ -104,6 +104,20 @@ namespace ServerManager
                         foreach (var item in catalog.items)
                             Upsert(connection, tx, item);
 
+                        // Defensive migration for catalogs imported by older server builds.
+                        // Car keys are unique ownership tokens and must never inherit the
+                        // source XML's overloaded maxstack value.
+                        using (var normalize = new SqlCommand(@"
+UPDATE dbo.item_catalog
+SET MaxStack=1,
+    Stackable=0,
+    SourceUpdatedAt=SYSUTCDATETIME()
+WHERE LOWER(LTRIM(RTRIM(ISNULL(Category,''))))='car'
+  AND LOWER(RTRIM(ISNULL(Name,''))) LIKE '%key';", connection, tx))
+                        {
+                            normalize.ExecuteNonQuery();
+                        }
+
                         tx.Commit();
                     }
                     catch
@@ -170,6 +184,10 @@ END;";
 
         private static void Upsert(SqlConnection connection, SqlTransaction tx, CatalogItem item)
         {
+            var vehicleKey = IsVehicleKey(item);
+            var stackable = vehicleKey ? false : item.stackable;
+            int? maxStack = vehicleKey ? 1 : item.maxStack;
+
             const string sql = @"
 MERGE dbo.item_catalog AS target
 USING (SELECT @TableIndex AS TableIndex) AS source
@@ -217,8 +235,8 @@ WHEN NOT MATCHED THEN
                 cmd.Parameters.AddWithValue("@Auctionable", Db(item.auctionable));
                 cmd.Parameters.AddWithValue("@PartsShop", Db(item.partsShop));
                 cmd.Parameters.AddWithValue("@Sendable", Db(item.sendable));
-                cmd.Parameters.AddWithValue("@Stackable", item.stackable);
-                cmd.Parameters.AddWithValue("@MaxStack", Db(item.maxStack));
+                cmd.Parameters.AddWithValue("@Stackable", stackable);
+                cmd.Parameters.AddWithValue("@MaxStack", Db(maxStack));
                 cmd.Parameters.AddWithValue("@Grade", Db(item.grade));
                 cmd.Parameters.AddWithValue("@RequiredLevel", DbInt(item.requiredLevel));
                 cmd.Parameters.AddWithValue("@BasePoints", DbInt(item.basePoints));
@@ -232,6 +250,14 @@ WHEN NOT MATCHED THEN
                 cmd.Parameters.AddWithValue("@Duration", Db(item.duration));
                 cmd.ExecuteNonQuery();
             }
+        }
+
+        private static bool IsVehicleKey(CatalogItem item)
+        {
+            if (item == null) return false;
+            if (!string.Equals((item.category ?? string.Empty).Trim(), "car", StringComparison.OrdinalIgnoreCase))
+                return false;
+            return (item.name ?? string.Empty).Trim().EndsWith("key", StringComparison.OrdinalIgnoreCase);
         }
 
         private static object Db(object value)
