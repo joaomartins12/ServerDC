@@ -1,5 +1,7 @@
 ﻿using System;
+using System.IO;
 using System.Linq;
+using System.Text;
 using Shared.Network;
 using Shared.Network.GameServer;
 using Shared.Objects;
@@ -16,11 +18,12 @@ namespace GameServer.Network.Handlers
                 return;
 
             var senderCharacter = packet.Sender.User.ActiveCharacter;
+            var stream = packet.Reader.BaseStream;
 
             string targetName;
             try
             {
-                targetName = packet.Reader.ReadUnicodeStatic(21);
+                targetName = ReadNullTerminatedUnicode(packet);
             }
             catch (Exception ex)
             {
@@ -28,37 +31,20 @@ namespace GameServer.Network.Handlers
                 return;
             }
 
-            targetName = (targetName ?? string.Empty).TrimEnd('\0').Trim();
+            targetName = (targetName ?? string.Empty).Trim();
             if (targetName.Length == 0)
                 return;
 
             senderCharacter.LastMessageFrom = targetName;
 
-            // This client carries the message body in CmdWhisper itself. After the
-            // fixed 21-wchar target there is one unknown ushort and then a unicode-
-            // prefixed message. Older flows may still send CmdPrivateChatMsg after
-            // selecting a target, so keep that handler as a fallback below.
-            string message = null;
-            try
+            string message;
+            if (!TryReadTrailingUnicodeMessage(stream, out message) || string.IsNullOrEmpty(message))
             {
-                var remaining = packet.Reader.BaseStream.Length - packet.Reader.BaseStream.Position;
-                if (remaining >= 4)
-                {
-                    packet.Reader.ReadUInt16(); // unknown / client state
-                    if (packet.Reader.BaseStream.Position < packet.Reader.BaseStream.Length)
-                        message = packet.Reader.ReadUnicodePrefixed();
-                }
-            }
-            catch (Exception ex)
-            {
-                Log.Warning("CmdWhisper: failed to read message from {0} to {1}: {2}",
-                    senderCharacter.Name, targetName, ex.Message);
+                Log.Debug("Whisper target selected without message: {0} -> {1}", senderCharacter.Name, targetName);
+                return;
             }
 
-            if (!string.IsNullOrEmpty(message))
-                SendPrivate(packet, targetName, message);
-            else
-                Log.Debug("Whisper target selected: {0} -> {1}", senderCharacter.Name, targetName);
+            SendPrivate(packet, targetName, message);
         }
 
         [Packet(Packets.CmdPrivateChatMsg)]
@@ -87,6 +73,63 @@ namespace GameServer.Network.Handlers
             }
 
             SendPrivate(packet, targetName, message);
+        }
+
+        private static string ReadNullTerminatedUnicode(Packet packet)
+        {
+            var sb = new StringBuilder();
+            while (packet.Reader.BaseStream.Position + 1 < packet.Reader.BaseStream.Length)
+            {
+                var c = packet.Reader.ReadUInt16();
+                if (c == 0) break;
+                sb.Append((char)c);
+            }
+            return sb.ToString();
+        }
+
+        private static bool TryReadTrailingUnicodeMessage(Stream stream, out string message)
+        {
+            message = null;
+            if (stream == null || !stream.CanSeek) return false;
+
+            var original = stream.Position;
+            try
+            {
+                var end = stream.Length;
+                if (end - original < 4) return false;
+
+                // Current client puts metadata between the target and message. The final
+                // field is encoded as: UInt16 byteLength + UTF-16LE bytes, including the
+                // terminating wchar. Find the prefix whose declared length lands exactly
+                // on the end of the packet instead of guessing metadata offsets.
+                for (var pos = original; pos + 4 <= end; pos += 2)
+                {
+                    stream.Position = pos;
+                    var lo = stream.ReadByte();
+                    var hi = stream.ReadByte();
+                    if (lo < 0 || hi < 0) break;
+
+                    var byteLength = lo | (hi << 8);
+                    if (byteLength < 2 || (byteLength & 1) != 0)
+                        continue;
+                    if (pos + 2 + byteLength != end)
+                        continue;
+
+                    var bytes = new byte[byteLength];
+                    var read = stream.Read(bytes, 0, bytes.Length);
+                    if (read != bytes.Length)
+                        return false;
+
+                    message = Encoding.Unicode.GetString(bytes).TrimEnd('\0');
+                    return true;
+                }
+
+                return false;
+            }
+            finally
+            {
+                stream.Position = original;
+            }
         }
 
         private static void SendPrivate(Packet packet, string targetName, string message)
