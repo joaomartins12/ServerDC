@@ -128,6 +128,10 @@ namespace ServerManager
 
             var exe = ResolveExecutable(clientFolder, executablePath);
             var workingDirectory = Path.GetDirectoryName(exe);
+
+            var patchResult = ClientWebPatch.Apply(workingDirectory);
+            if (log != null) log("[Client] " + patchResult);
+
             var startInfo = new ProcessStartInfo
             {
                 FileName = exe,
