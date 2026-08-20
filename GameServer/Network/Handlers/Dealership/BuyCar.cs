@@ -21,7 +21,6 @@ namespace GameServer.Network.Handlers.Dealership
                 return;
             }
 
-            // Preserve the currently active car before switching away from it.
             if (character.ActiveCar != null && character.ActiveCar.CarId != 0)
                 VehicleModel.Update(GameServer.Instance.Database.Connection, character.ActiveCar);
 
@@ -55,7 +54,6 @@ namespace GameServer.Network.Handlers.Dealership
                 return;
             }
 
-            // Vehicle XML grade is the zero-based upgrade row used for a newly purchased car.
             var upgradeIndex = Math.Max(0, Math.Min(vehicleData.Upgrades.Count - 1, vehicleGrade));
             var vehicleUpgrade = vehicleData.Upgrades[upgradeIndex];
 
@@ -97,7 +95,6 @@ namespace GameServer.Network.Handlers.Dealership
             float.TryParse(vehicleUpgrade.Efficiency, System.Globalization.NumberStyles.Float,
                 System.Globalization.CultureInfo.InvariantCulture, out newVehicle.MitronEfficiency);
 
-            // Create the garage vehicle first. VehicleModel.Create assigns the generated DB CID.
             var createdId = VehicleModel.Create(GameServer.Instance.Database.Connection, newVehicle, character.Id);
             if (createdId <= 0)
             {
@@ -107,7 +104,6 @@ namespace GameServer.Network.Handlers.Dealership
                 return;
             }
 
-            // The new car becomes authoritative both in memory and in characters.CurrentCarID.
             newVehicle.CarId = checked((uint)createdId);
             newVehicle.CharacterId = character.Id;
             character.ActiveCar = newVehicle;
@@ -127,11 +123,8 @@ namespace GameServer.Network.Handlers.Dealership
                 return;
             }
 
-            // Drift City represents owned cars with their matching '<vehicle name> key' inventory item.
-            // Items.xml is loaded first and UseItems.xml follows it in ServerMain.Items, so the resulting
-            // index is exactly the runtime TableIndex expected by ItemListAck.
             InventoryItem vehicleKey = null;
-            var keyTableIndex = FindVehicleKeyTableIndex(vehicleData.Name);
+            var keyTableIndex = FindVehicleKeyTableIndex(buyCarPacket.CarType, vehicleData.Name);
             if (keyTableIndex >= 0)
             {
                 var inventoryIndex = FindNextInventoryIndex(character);
@@ -157,9 +150,10 @@ namespace GameServer.Network.Handlers.Dealership
                     character.InventoryItems.Add(vehicleKey);
                     var keyDefinition = ServerMain.Items[keyTableIndex];
                     Log.Info(
-                        "BuyCar key granted: CID={0} CarId={1} Vehicle={2} InvenIdx={3} TableIndex={4} ItemId={5} Name={6}",
+                        "BuyCar key granted: CID={0} CarId={1} CarType={2} Vehicle={3} InvenIdx={4} TableIndex={5} ItemId={6} Name={7}",
                         character.Id,
                         newVehicle.CarId,
+                        newVehicle.CarType,
                         vehicleData.Name,
                         vehicleKey.InventoryIndex,
                         keyTableIndex,
@@ -175,8 +169,10 @@ namespace GameServer.Network.Handlers.Dealership
             }
             else
             {
-                Log.Warning("BuyCar: no matching key item found for vehicle '{0}'. Expected an item named '{0} key'.",
-                    vehicleData.Name);
+                var expectedId = "pc_" + buyCarPacket.CarType.ToString("x5", System.Globalization.CultureInfo.InvariantCulture);
+                Log.Warning(
+                    "BuyCar: no matching key item found for CarType={0} Vehicle='{1}'. Expected ItemId={2} (name fallback '{1} key').",
+                    buyCarPacket.CarType, vehicleData.Name, expectedId);
             }
 
             var carInfo = new XiStrCarInfo
@@ -195,7 +191,6 @@ namespace GameServer.Network.Handlers.Dealership
                 AuctionOn = newVehicle.AuctionOn
             };
 
-            // Send the real current-car stats instead of the legacy zero-filled StatUpdate.
             CheckStat.Handle(packet);
 
             packet.Sender.Send(new VisualUpdateAnswer
@@ -212,7 +207,6 @@ namespace GameServer.Network.Handlers.Dealership
                 Price = price
             }.CreatePacket());
 
-            // A complete ItemList resync makes the newly granted vehicle key immediately visible.
             if (vehicleKey != null)
             {
                 packet.Sender.Send(new ItemListAnswer
@@ -233,18 +227,33 @@ namespace GameServer.Network.Handlers.Dealership
                 character.MitoMoney);
         }
 
-        private static int FindVehicleKeyTableIndex(string vehicleName)
+        private static int FindVehicleKeyTableIndex(uint carType, string vehicleName)
         {
-            if (ServerMain.Items == null || string.IsNullOrWhiteSpace(vehicleName))
+            if (ServerMain.Items == null)
                 return -1;
 
-            var expectedName = vehicleName.Trim() + " key";
+            // UseItems vehicle keys encode CarType as five hexadecimal digits.
+            // Example: CarType 12 (0x0C) -> pc_0000c; CarType 81 (0x51) -> pc_00051.
+            var expectedId = "pc_" + carType.ToString("x5", System.Globalization.CultureInfo.InvariantCulture);
             for (var i = 0; i < ServerMain.Items.Count; i++)
             {
                 var item = ServerMain.Items[i];
-                if (item != null && string.Equals((item.Name ?? string.Empty).Trim(), expectedName,
+                if (item != null && string.Equals((item.Id ?? string.Empty).Trim(), expectedId,
                         StringComparison.OrdinalIgnoreCase))
                     return i;
+            }
+
+            // Keep the readable-name lookup as a compatibility fallback for unusual tables.
+            if (!string.IsNullOrWhiteSpace(vehicleName))
+            {
+                var expectedName = vehicleName.Trim() + " key";
+                for (var i = 0; i < ServerMain.Items.Count; i++)
+                {
+                    var item = ServerMain.Items[i];
+                    if (item != null && string.Equals((item.Name ?? string.Empty).Trim(), expectedName,
+                            StringComparison.OrdinalIgnoreCase))
+                        return i;
+                }
             }
 
             return -1;
