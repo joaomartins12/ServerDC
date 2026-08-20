@@ -1,6 +1,7 @@
 ﻿using Shared.Models;
 using Shared.Network;
 using Shared.Network.GameServer;
+using Shared.Util;
 
 namespace GameServer.Network.Handlers
 {
@@ -9,40 +10,50 @@ namespace GameServer.Network.Handlers
         [Packet(Packets.CmdDriveInfoUpdate)]
         public static void Handle(Packet packet)
         {
+            var character = packet.Sender.User?.ActiveCharacter;
+            var activeCar = character?.ActiveCar;
+            if (character == null || activeCar == null)
+                return;
+
             var driveInfo = new DriveInfoPacket(packet);
 
-            var fDeltaFuel = packet.Sender.User.ActiveCharacter.ActiveCar.Mitron - driveInfo.TotalFuel;
-            if (fDeltaFuel > 0.0f)
-                packet.Sender.User.ActiveCharacter.ActiveCar.Mitron -= fDeltaFuel;
-            var fDelta = driveInfo.TotalDistance - packet.Sender.User.ActiveCharacter.ActiveCar.Kmh;
-            if (fDelta > 0.0f)
+            // Ignore updates for a different car. This also avoids transferring one
+            // vehicle's odometer/fuel state into the currently selected vehicle.
+            if (driveInfo.CarId != 0 && driveInfo.CarId != activeCar.CarId)
             {
-                packet.Sender.User.ActiveCharacter.ActiveCar.Kmh += fDelta;
-                packet.Sender.User.ActiveCharacter.TotalDistance += fDelta;
+                Log.Warning(
+                    "DriveInfoUpdate: CID={0} sent car {1} while active car is {2}.",
+                    character.Id,
+                    driveInfo.CarId,
+                    activeCar.CarId);
+                return;
             }
 
-            if (packet.Sender.User.ActiveCharacter.ActiveCar.Mitron <= 0.0f)
-                packet.Sender.User.ActiveCharacter.ActiveCar.Mitron = 0.0f;
+            var deltaFuel = activeCar.Mitron - driveInfo.TotalFuel;
+            if (deltaFuel > 0.0f)
+                activeCar.Mitron -= deltaFuel;
 
-            // Save car to db.
-            VehicleModel.Update(GameServer.Instance.Database.Connection, packet.Sender.User.ActiveCharacter.ActiveCar);
-
-
-            /*
-            fDeltaFuel = pCarInfo->m_CarInfo.CarUnit.Mitron - *(float *)(lpBuffer + 14);
-            if ( fDeltaFuel > 0.0 )
-              pCarInfo->m_CarInfo.CarUnit.Mitron = pCarInfo->m_CarInfo.CarUnit.Mitron - fDeltaFuel;
-            fDelta = *(float *)(lpBuffer + 10) - pCarInfo->m_CarInfo.CarUnit.Kmh;
-            if ( fDelta > 0.0 )
+            // The original server stores the client's cumulative distance for the active
+            // car in CarUnit.Kmh and adds only the positive delta to character mileage.
+            var deltaDistance = driveInfo.TotalDistance - activeCar.Kmh;
+            if (deltaDistance > 0.0f)
             {
-              pCarInfo->m_CarInfo.CarUnit.Kmh = pCarInfo->m_CarInfo.CarUnit.Kmh + fDelta;
-              pCharInfo->m_CharInfo.TotalDistance = pCharInfo->m_CharInfo.TotalDistance + fDelta;
-              pCarInfo->m_fFuelConsume = pCarInfo->m_fFuelConsume + fDelta;
+                activeCar.Kmh += deltaDistance;
+                character.TotalDistance += deltaDistance;
             }
-            pGame->m_lastUpdateTime = GetSystemTick();
-            if ( pCarInfo->m_CarInfo.CarUnit.Mitron < 0.0 )
-              pCarInfo->m_CarInfo.CarUnit.Mitron = *(float *)&FLOAT_0_0;
-                */
+
+            if (activeCar.Mitron < 0.0f)
+                activeCar.Mitron = 0.0f;
+
+            using (var connection = GameServer.Instance.Database.Connection)
+            {
+                VehicleModel.Update(connection, activeCar);
+
+                // Previously TotalDistance changed only in memory. Persist it immediately
+                // so User Information and relogging use the same mileage value.
+                if (deltaDistance > 0.0f)
+                    CharacterProgressModel.UpdateMileage(connection, character);
+            }
         }
     }
 }
