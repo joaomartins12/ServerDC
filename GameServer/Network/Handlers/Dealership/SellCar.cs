@@ -32,8 +32,6 @@ namespace GameServer.Network.Handlers.Dealership
                 return;
             }
 
-            // Trying to sell the selected/current vehicle is a normal invalid operation, not a
-            // hack attempt. Keep the connection alive and let the client show an error packet.
             if (vehicleId == character.ActiveVehicleId ||
                 (character.ActiveCar != null && vehicleId == character.ActiveCar.CarId))
             {
@@ -52,9 +50,6 @@ namespace GameServer.Network.Handlers.Dealership
                 return;
             }
 
-            // CarId is the database instance id. Vehicle definitions are indexed by CarType.
-            // The old code compared UniqueId against CarId, which made selling a perfectly valid
-            // non-active vehicle fail as soon as its DB id differed from its vehicle type.
             var vehicleData = ServerMain.Vehicles == null
                 ? null
                 : ServerMain.Vehicles.Find(veh =>
@@ -72,7 +67,6 @@ namespace GameServer.Network.Handlers.Dealership
                 return;
             }
 
-            // Vehicle instances store the real grade V1..V9. Upgrade catalog rows are 0..8.
             var gradeIndex = vehicle.Grade > 0 ? checked((int)vehicle.Grade - 1) : 0;
             gradeIndex = Math.Max(0, Math.Min(vehicleData.Upgrades.Count - 1, gradeIndex));
             var vehicleUpgrade = vehicleData.Upgrades[gradeIndex];
@@ -92,11 +86,9 @@ namespace GameServer.Network.Handlers.Dealership
                 return;
             }
 
-            // A car can legally be sold while it still has performance parts equipped.
-            // Do not call the normal client-driven unequip handler here: the sale flow is already
-            // in progress and that handler expects a separate CmdUnEquipItem packet. Instead,
-            // detach every equipped inventory item linked to this vehicle directly and persist the
-            // authoritative inventory state before removing the vehicle itself.
+            // Safety net: the client normally sends CmdUnEquipItem for every attached part before
+            // CmdSellCar. If anything remains linked, detach it here without leaving LastCarId or
+            // Belonging pointing at the vehicle that is about to be deleted.
             var unequippedPartSlots = new List<uint>();
             if (character.InventoryItems != null)
             {
@@ -107,17 +99,18 @@ namespace GameServer.Network.Handlers.Dealership
                 foreach (var item in equippedParts)
                 {
                     var oldSlot = item.Slot;
-                    item.LastCarId = vehicleId;
+                    item.LastCarId = 0;
                     item.CarId = 0;
                     item.State = 0;
                     item.Slot = 0;
+                    item.Belonging = 0;
 
                     ItemModel.Update(GameServer.Instance.Database.Connection, item);
                     character.AddItemMod(item, true);
                     unequippedPartSlots.Add(item.InventoryIndex);
 
                     Log.Info(
-                        "SellCar auto-unequip: CID={0} CarId={1} InvenIdx={2} TableIndex={3} OldSlot={4} -> inventory",
+                        "SellCar auto-unequip: CID={0} CarId={1} InvenIdx={2} TableIndex={3} OldSlot={4} -> CarId=0 LastCarId=0",
                         character.Id,
                         vehicleId,
                         item.InventoryIndex,
@@ -136,9 +129,6 @@ namespace GameServer.Network.Handlers.Dealership
 
             character.GarageVehicles.Remove(vehicle);
 
-            // Remove the inventory key that belongs to the sold vehicle. Equipped parts were
-            // already detached above (CarId=0), therefore only passive linked items such as the
-            // physical vehicle key are removed here.
             var removedKeySlots = new List<uint>();
             if (character.InventoryItems != null)
             {
@@ -166,8 +156,6 @@ namespace GameServer.Network.Handlers.Dealership
                 SellPrice = price
             }.CreatePacket());
 
-            // Send the authoritative inventory after auto-unequipping the parts and deleting
-            // the vehicle key. This avoids the client retaining stale equipped slots.
             packet.Sender.Send(new ItemListAnswer
             {
                 InventoryItems = character.InventoryItems == null
