@@ -11,12 +11,11 @@ using System.Text;
 namespace ServerManager
 {
     /// <summary>
-    /// Imports the Drift City license/title XLT tables.
+    /// Imports Drift City v0.77 license/title XLT files.
     ///
-    /// XLT files shipped with different client builds can contain an outer wrapper before
-    /// the actual table header. Do not assume that UInt16(file[2]) is always the table
-    /// offset. Instead, detect the embedded table by validating dimensions, offset table
-    /// bounds and UTF-16 string references.
+    /// These XLTs are UTF-16LE tab-separated text tables, not binary TDF containers.
+    /// Fields may be quoted and may contain embedded CR/LF (License.xlt uses this for
+    /// GainConditionText), so parsing must be record-aware rather than Split('\n').
     /// </summary>
     internal static class LicenseDataImporter
     {
@@ -53,17 +52,8 @@ namespace ServerManager
             public uint HeaderOffset;
             public int ColumnCount;
             public int RowCount;
-            public bool AbsoluteStringOffsets;
+            public int DeclaredCount;
             public readonly List<string[]> Rows = new List<string[]>();
-        }
-
-        private sealed class HeaderCandidate
-        {
-            public int BaseOffset;
-            public int Columns;
-            public int Rows;
-            public bool AbsoluteStrings;
-            public int Score;
         }
 
         public static string ImportFolder
@@ -80,7 +70,9 @@ namespace ServerManager
         public static string[] GetMissingRequiredFiles()
         {
             var folder = EnsureImportDirectory();
-            return RequiredFileNames.Where(name => !File.Exists(Path.Combine(folder, name))).ToArray();
+            return RequiredFileNames
+                .Where(name => !File.Exists(Path.Combine(folder, name)))
+                .ToArray();
         }
 
         public static int CountRequiredFiles()
@@ -98,6 +90,8 @@ namespace ServerManager
             var snapshots = RequiredFileNames
                 .Select(name => Parse(Path.Combine(folder, name)))
                 .ToDictionary(x => x.FileName, StringComparer.OrdinalIgnoreCase);
+
+            ValidateExpectedTables(snapshots);
 
             var connectionString = new SqlConnectionStringBuilder
             {
@@ -176,263 +170,214 @@ namespace ServerManager
         {
             var file = File.ReadAllBytes(path);
             var fileName = Path.GetFileName(path);
-            if (file.Length < 24)
-                throw new InvalidDataException(fileName + " is too small to be an XLT table.");
 
-            var candidates = FindHeaderCandidates(file, fileName);
-            if (candidates.Count == 0)
+            if (file.Length < 4)
+                throw new InvalidDataException(fileName + " is too small to be a license XLT file.");
+
+            if (file[0] != 0xFF || file[1] != 0xFE)
+                throw new InvalidDataException(fileName + " is not UTF-16LE with BOM as expected by this client build.");
+
+            string text;
+            try
             {
-                var legacy = file.Length >= 4 ? BitConverter.ToUInt16(file, 2) : 0;
-                throw new InvalidDataException(
-                    fileName + " contains no valid XLT table header. FileSize=" + file.Length +
-                    ", legacyHeaderHint=" + legacy + ". Please send this XLT file if this persists.");
+                text = Encoding.Unicode.GetString(file, 2, file.Length - 2);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidDataException(fileName + " could not be decoded as UTF-16LE: " + ex.Message, ex);
             }
 
-            var best = candidates.OrderByDescending(x => x.Score).First();
-            var baseOffset = best.BaseOffset;
+            var rows = ParseTabularText(text, fileName);
+            if (rows.Count < 3)
+                throw new InvalidDataException(fileName + " does not contain the Preset/Value/Index header records.");
+
+            var columnCount = rows.Max(r => r.Length);
+            if (columnCount <= 0 || columnCount > 512)
+                throw new InvalidDataException(fileName + " contains invalid column count " + columnCount + ".");
+
+            // Normalise all rows to the widest row so raw SQL storage preserves a stable
+            // ColumnIndex even when a text editor removed trailing TABs from some records.
+            for (var i = 0; i < rows.Count; i++)
+            {
+                if (rows[i].Length == columnCount) continue;
+                var expanded = new string[columnCount];
+                Array.Copy(rows[i], expanded, rows[i].Length);
+                for (var c = rows[i].Length; c < expanded.Length; c++) expanded[c] = string.Empty;
+                rows[i] = expanded;
+            }
+
+            if (!CellEquals(rows[0], 0, "Preset") || !CellEquals(rows[1], 0, "Value") || !CellEquals(rows[2], 0, "Index"))
+                throw new InvalidDataException(fileName + " has an unexpected XLT text header. Expected Preset / Value / Index.");
+
+            int declaredCount;
+            if (!int.TryParse(GetCell(rows[1], 1), NumberStyles.Integer, CultureInfo.InvariantCulture, out declaredCount))
+                throw new InvalidDataException(fileName + " has an invalid Value/Cnt declaration: '" + GetCell(rows[1], 1) + "'.");
 
             var snapshot = new XltSnapshot
             {
                 FullPath = path,
                 FileName = fileName,
                 Hash = Sha256(file),
-                HeaderBytes = baseOffset,
-                VersionMajor = BitConverter.ToInt16(file, baseOffset + 0),
-                VersionMinor = BitConverter.ToInt16(file, baseOffset + 2),
-                SourceYear = BitConverter.ToInt16(file, baseOffset + 4),
-                SourceMonth = file[baseOffset + 6],
-                SourceDay = file[baseOffset + 7],
-                Flag = BitConverter.ToUInt32(file, baseOffset + 8),
-                HeaderOffset = BitConverter.ToUInt32(file, baseOffset + 12),
-                ColumnCount = best.Columns,
-                RowCount = best.Rows,
-                AbsoluteStringOffsets = best.AbsoluteStrings
+                HeaderBytes = 2,
+                VersionMajor = 0,
+                VersionMinor = 0,
+                SourceYear = 0,
+                SourceMonth = 0,
+                SourceDay = 0,
+                Flag = 0,
+                HeaderOffset = 0,
+                ColumnCount = columnCount,
+                RowCount = rows.Count,
+                DeclaredCount = declaredCount
             };
+            snapshot.Rows.AddRange(rows);
 
-            var cursor = baseOffset + 24;
-            for (var row = 0; row < snapshot.RowCount; row++)
+            var validDataRows = CountIndexedDataRows(snapshot);
+            if (validDataRows != declaredCount)
             {
-                var values = new string[snapshot.ColumnCount];
-                for (var column = 0; column < snapshot.ColumnCount; column++)
-                {
-                    var rawOffset = BitConverter.ToUInt32(file, cursor);
-                    cursor += 4;
-                    var stringOffset = ResolveStringOffset(rawOffset, baseOffset, snapshot.AbsoluteStringOffsets);
-                    values[column] = ReadUnicodeString(file, stringOffset, snapshot.FileName, row, column);
-                }
-                snapshot.Rows.Add(values);
+                throw new InvalidDataException(string.Format(CultureInfo.InvariantCulture,
+                    "{0} declares {1} data rows but {2} indexed rows were parsed. Records={3}, Columns={4}.",
+                    fileName, declaredCount, validDataRows, rows.Count, columnCount));
             }
 
             return snapshot;
         }
 
-        private static List<HeaderCandidate> FindHeaderCandidates(byte[] file, string fileName)
+        private static List<string[]> ParseTabularText(string text, string fileName)
         {
-            var result = new List<HeaderCandidate>();
-            var scanLimit = Math.Min(file.Length - 24, 16384);
+            var result = new List<string[]>();
+            var fields = new List<string>();
+            var field = new StringBuilder();
+            var inQuotes = false;
 
-            // First try the hint used by some TDF/XLT builds, then scan the wrapper.
-            var preferred = new List<int>();
-            if (file.Length >= 4)
+            for (var i = 0; i < text.Length; i++)
             {
-                var hint16 = (int)BitConverter.ToUInt16(file, 2);
-                if (hint16 >= 0 && hint16 <= scanLimit) preferred.Add(hint16);
+                var ch = text[i];
+
+                if (inQuotes)
+                {
+                    if (ch == '"')
+                    {
+                        if (i + 1 < text.Length && text[i + 1] == '"')
+                        {
+                            field.Append('"');
+                            i++;
+                        }
+                        else
+                        {
+                            inQuotes = false;
+                        }
+                    }
+                    else
+                    {
+                        field.Append(ch);
+                    }
+                    continue;
+                }
+
+                if (ch == '"' && field.Length == 0)
+                {
+                    inQuotes = true;
+                    continue;
+                }
+
+                if (ch == '\t')
+                {
+                    fields.Add(field.ToString());
+                    field.Length = 0;
+                    continue;
+                }
+
+                if (ch == '\r' || ch == '\n')
+                {
+                    fields.Add(field.ToString());
+                    field.Length = 0;
+                    result.Add(fields.ToArray());
+                    fields.Clear();
+
+                    if (ch == '\r' && i + 1 < text.Length && text[i + 1] == '\n') i++;
+                    continue;
+                }
+
+                field.Append(ch);
             }
-            preferred.Add(0);
 
-            foreach (var offset in preferred.Distinct())
-                TryAddCandidate(file, offset, result);
+            if (inQuotes)
+                throw new InvalidDataException(fileName + " contains an unterminated quoted field.");
 
-            for (var offset = 1; offset <= scanLimit; offset++)
+            if (field.Length != 0 || fields.Count != 0)
             {
-                if (preferred.Contains(offset)) continue;
-                TryAddCandidate(file, offset, result);
+                fields.Add(field.ToString());
+                result.Add(fields.ToArray());
             }
 
-            // License tables should contain recognisable key text. Give such candidates
-            // a large bonus so a coincidental integer pattern in the wrapper cannot win.
-            foreach (var candidate in result)
-            {
-                var sampleText = ReadCandidateSample(file, candidate, 96);
-                if (fileName.Equals("License.xlt", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (sampleText.IndexOf("7000", StringComparison.OrdinalIgnoreCase) >= 0) candidate.Score += 100;
-                    if (sampleText.IndexOf("GC_", StringComparison.OrdinalIgnoreCase) >= 0) candidate.Score += 80;
-                    if (sampleText.IndexOf("ME_", StringComparison.OrdinalIgnoreCase) >= 0) candidate.Score += 60;
-                }
-                else if (fileName.Equals("License_GC.xlt", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (sampleText.IndexOf("GC_", StringComparison.OrdinalIgnoreCase) >= 0) candidate.Score += 160;
-                }
-                else if (fileName.Equals("License_ME.xlt", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (sampleText.IndexOf("ME_", StringComparison.OrdinalIgnoreCase) >= 0) candidate.Score += 160;
-                }
-            }
+            // Keep meaningful blank columns, but trailing entirely-empty records after the
+            // declared data are editor padding and are not part of the logical XLT table.
+            while (result.Count > 3 && result[result.Count - 1].All(string.IsNullOrEmpty))
+                result.RemoveAt(result.Count - 1);
 
             return result;
         }
 
-        private static void TryAddCandidate(byte[] file, int baseOffset, List<HeaderCandidate> result)
+        private static void ValidateExpectedTables(Dictionary<string, XltSnapshot> tables)
         {
-            if (baseOffset < 0 || baseOffset + 24 > file.Length) return;
+            XltSnapshot license;
+            XltSnapshot gc;
+            XltSnapshot me;
+            if (!tables.TryGetValue("License.xlt", out license) ||
+                !tables.TryGetValue("License_GC.xlt", out gc) ||
+                !tables.TryGetValue("License_ME.xlt", out me))
+                throw new InvalidDataException("The three required license tables were not parsed.");
 
-            uint columnsRaw;
-            uint rowsRaw;
-            try
-            {
-                columnsRaw = BitConverter.ToUInt32(file, baseOffset + 16);
-                rowsRaw = BitConverter.ToUInt32(file, baseOffset + 20);
-            }
-            catch
-            {
-                return;
-            }
+            if (license.DeclaredCount != 72)
+                throw new InvalidDataException("License.xlt expected 72 licenses for this client build, got " + license.DeclaredCount + ".");
+            if (gc.DeclaredCount != 200)
+                throw new InvalidDataException("License_GC.xlt expected 200 conditions for this client build, got " + gc.DeclaredCount + ".");
+            if (me.DeclaredCount != 31)
+                throw new InvalidDataException("License_ME.xlt expected 31 effects for this client build, got " + me.DeclaredCount + ".");
 
-            if (columnsRaw == 0 || columnsRaw > 1024 || rowsRaw == 0 || rowsRaw > 200000)
-                return;
-
-            var cells = (long)columnsRaw * rowsRaw;
-            if (cells <= 0 || cells > 4000000) return;
-
-            var offsetTableEnd = baseOffset + 24L + cells * 4L;
-            if (offsetTableEnd > file.Length) return;
-
-            var relativeScore = ScoreOffsets(file, baseOffset, (int)columnsRaw, (int)rowsRaw, false);
-            var absoluteScore = ScoreOffsets(file, baseOffset, (int)columnsRaw, (int)rowsRaw, true);
-            var bestScore = Math.Max(relativeScore, absoluteScore);
-            if (bestScore < 10) return;
-
-            var score = bestScore;
-            var year = BitConverter.ToInt16(file, baseOffset + 4);
-            var month = file[baseOffset + 6];
-            var day = file[baseOffset + 7];
-            if (year >= 2000 && year <= 2100) score += 8;
-            if (month >= 1 && month <= 12) score += 3;
-            if (day >= 1 && day <= 31) score += 2;
-            if (rowsRaw >= 20 && rowsRaw <= 1000) score += 5;
-            if (columnsRaw >= 2 && columnsRaw <= 256) score += 5;
-
-            result.Add(new HeaderCandidate
-            {
-                BaseOffset = baseOffset,
-                Columns = (int)columnsRaw,
-                Rows = (int)rowsRaw,
-                AbsoluteStrings = absoluteScore > relativeScore,
-                Score = score
-            });
+            if (!HeaderContains(license, "LicenseID") || !HeaderContains(license, "Condition_1") || !HeaderContains(license, "MountEffectID"))
+                throw new InvalidDataException("License.xlt is missing required LicenseID/Condition/MountEffect columns.");
+            if (!HeaderContains(gc, "GC_IDNAME"))
+                throw new InvalidDataException("License_GC.xlt is missing GC_IDNAME.");
+            if (!HeaderContains(me, "ME_IDNAME"))
+                throw new InvalidDataException("License_ME.xlt is missing ME_IDNAME.");
         }
 
-        private static int ScoreOffsets(byte[] file, int baseOffset, int columns, int rows, bool absolute)
+        private static bool HeaderContains(XltSnapshot snapshot, string name)
         {
-            var cells = (long)columns * rows;
-            var sampleCount = (int)Math.Min(cells, 48L);
-            if (sampleCount <= 0) return 0;
-
-            var tableStart = baseOffset + 24;
-            var valid = 0;
-            var textQuality = 0;
-
-            for (var i = 0; i < sampleCount; i++)
-            {
-                var cursor = tableStart + i * 4;
-                if (cursor + 4 > file.Length) break;
-
-                var raw = BitConverter.ToUInt32(file, cursor);
-                var resolved = ResolveStringOffset(raw, baseOffset, absolute);
-                string text;
-                if (!TryReadUnicodeString(file, resolved, out text)) continue;
-
-                valid++;
-                if (text.Length == 0) textQuality += 1;
-                else if (IsReasonableText(text)) textQuality += 3;
-                else textQuality -= 2;
-            }
-
-            if (valid < Math.Max(3, sampleCount / 3)) return 0;
-            return valid * 2 + textQuality;
+            return snapshot.Rows.Count > 2 && snapshot.Rows[2].Any(x => string.Equals(x, name, StringComparison.OrdinalIgnoreCase));
         }
 
-        private static string ReadCandidateSample(byte[] file, HeaderCandidate candidate, int maxCells)
+        private static int CountIndexedDataRows(XltSnapshot snapshot)
         {
-            var sb = new StringBuilder();
-            var total = Math.Min((long)candidate.Columns * candidate.Rows, maxCells);
-            var cursor = candidate.BaseOffset + 24;
-
-            for (var i = 0L; i < total; i++)
+            var count = 0;
+            for (var i = 3; i < snapshot.Rows.Count; i++)
             {
-                if (cursor + 4 > file.Length) break;
-                var raw = BitConverter.ToUInt32(file, cursor);
-                cursor += 4;
-                var resolved = ResolveStringOffset(raw, candidate.BaseOffset, candidate.AbsoluteStrings);
-                string text;
-                if (!TryReadUnicodeString(file, resolved, out text)) continue;
-                if (text.Length == 0) continue;
-                sb.Append(text).Append('|');
+                int index;
+                if (int.TryParse(GetCell(snapshot.Rows[i], 0), NumberStyles.Integer, CultureInfo.InvariantCulture, out index))
+                    count++;
             }
-            return sb.ToString();
+            return count;
         }
 
-        private static int ResolveStringOffset(uint rawOffset, int baseOffset, bool absolute)
+        private static bool CellEquals(string[] row, int index, string value)
         {
-            if (rawOffset > int.MaxValue) return -1;
-            if (absolute) return (int)rawOffset;
-            var resolved = (long)baseOffset + rawOffset;
-            return resolved > int.MaxValue ? -1 : (int)resolved;
+            return string.Equals(GetCell(row, index), value, StringComparison.OrdinalIgnoreCase);
         }
 
-        private static bool TryReadUnicodeString(byte[] file, int offset, out string text)
+        private static string GetCell(string[] row, int index)
         {
-            text = string.Empty;
-            if (offset < 0 || offset + 1 >= file.Length) return false;
-
-            var end = offset;
-            var maxEnd = Math.Min(file.Length - 1, offset + 8192);
-            while (end + 1 <= maxEnd)
-            {
-                if (file[end] == 0 && file[end + 1] == 0)
-                {
-                    if (((end - offset) & 1) != 0) return false;
-                    try
-                    {
-                        text = Encoding.Unicode.GetString(file, offset, end - offset);
-                        return IsReasonableText(text);
-                    }
-                    catch
-                    {
-                        return false;
-                    }
-                }
-                end += 2;
-            }
-            return false;
+            if (row == null || index < 0 || index >= row.Length) return string.Empty;
+            return (row[index] ?? string.Empty).Trim();
         }
 
-        private static string ReadUnicodeString(byte[] file, int offset, string fileName, int row, int column)
+        private static int GetColumn(XltSnapshot snapshot, string name)
         {
-            string text;
-            if (!TryReadUnicodeString(file, offset, out text))
-            {
-                throw new InvalidDataException(string.Format(CultureInfo.InvariantCulture,
-                    "{0}: invalid UTF-16 string offset {1} at row {2}, column {3}.",
-                    fileName, offset, row, column));
-            }
-            return text;
-        }
-
-        private static bool IsReasonableText(string text)
-        {
-            if (text == null) return false;
-            if (text.Length == 0) return true;
-            if (text.Length > 4096) return false;
-
-            var bad = 0;
-            foreach (var ch in text)
-            {
-                if (ch == '\r' || ch == '\n' || ch == '\t') continue;
-                if (char.IsControl(ch)) bad++;
-            }
-            return bad <= Math.Max(1, text.Length / 20);
+            if (snapshot.Rows.Count <= 2) return -1;
+            for (var i = 0; i < snapshot.Rows[2].Length; i++)
+                if (string.Equals(GetCell(snapshot.Rows[2], i), name, StringComparison.OrdinalIgnoreCase)) return i;
+            return -1;
         }
 
         private static void EnsureSchema(SqlConnection connection, SqlTransaction tx)
@@ -596,43 +541,34 @@ VALUES(@file,@hash,@header,@major,@minor,@year,@month,@day,@flag,@offset,@column
 
         private static IEnumerable<Tuple<int, int, string[]>> EnumerateLicenseRows(XltSnapshot s)
         {
-            for (var rowIndex = 0; rowIndex < s.Rows.Count; rowIndex++)
+            var idColumn = GetColumn(s, "LicenseID");
+            if (idColumn < 0) yield break;
+
+            for (var rowIndex = 3; rowIndex < s.Rows.Count; rowIndex++)
             {
                 var row = s.Rows[rowIndex];
                 int id;
-                if (!TryFindLicenseId(row, out id)) continue;
+                if (!int.TryParse(GetCell(row, idColumn), NumberStyles.Integer, CultureInfo.InvariantCulture, out id)) continue;
+                if (id < 7000 || id >= 8000) continue;
                 yield return Tuple.Create(id, rowIndex, row);
             }
         }
 
-        private static bool TryFindLicenseId(string[] row, out int id)
-        {
-            id = 0;
-            foreach (var value in row)
-            {
-                int parsed;
-                if (!int.TryParse((value ?? string.Empty).Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out parsed))
-                    continue;
-                if (parsed >= 7000 && parsed < 8000)
-                {
-                    id = parsed;
-                    return true;
-                }
-            }
-            return false;
-        }
-
         private static int InsertLicenseCatalog(SqlConnection connection, SqlTransaction tx, XltSnapshot s)
         {
+            var nameColumn = GetColumn(s, "LicenseName");
+            var categoryColumn = GetColumn(s, "CategoryID");
+            var gradeColumn = GetColumn(s, "Grade");
             var count = 0;
+
             foreach (var pair in EnumerateLicenseRows(s))
             {
                 var id = pair.Item1;
                 var rowIndex = pair.Item2;
                 var row = pair.Item3;
-                var name = FindDisplayText(row);
-                var category = FindCategory(row);
-                var grade = FindGrade(row);
+                var name = nameColumn >= 0 ? GetCell(row, nameColumn) : null;
+                var category = categoryColumn >= 0 ? GetCell(row, categoryColumn) : null;
+                var grade = gradeColumn >= 0 ? GetCell(row, gradeColumn) : null;
 
                 using (var cmd = new SqlCommand(@"
 INSERT INTO dbo.license_catalog(LicenseId,SourceRow,Name,Category,Grade,RawData,UpdatedAt)
@@ -640,9 +576,9 @@ VALUES(@id,@row,@name,@category,@grade,@raw,SYSUTCDATETIME());", connection, tx)
                 {
                     cmd.Parameters.AddWithValue("@id", id);
                     cmd.Parameters.AddWithValue("@row", rowIndex);
-                    cmd.Parameters.AddWithValue("@name", (object)name ?? DBNull.Value);
-                    cmd.Parameters.AddWithValue("@category", (object)category ?? DBNull.Value);
-                    cmd.Parameters.AddWithValue("@grade", (object)grade ?? DBNull.Value);
+                    cmd.Parameters.AddWithValue("@name", string.IsNullOrEmpty(name) ? (object)DBNull.Value : name);
+                    cmd.Parameters.AddWithValue("@category", string.IsNullOrEmpty(category) ? (object)DBNull.Value : category);
+                    cmd.Parameters.AddWithValue("@grade", string.IsNullOrEmpty(grade) ? (object)DBNull.Value : grade);
                     cmd.Parameters.AddWithValue("@raw", JoinRaw(row));
                     cmd.ExecuteNonQuery();
                 }
@@ -653,19 +589,28 @@ VALUES(@id,@row,@name,@category,@grade,@raw,SYSUTCDATETIME());", connection, tx)
 
         private static int InsertRequirementCatalog(SqlConnection connection, SqlTransaction tx, XltSnapshot s)
         {
+            var conditionColumns = new List<int>();
+            for (var i = 1; i <= 12; i++)
+            {
+                var column = GetColumn(s, "Condition_" + i.ToString(CultureInfo.InvariantCulture));
+                if (column >= 0) conditionColumns.Add(column);
+            }
+
             var count = 0;
             foreach (var pair in EnumerateLicenseRows(s))
             {
                 var licenseId = pair.Item1;
                 var row = pair.Item3;
                 var slot = 0;
-                for (var col = 0; col < row.Length; col++)
+
+                foreach (var col in conditionColumns)
                 {
-                    var key = row[col] ?? string.Empty;
-                    if (!key.StartsWith("GC_", StringComparison.OrdinalIgnoreCase)) continue;
-                    long value;
-                    var hasValue = TryFindNumericRight(row, col, out value);
-                    var param = FindParamRight(row, col, "GC_", "ME_");
+                    var raw = GetCell(row, col);
+                    string key;
+                    long? value;
+                    string param;
+                    if (!TryParseRequirement(raw, out key, out value, out param)) continue;
+
                     using (var cmd = new SqlCommand(@"
 INSERT INTO dbo.license_requirements
 (LicenseId,Slot,RequirementKey,RequirementValue,RequirementParam,SourceColumn,RawData)
@@ -674,10 +619,10 @@ VALUES(@id,@slot,@key,@value,@param,@column,@raw);", connection, tx))
                         cmd.Parameters.AddWithValue("@id", licenseId);
                         cmd.Parameters.AddWithValue("@slot", slot++);
                         cmd.Parameters.AddWithValue("@key", key);
-                        cmd.Parameters.AddWithValue("@value", hasValue ? (object)value : DBNull.Value);
-                        cmd.Parameters.AddWithValue("@param", (object)param ?? DBNull.Value);
+                        cmd.Parameters.AddWithValue("@value", value.HasValue ? (object)value.Value : DBNull.Value);
+                        cmd.Parameters.AddWithValue("@param", string.IsNullOrEmpty(param) ? (object)DBNull.Value : param);
                         cmd.Parameters.AddWithValue("@column", col);
-                        cmd.Parameters.AddWithValue("@raw", JoinWindow(row, col, 5));
+                        cmd.Parameters.AddWithValue("@raw", raw.Length > 1024 ? raw.Substring(0, 1024) : raw);
                         cmd.ExecuteNonQuery();
                     }
                     count++;
@@ -686,20 +631,58 @@ VALUES(@id,@slot,@key,@value,@param,@column,@raw);", connection, tx))
             return count;
         }
 
+        private static bool TryParseRequirement(string raw, out string key, out long? value, out string param)
+        {
+            key = null;
+            value = null;
+            param = null;
+
+            raw = (raw ?? string.Empty).Trim();
+            if (raw.Length == 0 || raw.Equals("n/a", StringComparison.OrdinalIgnoreCase)) return false;
+
+            var parts = raw.Split(new[] { ':' }, 3);
+            key = parts[0].Trim();
+            if (!key.StartsWith("GC_", StringComparison.OrdinalIgnoreCase)) return false;
+
+            if (parts.Length >= 2)
+            {
+                long parsed;
+                if (long.TryParse(parts[1].Trim().Replace(",", string.Empty), NumberStyles.Integer, CultureInfo.InvariantCulture, out parsed))
+                    value = parsed;
+                else if (parts[1].Trim().Length != 0)
+                    param = parts[1].Trim();
+            }
+            if (parts.Length >= 3 && parts[2].Trim().Length != 0)
+                param = string.IsNullOrEmpty(param) ? parts[2].Trim() : param + ":" + parts[2].Trim();
+
+            return true;
+        }
+
         private static int InsertEffectCatalog(SqlConnection connection, SqlTransaction tx, XltSnapshot s)
         {
+            var effectIdColumns = new[] { GetColumn(s, "MountEffectID"), GetColumn(s, "MountEffectID_second") };
+            var effectValueColumns = new[] { GetColumn(s, "MountEffectValue"), GetColumn(s, "MountEffectValue_second") };
             var count = 0;
+
             foreach (var pair in EnumerateLicenseRows(s))
             {
                 var licenseId = pair.Item1;
                 var row = pair.Item3;
                 var slot = 0;
-                for (var col = 0; col < row.Length; col++)
+
+                for (var i = 0; i < effectIdColumns.Length; i++)
                 {
-                    var key = row[col] ?? string.Empty;
+                    var idColumn = effectIdColumns[i];
+                    if (idColumn < 0) continue;
+                    var key = GetCell(row, idColumn);
                     if (!key.StartsWith("ME_", StringComparison.OrdinalIgnoreCase)) continue;
+
                     long value;
-                    var hasValue = TryFindNumericRight(row, col, out value);
+                    object dbValue = DBNull.Value;
+                    var valueColumn = effectValueColumns[i];
+                    if (valueColumn >= 0 && long.TryParse(GetCell(row, valueColumn), NumberStyles.Integer, CultureInfo.InvariantCulture, out value))
+                        dbValue = value;
+
                     using (var cmd = new SqlCommand(@"
 INSERT INTO dbo.license_effects
 (LicenseId,Slot,EffectKey,EffectValue,SourceColumn,RawData)
@@ -708,9 +691,9 @@ VALUES(@id,@slot,@key,@value,@column,@raw);", connection, tx))
                         cmd.Parameters.AddWithValue("@id", licenseId);
                         cmd.Parameters.AddWithValue("@slot", slot++);
                         cmd.Parameters.AddWithValue("@key", key);
-                        cmd.Parameters.AddWithValue("@value", hasValue ? (object)value : DBNull.Value);
-                        cmd.Parameters.AddWithValue("@column", col);
-                        cmd.Parameters.AddWithValue("@raw", JoinWindow(row, col, 4));
+                        cmd.Parameters.AddWithValue("@value", dbValue);
+                        cmd.Parameters.AddWithValue("@column", idColumn);
+                        cmd.Parameters.AddWithValue("@raw", key + ":" + (valueColumn >= 0 ? GetCell(row, valueColumn) : string.Empty));
                         cmd.ExecuteNonQuery();
                     }
                     count++;
@@ -722,104 +705,39 @@ VALUES(@id,@slot,@key,@value,@column,@raw);", connection, tx))
         private static void InsertKeyCatalog(SqlConnection connection, SqlTransaction tx, XltSnapshot s,
             string prefix, string table, string keyColumn)
         {
+            var headerName = prefix.Equals("GC_", StringComparison.OrdinalIgnoreCase) ? "GC_IDNAME" : "ME_IDNAME";
+            var keyIndex = GetColumn(s, headerName);
+            if (keyIndex < 0) return;
+
+            var descriptionIndex = GetColumn(s,
+                prefix.Equals("GC_", StringComparison.OrdinalIgnoreCase) ? "GC_Desc" : "ME_Desc");
+
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            for (var rowIndex = 0; rowIndex < s.Rows.Count; rowIndex++)
+            for (var rowIndex = 3; rowIndex < s.Rows.Count; rowIndex++)
             {
+                int sourceIndex;
+                if (!int.TryParse(GetCell(s.Rows[rowIndex], 0), NumberStyles.Integer, CultureInfo.InvariantCulture, out sourceIndex)) continue;
+
                 var row = s.Rows[rowIndex];
-                for (var col = 0; col < row.Length; col++)
+                var key = GetCell(row, keyIndex);
+                if (!key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || !seen.Add(key)) continue;
+                var display = descriptionIndex >= 0 ? GetCell(row, descriptionIndex) : null;
+
+                var sql = "INSERT INTO " + table + "(" + keyColumn + ",SourceRow,DisplayName,RawData) VALUES(@key,@row,@display,@raw);";
+                using (var cmd = new SqlCommand(sql, connection, tx))
                 {
-                    var key = row[col] ?? string.Empty;
-                    if (!key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || !seen.Add(key)) continue;
-                    var display = FindDisplayText(row);
-                    var sql = "INSERT INTO " + table + "(" + keyColumn + ",SourceRow,DisplayName,RawData) VALUES(@key,@row,@display,@raw);";
-                    using (var cmd = new SqlCommand(sql, connection, tx))
-                    {
-                        cmd.Parameters.AddWithValue("@key", key);
-                        cmd.Parameters.AddWithValue("@row", rowIndex);
-                        cmd.Parameters.AddWithValue("@display", (object)display ?? DBNull.Value);
-                        cmd.Parameters.AddWithValue("@raw", JoinRaw(row));
-                        cmd.ExecuteNonQuery();
-                    }
+                    cmd.Parameters.AddWithValue("@key", key);
+                    cmd.Parameters.AddWithValue("@row", rowIndex);
+                    cmd.Parameters.AddWithValue("@display", string.IsNullOrEmpty(display) ? (object)DBNull.Value : display);
+                    cmd.Parameters.AddWithValue("@raw", JoinRaw(row));
+                    cmd.ExecuteNonQuery();
                 }
             }
-        }
-
-        private static bool TryFindNumericRight(string[] row, int start, out long value)
-        {
-            value = 0;
-            for (var i = start + 1; i < row.Length && i <= start + 4; i++)
-            {
-                var text = (row[i] ?? string.Empty).Trim().Replace(",", string.Empty);
-                if (long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out value)) return true;
-            }
-            return false;
-        }
-
-        private static string FindParamRight(string[] row, int start, params string[] ignoredPrefixes)
-        {
-            for (var i = start + 1; i < row.Length && i <= start + 4; i++)
-            {
-                var value = (row[i] ?? string.Empty).Trim();
-                if (value.Length == 0) continue;
-                long numeric;
-                if (long.TryParse(value.Replace(",", string.Empty), out numeric)) continue;
-                var ignored = ignoredPrefixes.Any(prefix => value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
-                if (!ignored) return value;
-            }
-            return null;
-        }
-
-        private static string FindDisplayText(string[] row)
-        {
-            foreach (var raw in row)
-            {
-                var value = (raw ?? string.Empty).Trim();
-                if (value.Length < 2 || value.Length > 256) continue;
-                int numeric;
-                if (int.TryParse(value, out numeric)) continue;
-                if (value.StartsWith("GC_", StringComparison.OrdinalIgnoreCase)) continue;
-                if (value.StartsWith("ME_", StringComparison.OrdinalIgnoreCase)) continue;
-                return value;
-            }
-            return null;
-        }
-
-        private static string FindCategory(string[] row)
-        {
-            var known = new[] { "ROOKIE", "LADDER", "HUV", "BATTLE", "PATROL", "UNDERCITY", "MISSION", "QUEST", "CRASH", "DRIVER" };
-            foreach (var raw in row)
-            {
-                var value = (raw ?? string.Empty).Trim();
-                foreach (var token in known)
-                    if (value.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0) return token;
-            }
-            return null;
-        }
-
-        private static string FindGrade(string[] row)
-        {
-            foreach (var raw in row)
-            {
-                var value = (raw ?? string.Empty).Trim().ToUpperInvariant();
-                if (value == "R" || value == "E" || value == "D" || value == "C" || value == "B" || value == "A" || value == "S")
-                    return value;
-            }
-            return null;
         }
 
         private static string JoinRaw(string[] row)
         {
             return string.Join(" | ", row.Select(x => x ?? string.Empty).ToArray());
-        }
-
-        private static string JoinWindow(string[] row, int center, int radius)
-        {
-            var from = Math.Max(0, center - 1);
-            var to = Math.Min(row.Length - 1, center + radius);
-            var values = new List<string>();
-            for (var i = from; i <= to; i++) values.Add(row[i] ?? string.Empty);
-            var text = string.Join(" | ", values.ToArray());
-            return text.Length > 1024 ? text.Substring(0, 1024) : text;
         }
 
         private static string Sha256(byte[] data)
