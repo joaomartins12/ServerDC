@@ -24,194 +24,195 @@ VehicleId	OfficialRuntimeIndex	CarName	UiName	KeyItemId
 171	22	Lamborghini Cauntach	Fervor	pc_0171s
 172	23	Lamborghini Cauntach	Fervor ST	pc_0172s
 173	24	Lamborghini Cauntach	Fervor BT	pc_0173s
-5	25	Mazda RX-8	Rotary	pc_0010s
-30	26	Toyota Celica	Mito	pc_0011s
-33	27	Nissan Fairlady Z	Viper	pc_0012s
-34	28	Mazda RX-7	Ruby	pc_0013s
-57	29	Mazda RX-8	Rotary ST	pc_0014s
-58	30	Mazda RX-8	Rotary BT	pc_0015s
-59	31	Toyota Celica	Mito ST	pc_0016s
-60	32	Toyota Celica	Mito BT	pc_0017s
-61	33	Nissan Fairlady Z	Viper ST	pc_0018s
-62	34	Nissan Fairlady Z	Viper BT	pc_0019s
-63	35	Mazda RX-7	Ruby ST	pc_0020s
-64	36	Mazda RX-7	Ruby BT	pc_0021s
-6	37	Mitsubishi Lancer Evolution	Lupin	pc_0022s
-35	38	Subaru Impreza WRX STi	Mitron	pc_0023s
-36	39	Nissan Skyline GTR	Cielo	pc_0024s
-65	40	Mitsubishi Lancer Evolution	Lupin ST	pc_0025s
-66	41	Mitsubishi Lancer Evolution	Lupin BT	pc_0026s
-67	42	Subaru Impreza WRX STi	Mitron ST	pc_0027s
-68	43	Subaru Impreza WRX STi	Mitron BT	pc_0028s
-69	44	Nissan Skyline GTR	Cielo ST	pc_0029s
-70	45	Nissan Skyline GTR	Cielo BT	pc_0030s
-7	46	Mitsubishi Lancer Evolution VIII	Titan	pc_0031s
-37	47	Subaru Impreza WRX STI	Cross	pc_0032s
-38	48	Mitsubishi Lancer Evolution IX	Arena	pc_0033s
-71	49	Mitsubishi Lancer Evolution VIII	Titan ST	pc_0034s
-72	50	Mitsubishi Lancer Evolution VIII	Titan BT	pc_0035s
-73	51	Subaru Impreza WRX STI	Cross ST	pc_0036s
-74	52	Subaru Impreza WRX STI	Cross BT	pc_0037s
-75	53	Mitsubishi Lancer Evolution IX	Arena ST	pc_0038s
-76	54	Mitsubishi Lancer Evolution IX	Arena BT	pc_0039s
-8	55	Honda S2000	Venom	pc_0040s
-39	56	Nissan Silvia S15	Khan	pc_0041s
-40	57	Honda NSX	Gigas	pc_0042s
-77	58	Honda S2000	Venom ST	pc_0043s
-78	59	Honda S2000	Venom BT	pc_0044s
-83	60	Nissan Silvia S15	Khan ST	pc_0045s
-84	61	Nissan Silvia S15	Khan BT	pc_0046s
-85	62	Honda NSX	Gigas ST	pc_0047s
-86	63	Honda NSX	Gigas BT	pc_0048s
-9	64	Ford Mustang GT	Mamba	pc_0049s
-41	65	Chevrolet Corvette C6	Harpoon	pc_0050s
-42	66	Dodge Viper SRT-10	Snake	pc_0051s
-87	67	Ford Mustang GT	Mamba ST	pc_0052s
-88	68	Ford Mustang GT	Mamba BT	pc_0053s
-89	69	Chevrolet Corvette C6	Harpoon ST	pc_0054s
-90	70	Chevrolet Corvette C6	Harpoon BT	pc_0055s
-91	71	Dodge Viper SRT-10	Snake ST	pc_0056s
-93	72	Dodge Viper SRT-10	Snake BT	pc_0057s
-10	73	Mercedes-Benz SLK 55 AMG	Mirage	pc_0058s
-43	74	BMW Z4 M Roadster	Leopard	pc_0059s
-44	75	Porsche Cayman S	Panther	pc_0060s
-97	76	Mercedes-Benz SLK 55 AMG	Mirage ST	pc_0061s
-98	77	Mercedes-Benz SLK 55 AMG	Mirage BT	pc_0062s
-99	78	BMW Z4 M Roadster	Leopard ST	pc_0063s
-100	79	BMW Z4 M Roadster	Leopard BT	pc_0064s
-101	80	Porsche Cayman S	Panther ST	pc_0065s
-102	81	Porsche Cayman S	Panther BT	pc_0066s
-11	82	Audi R8	V8	pc_0067s
+161	25	Fiat NUOVA 500	Lupin	pc_0161s
+6	26	Renault Clio V6	Muse	pc_0010s
+36	27	Toyota MRS	Tokio	pc_0011s
+8	28	Volkswagen NewBeetle	DragonFly	pc_0012s
+58	29	Landrover Discovery TD5	Invention	pc_0013s
+60	30	Toyota Hilux Surf	Boarding	pc_0014s
+99	31	Nissan Cube	BOXY	pc_0091s
+101	32	Solstice GXP	SkyLark	pc_0096s
+143	33	Toyota Avanza	Kartan	pc_0143s
+145	34	Honda Silvia S15	Coppelia	pc_0145s
+152	35	Toyota 2000GT	Cityman	pc_0152s
+5	36	Toyota Celica	Eric	pc_0015c
+7	37	Peugeot 206CC	MPMCC	pc_0016s
+57	38	Ford Focus RS	Spotlight	pc_0017s
+59	39	Jeep Compass	Compass	pc_0018s
+61	40	Nissan Murano 3.5	Village	pc_0019s
+9	41	Mini Cooper S	Maxi	pc_0020s
+83	42	Dakoda	Monster	pc_0074s
+90	43	Peugeot 307	MP3p	pc_0081s
+10	44	Mazda RX7	Rotary	pc_0021s
+30	45	Toyota Supra	Above	pc_0022s
+33	46	Chrysler Crossfire	CrossFire	pc_0023s
+35	47	Lexus New IS 250	Dreamer	pc_0024c
+37	48	New Design	Unlimit	pc_0025s
+34	49	Nissan FairLady Z	Fairplay	pc_0026s
+64	50	Chrysler PT Cruiser	PT Cruiser	pc_0027s
+84	51	Mitsubishi LancerEvolution X	FondoX	pc_0075s
+86	52	Peugeot 207	MPM7	pc_0077s
+148	53	Honda NSX	Genius	pc_0148s
+247	54	Daihatsu Conte	Compact	pc_0247s
+11	55	Subaru Impreza	Impact	pc_0028c
+13	56	Mazda RX8	Nova	pc_0029s
+14	57	Audi TT	Comodo	pc_0030s
+66	58	New Design2	Atoka	pc_0031s
+17	59	Dodge Charger	Charger	pc_0032s
+38	60	Nissan Skyline GTR	Cielo	pc_0033c
+63	61	Audi S4	USR	pc_0034s
+39	62	Mitsubishi LancerEvolution VIII	Fondo	pc_0035c
+78	63	AUDI R8	UR E3	pc_0056s
+87	64	Ford SVT F-150 Lighting	Titan	pc_0078s
+91	65	Porsche Cayman	Lightning	pc_0082s
+98	66	VW Scirocco	Jupiter	pc_0087s
+230	67	Infiniti Essence	Liner	pc_0230s
+12	68	Lotus Elise	Romeo	pc_0036s
+42	69	SAAB 9-5 Aero	Myth	pc_0037s
+15	70	Proto Spirra	Spirit	pc_0038s
+67	71	TVR Tuscan	CR2	pc_0039s
+68	72	Honda MDX	Deluxe	pc_0040s
+45	73	Alfa Romeo Spider	Tiger	pc_0041s
+41	74	Shelby Cobra GT500	Snake	pc_0042s
+47	75	Lexus SC430	Action	pc_0043s
+69	76	Lexus RX330	Solution	pc_0044s
+43	77	Jaguar S-type 2.5	Solo	pc_0045s
+46	78	BMW M6	Leo	pc_0055s
+50	79	Bugatti Veyron	Duel	pc_0066s
+93	80	Mercedes-Benz Nes C-class	TRIO	pc_0084s
+100	81	Nissan Skyline GTR35	Sora GT	pc_0095s
+53	82	McLaren F1	Tamer	pc_0089s
+160	83	LEXUS LFA	Shark	pc_0160s
+251	84	Dartz Prombron Iron Diamond	PANZER	pc_0251s
+190	85	TOYOTA FT-86	Panda2	pc_0190s
+240	86	Toyota AE-86	Panda MINI	pc_0240s
+241	87	Mazda RX7	Rotary MINI	pc_0241s
+242	88	Mitsubishi LancerEvolution VIII	Fondo MINI	pc_0242s
+243	89	Toyota Supra	Above MINI	pc_0243s
+16	90	Mercedes-Benz SL55 AMG	Aria	pc_0046c
+18	91	Dodge Viper SRT10	Viper	pc_0047s
+19	92	Chevrolet Corvette	Indigo	pc_0048s
+20	93	Maserati Spyder Cambio Corsa	Dew	pc_0049s
+48	94	BMW Z8	Ruby	pc_0050s
+70	95	Chrysler 300C SRT8	300C	pc_0051s
+49	96	BMW 760Li	Seven	pc_0052s
+72	97	Mercedes-Benz ML500	Vega	pc_0053s
+74	98	BMW Z4 Coupe	Zorro	pc_0054s
+97	99	RUF CTR3	RunnerR	pc_0086s
+140	100	Lamborghini Reventon	Shadow	pc_0140s
+141	101	Lamborghini Reventon	Shadow ST	pc_0141s
+142	102	Lamborghini Reventon	Shadow BT	pc_0142s
+262	103	Hyundai VELOSTER	V-STAR	pc_0262s
+21	104	Bentley Continentel GTC	Puma	pc_0057s
+22	105	Mercedes-Benz SLR McLaren	Utopia	pc_0058s
+23	106	Aston Martin Vanquish	Cross	pc_0059s
+24	107	Lamborghini Diablo GT	Gigas	pc_0060s
+25	108	Mercedes-Benz CLK GTR Roadster	Arena	pc_0061s
+194	109	Koenigsegg CCR	Leopard	pc_0094s
+27	110	Porsche Carrera GT	Natura	pc_0063s
+76	111	Hummer H3	Tyrant	pc_0064s
 54	112	Enzo Ferrari	Nevera	pc_0068s
-12	84	Lamborghini Murcielago	Torero	pc_0069s
-103	85	Audi R8	V8 ST	pc_0074s
-104	86	Audi R8	V8 BT	pc_0075s
-105	87	Enzo Ferrari	Nevera ST	pc_0076s
-106	88	Enzo Ferrari	Nevera BT	pc_0077s
-107	89	Lamborghini Murcielago	Torero ST	pc_0078s
-108	90	Lamborghini Murcielago	Torero BT	pc_0079s
-13	91	Lamborghini Gallardo	Coro	pc_0080s
-45	92	Ferrari F430	Phoenix	pc_0081s
-46	93	Porsche Carrera GT	Tiger	pc_0082s
-109	94	Lamborghini Gallardo	Coro ST	pc_0084s
-110	95	Lamborghini Gallardo	Coro BT	pc_0086s
-111	96	Ferrari F430	Phoenix ST	pc_0087s
-112	97	Ferrari F430	Phoenix BT	pc_0088s
-113	98	Porsche Carrera GT	Tiger ST	pc_0089s
-114	99	Porsche Carrera GT	Tiger BT	pc_0091s
-14	100	Bugatti Veyron	Fondo	pc_0093s
-47	101	Pagani Zonda F	Veloce	pc_0094s
-48	102	Koenigsegg CCX	Aero	pc_0095s
-115	103	Bugatti Veyron	Fondo ST	pc_0096s
-116	104	Bugatti Veyron	Fondo BT	pc_0097s
-117	105	Pagani Zonda F	Veloce ST	pc_0098s
-118	106	Pagani Zonda F	Veloce BT	pc_0099s
-119	107	Koenigsegg CCX	Aero ST	pc_0100s
-120	108	Koenigsegg CCX	Aero BT	pc_0101s
-15	109	Nissan GT-R	Shark	pc_0102s
-49	110	Mercedes-Benz SLR McLaren	Dragon	pc_0103s
-50	111	Ferrari 599 GTB	Giant	pc_0104s
-121	113	Nissan GT-R	Shark ST	pc_0105s
-122	114	Nissan GT-R	Shark BT	pc_0106s
-123	115	Mercedes-Benz SLR McLaren	Dragon ST	pc_0107s
-124	116	Mercedes-Benz SLR McLaren	Dragon BT	pc_0108s
-125	117	Ferrari 599 GTB	Giant ST	pc_0109s
-126	118	Ferrari 599 GTB	Giant BT	pc_0110s
-16	119	Ferrari 360 Modena	Spirit	pc_0111s
-51	120	Lamborghini Diablo	Devil	pc_0112s
-52	121	Porsche 911 Turbo	Hammer	pc_0113s
-127	122	Ferrari 360 Modena	Spirit ST	pc_0114s
-128	123	Ferrari 360 Modena	Spirit BT	pc_0115s
-129	124	Lamborghini Diablo	Devil ST	pc_0116s
-130	125	Lamborghini Diablo	Devil BT	pc_0117s
-131	126	Porsche 911 Turbo	Hammer ST	pc_0118s
-132	127	Porsche 911 Turbo	Hammer BT	pc_0119s
-17	128	McLaren F1	F1	pc_0120s
-53	129	Ferrari F50	F50	pc_0121s
-133	130	McLaren F1	F1 ST	pc_0122s
-134	131	McLaren F1	F1 BT	pc_0123s
-135	132	Ferrari F50	F50 ST	pc_0124s
-136	133	Ferrari F50	F50 BT	pc_0125s
-18	134	Mercedes-Benz SLS AMG	SLS	pc_0126s
-137	135	Mercedes-Benz SLS AMG	SLS ST	pc_0127s
-138	136	Mercedes-Benz SLS AMG	SLS BT	pc_0128s
-19	137	BMW M3 E92	M3	pc_0129s
-139	138	BMW M3 E92	M3 ST	pc_0130s
-140	139	BMW M3 E92	M3 BT	pc_0131s
-20	140	Audi TT RS	TTRS	pc_0132s
-141	141	Audi TT RS	TTRS ST	pc_0133s
-142	142	Audi TT RS	TTRS BT	pc_0134s
-21	143	Chevrolet Camaro SS	Camaro	pc_0135s
-143	144	Chevrolet Camaro SS	Camaro ST	pc_0136s
-144	145	Chevrolet Camaro SS	Camaro BT	pc_0137s
-22	146	Ford Focus RS	Focus	pc_0138s
-145	147	Ford Focus RS	Focus ST	pc_0139s
-146	148	Ford Focus RS	Focus BT	pc_0140s
-23	149	Hyundai Genesis Coupe	Genesis	pc_0141s
-147	150	Hyundai Genesis Coupe	Genesis ST	pc_0142s
-148	151	Hyundai Genesis Coupe	Genesis BT	pc_0143s
-24	152	Kia Forte Koup	Forte	pc_0144s
-149	153	Kia Forte Koup	Forte ST	pc_0145s
-150	154	Kia Forte Koup	Forte BT	pc_0146s
-25	155	Volkswagen Scirocco	Scirocco	pc_0147s
-151	156	Volkswagen Scirocco	Scirocco ST	pc_0148s
-152	157	Volkswagen Scirocco	Scirocco BT	pc_0149s
-26	158	Mini Cooper S	Mini	pc_0150s
-153	159	Mini Cooper S	Mini ST	pc_0151s
-154	160	Mini Cooper S	Mini BT	pc_0152s
-27	161	Fiat 500 Abarth	Abarth	pc_0153s
-155	162	Fiat 500 Abarth	Abarth ST	pc_0154s
-156	163	Fiat 500 Abarth	Abarth BT	pc_0155s
-157	164	Tesla Roadster	Tesla	pc_0156s
-158	165	Tesla Roadster	Tesla ST	pc_0157s
-159	166	Tesla Roadster	Tesla BT	pc_0158s
-160	167	Lotus Elise	Elise	pc_0159s
-161	168	Lotus Elise	Elise ST	pc_0160s
-165	169	Lotus Elise	Elise BT	pc_0161s
-166	170	Aston Martin DB9	DB9	pc_0165s
-167	171	Aston Martin DB9	DB9 ST	pc_0166s
-168	172	Aston Martin DB9	DB9 BT	pc_0167s
-169	173	Maserati GranTurismo	GranTurismo	pc_0168s
-170	174	Maserati GranTurismo	GranTurismo ST	pc_0169s
-174	175	Maserati GranTurismo	GranTurismo BT	pc_0170s
-175	176	Bentley Continental GT	Bentley	pc_0174s
-176	177	Bentley Continental GT	Bentley ST	pc_0175s
-177	178	Bentley Continental GT	Bentley BT	pc_0176s
-178	179	Jaguar XKR	XKR	pc_0177s
-179	180	Jaguar XKR	XKR ST	pc_0178s
-180	181	Jaguar XKR	XKR BT	pc_0179s
-181	182	Lexus LFA	LFA	pc_0180s
-182	183	Lexus LFA	LFA ST	pc_0181s
-183	184	Lexus LFA	LFA BT	pc_0182s
-184	185	Nissan 370Z	370Z	pc_0183s
-185	186	Nissan 370Z	370Z ST	pc_0184s
-186	187	Nissan 370Z	370Z BT	pc_0185s
-187	188	Toyota Supra	Supra	pc_0186s
-188	189	Toyota Supra	Supra ST	pc_0187s
-190	190	Toyota Supra	Supra BT	pc_0188s
-191	191	Honda CR-Z	CR-Z	pc_0190s
-192	192	Honda CR-Z	CR-Z ST	pc_0191s
-193	193	Honda CR-Z	CR-Z BT	pc_0192s
-194	194	Scion tC	tC	pc_0193s
-195	195	Scion tC	tC ST	pc_0194s
-196	196	Scion tC	tC BT	pc_0195s
-197	197	Subaru BRZ	BRZ	pc_0196s
-198	198	Subaru BRZ	BRZ ST	pc_0197s
-199	199	Subaru BRZ	BRZ BT	pc_0198s
-200	200	Toyota 86	86	pc_0199s
-201	201	Toyota 86	86 ST	pc_0200s
-202	202	Toyota 86	86 BT	pc_0201s
-203	203	Nissan Silvia S13	S13	pc_0202s
-204	204	Nissan Silvia S13	S13 ST	pc_0203s
-205	205	Nissan Silvia S13	S13 BT	pc_0204s
-206	206	Nissan 180SX	180SX	pc_0205s
-207	207	Nissan 180SX	180SX ST	pc_0206s
-208	208	Nissan 180SX	180SX BT	pc_0207s
-209	209	Mazda MX-5	MX-5	pc_0208s
-210	210	Mazda MX-5	MX-5 ST	pc_0209s
-211	211	Mazda MX-5	MX-5 BT	pc_0210s
-212	212	Ferrari 60F1	NSR05 BT	pc_0275s
-213	213	SUZUKI Jimny JB43	JIMMY	pc_0269s
-214	214	HONDA S2000	SRI3	pc_0287s
-215	215	HONDA S2000	SRI3 ST	pc_0288s
-216	216	HONDA S2000	SRI3 BT	pc_0289s
+52	113	Maybach62	Torero	pc_0069s
+85	114	BMW M6 Patrol_TW	Leo Patrol_TW	pc_0076s
+88	115	BMW M6 Patrol_KR	Leo Patrol_KR	pc_0079s
+89	116	Porsche Carrera GT Patrol_JP	Natura Patrol_JP	pc_0080s
+127	117	Porsche Carrera GTR	Natura GTR	pc_0127s
+77	118	Pagani Zonda Roadster	Hunter	pc_0088s
+146	119	Pagani Zonda Roadster	Hunter ST	pc_0146s
+147	120	Pagani Zonda Roadster	Hunter BT	pc_0147s
+149	121	Ferrari 250 Testarossa	Fate	pc_0149s
+150	122	Ferrari 250 Testarossa	Fate ST	pc_0150s
+151	123	Ferrari 250 Testarossa	Fate BT	pc_0151s
+153	124	Alfa Romeo 8C2300	Monza	pc_0153s
+154	125	Alfa Romeo 8C2300	Monza ST	pc_0154s
+155	126	Alfa Romeo 8C2300	Monza BT	pc_0155s
+157	127	Ferrari F2003-GA	F03-MS	pc_0157s
+158	128	Ferrari F2003-GA	F03-MS ST	pc_0158s
+159	129	Ferrari F2003-GA	F03-MS BT	pc_0159s
+165	130	Lancia Delta	Raptor	pc_0165s
+166	131	Lancia Delta	Raptor ST	pc_0166s
+167	132	Lancia Delta	Raptor BT	pc_0167s
+168	133	Ferrari F50	Rosso	pc_0168s
+169	134	Ferrari F50	Rosso ST	pc_0169s
+170	135	Ferrari F50	Rosso BT	pc_0170s
+186	136	New GT40	Winner	pc_0186s
+187	137	New GT40	Winner ST	pc_0187s
+188	138	New GT40	Winner BT	pc_0188s
+191	139	Chevrolet Camaro	Ponica	pc_0191s
+192	140	Chevrolet Camaro	Ponica ST	pc_0192s
+193	141	Chevrolet Camaro	Ponica BT	pc_0193s
+195	142	Jeep Willys WB	Allied	pc_0195s
+196	143	Jeep Willys WB	Allied ST	pc_0196s
+197	144	Jeep Willys WB	Allied BT	pc_0197s
+210	145	Enzo Ferrari	Nevera MINI	pc_0210s
+211	146	LEXUS LFA	Shark MINI	pc_0211s
+212	147	Honda NSX	Genius MINI	pc_0212s
+213	148	Lamborghini Diablo GT	Gigas MINI	pc_0213s
+214	149	AUDI R8	UR E3 MINI	pc_0214s
+215	150	Mercedes-Benz SL55	Aria MINI	pc_0215s
+216	151	Nissan Skyline	Cielo MINI	pc_0216s
+217	152	Lamborghini Cauntach	Fervor MINI	pc_0217s
+218	153	Chevrolet Corvette Stingray	Swipe	pc_0218s
+221	154	Ferrari 458 italia	Mirage	pc_0221s
+224	155	Peterbilt 379	PRIME	pc_0224s
+144	156	Aston Martin Rapide	Majesty	pc_0144s
+201	157	Lamborghini Elemento	Mento	pc_0201s
+202	158	Lamborghini Elemento	Mento ST	pc_0202s
+203	159	Lamborghini Elemento	Mento BT	pc_0203s
+198	160	Kubelwagen	AXIS	pc_0198s
+199	161	Kubelwagen	AXIS ST	pc_0199s
+200	162	Kubelwagen	AXIS BT	pc_0200s
+205	163	Kia  POP	ECO	pc_0205s
+206	164	Kia  POP	ECO ST	pc_0206s
+207	165	Kia  POP	ECO BT	pc_0207s
+234	166	Hummer H3	TyrantX	pc_0234s
+235	167	Hummer H3	TyrantX CT	pc_0235s
+227	168	Mazda Furai	Wave	pc_0227s
+228	169	Mazda Furai	Wave ST	pc_0228s
+229	170	Mazda Furai	Wave BT	pc_0229s
+233	171	RENEGADE	RENEGADE	pc_0233s
+238	172	RENEGADE	RENEGADE ST	pc_0238s
+239	173	RENEGADE	RENEGADE BT	pc_0239s
+232	174	Jaguar C-X75	Grace	pc_0232s
+236	175	Jaguar C-X75	Grace ST	pc_0236s
+237	176	Jaguar C-X75	Grace BT	pc_0237s
+244	177	Hyundai Genesis Coupe	GSIX coop	pc_0244s
+245	178	Hyundai Genesis Coupe	GSIX coop ST	pc_0245s
+246	179	Hyundai Genesis Coupe	GSIX coop BT	pc_0246s
+248	180	Lamborghini Murcielago	Murago	pc_0248s
+249	181	Lamborghini Murcielago	Murago ST	pc_0249s
+250	182	Lamborghini Murcielago	Murago BT	pc_0250s
+252	183	Bmw I8 Vision	Imagine	pc_0252s
+253	184	Bmw I8 Vision	Imagine ST	pc_0253s
+254	185	Bmw I8 Vision	Imagine BT	pc_0254s
+255	186	Benz SLS AMG	G-WING	pc_0255s
+256	187	Benz SLS AMG	G-WING ST	pc_0256s
+257	188	Benz SLS AMG	G-WING BT	pc_0257s
+258	189	Maybach Exelero	EX-AERO	pc_0258s
+259	190	Maybach Exelero	EX-AERO ST	pc_0259s
+260	191	Maybach Exelero	EX-AERO BT	pc_0260s
+261	192	KIA K5	ICINCO	pc_0261s
+263	193	Mazda MX-5	MITEA	pc_0263s
+264	194	Mazda MX-5	MITEA ST	pc_0264s
+265	195	Mazda MX-5	MITEA BT	pc_0265s
+266	196	SSC Tuatara	SPHEN	pc_0266s
+267	197	SSC Tuatara	SPHEN ST	pc_0267s
+268	198	SSC Tuatara	SPHEN BT	pc_0268s
+270	199	DAIHATSU Copen	CANTATA	pc_0270s
+271	200	DAIHATSU Copen	CANTATA ST	pc_0271s
+272	201	DAIHATSU Copen	CANTATA BT	pc_0272s
+276	202	Lamborghini Reventon	Shadow Xmas	pc_0276s
+277	203	Pagani Zonda Roadster	Hunter Xmas	pc_0277s
+278	204	Ferrari F50	Rosso Xmas	pc_0278s
+279	205	Chevrolet Camaro	Ponica Xmas	pc_0279s
+280	206	Lamborghini Elemento	Mento MINI	pc_0280s
+281	207	BMW M1	PIETAS	pc_0281s
+282	208	BMW M1	PIETAS ST	pc_0282s
+283	209	BMW M1	PIETAS BT	pc_0283s
+273	210	Ferrari 60F1	NSR05	pc_0273s
+274	211	Ferrari 60F1	NSR05 ST	pc_0274s
+275	212	Ferrari 60F1	NSR05 BT	pc_0275s
+269	213	SUZUKI Jimny JB43	JIMMY	pc_0269s
+287	214	HONDA S2000	SRI3	pc_0287s
+288	215	HONDA S2000	SRI3 ST	pc_0288s
+289	216	HONDA S2000	SRI3 BT	pc_0289s
