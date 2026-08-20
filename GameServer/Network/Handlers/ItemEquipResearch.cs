@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using Shared.Models;
 using Shared.Network;
+using Shared.Network.GameServer;
 using Shared.Util;
 
 namespace GameServer.Network.Handlers
@@ -68,27 +69,31 @@ namespace GameServer.Network.Handlers
                     previous.State = 0;
                     previous.Slot = 0;
                     previous.CarId = carId;
+                    previous.Belonging = 0;
                     ItemModel.Update(connection, previous);
-                    character.AddItemMod(previous, true);
                 }
 
                 item.LastCarId = item.CarId;
                 item.CarId = carId;
-                item.State = 1; // 0=inventory, 1=equipped (confirmed by XiStrMyItem notes/captures)
+                item.State = 1; // 0=inventory, 1=equipped
                 item.Slot = (ushort)targetSlot;
                 item.Belonging = 1;
                 ItemModel.Update(connection, item);
-                character.AddItemMod(item, true);
             }
 
-            character.FlushItemModBuffer(packet.Sender);
+            // Do not use ItemMod State=3 for this transition. In captured tests that made
+            // the client remove the source icon but did not populate the destination slot.
+            // ItemListAck is already known to reconstruct inventory/equipment state correctly,
+            // so resync the authoritative full list until the dedicated EquipItem ACK is decoded.
+            packet.Sender.Send(new ItemListAnswer
+            {
+                InventoryItems = character.InventoryItems.OrderBy(x => x.InventoryIndex).ToArray()
+            }.CreatePacket());
 
             Log.Info(
-                "Item equipped: DbId={0} InvenIdx={1} TableIndex={2} CarId={3} Slot={4} State={5}",
+                "Item equipped and inventory resynced: DbId={0} InvenIdx={1} TableIndex={2} CarId={3} Slot={4} State={5}",
                 item.DbId, item.InventoryIndex, item.TableIndex, item.CarId, item.Slot, item.State);
 
-            // The client asks for CmdCheckStat after inventory changes in observed sessions;
-            // send it immediately as well so the panel updates without waiting for another UI refresh.
             CheckStat.Handle(packet);
         }
 
