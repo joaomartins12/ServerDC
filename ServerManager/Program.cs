@@ -13,7 +13,6 @@ namespace ServerManager
 
             var form = new MainForm();
             ManagerEnhancements.Attach(form);
-            OfficialLauncherSettings.Attach(form);
             LogClearBehavior.Attach(form);
             Application.Run(form);
         }
