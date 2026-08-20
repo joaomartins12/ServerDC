@@ -39,11 +39,15 @@ namespace ServerManager
             var settingsButton = BuildSettingsTabButton();
             tabStrip.Controls.Add(settingsButton);
 
+            // MainForm.SelectTab already performs the complete server-log page switch.
+            // Previously every tab click also forced a second refresh that invalidated the whole
+            // log tree, hid/showed RichTextBoxes, called Update/Refresh repeatedly and queued an
+            // additional BeginInvoke. With large packet logs that work could monopolize the UI
+            // thread for noticeable periods. Keep this handler intentionally lightweight.
             EventHandler serverTabRefresh = delegate
             {
                 settingsPage.Visible = false;
                 StyleTab(settingsButton, false);
-                QueueLogRefresh(form, logContent);
             };
 
             foreach (Control control in tabStrip.Controls)
@@ -68,8 +72,9 @@ namespace ServerManager
                 }
                 settingsPage.Visible = true;
                 settingsPage.BringToFront();
+                // Invalidate is enough. Do not synchronously force Update(); the normal WinForms
+                // paint cycle keeps the UI responsive when large logs are being appended.
                 settingsPage.Invalidate(true);
-                settingsPage.Update();
             };
         }
 
@@ -313,50 +318,6 @@ namespace ServerManager
                     "ClearVisibleLogsOnServerStart=" + ClearVisibleLogsOnServerStart + Environment.NewLine);
             }
             catch { }
-        }
-
-        private static void QueueLogRefresh(MainForm form, Panel logContent)
-        {
-            try
-            {
-                form.BeginInvoke(new Action(delegate
-                {
-                    if (form.IsDisposed) return;
-                    logContent.Invalidate(true); logContent.Update();
-                    foreach (var box in FindControls<RichTextBox>(logContent))
-                    {
-                        if (!box.Visible) continue;
-                        box.Visible = false;
-                        box.Visible = true;
-                        box.Invalidate(true); box.Update(); box.Refresh();
-                        if (box.TextLength > 0)
-                        {
-                            box.SelectionStart = box.TextLength;
-                            box.SelectionLength = 0;
-                            box.ScrollToCaret();
-                        }
-                    }
-                    form.BeginInvoke(new Action(delegate
-                    {
-                        foreach (var box in FindControls<RichTextBox>(logContent))
-                        {
-                            if (!box.Visible) continue;
-                            box.Invalidate(true); box.Refresh();
-                        }
-                    }));
-                }));
-            }
-            catch { }
-        }
-
-        private static IEnumerable<T> FindControls<T>(Control root) where T : Control
-        {
-            foreach (Control child in root.Controls)
-            {
-                var match = child as T;
-                if (match != null) yield return match;
-                foreach (var nested in FindControls<T>(child)) yield return nested;
-            }
         }
 
         private static T GetPrivateField<T>(MainForm form, string name) where T : class
