@@ -10,12 +10,28 @@ namespace AreaServer.Network.Handlers
         private static readonly object Sync = new object();
         private static readonly Dictionary<ushort, byte[]> LastMovement = new Dictionary<ushort, byte[]>();
         private static readonly Dictionary<ushort, int> SerialArea = new Dictionary<ushort, int>();
+        private static readonly HashSet<uint> DiscoveredPairs = new HashSet<uint>();
 
         public static void RegisterArea(ushort serial, int areaId)
         {
             if (serial == 0) return;
             lock (Sync)
+            {
                 SerialArea[serial] = areaId;
+
+                // Re-entering/changing area means remote entity discovery must be rebuilt.
+                var stale = new List<uint>();
+                foreach (var key in DiscoveredPairs)
+                {
+                    var source = (ushort)(key >> 16);
+                    var target = (ushort)(key & 0xFFFF);
+                    if (source == serial || target == serial)
+                        stale.Add(key);
+                }
+
+                foreach (var key in stale)
+                    DiscoveredPairs.Remove(key);
+            }
         }
 
         public static void ReplayExisting(Client client, ushort ownSerial, int areaId)
@@ -37,8 +53,8 @@ namespace AreaServer.Network.Handlers
                         continue;
                 }
 
-                // 541 is required by this client to discover/create a remote vehicle.
                 SendMovement(client, pair.Key, pair.Value, false);
+                MarkDiscovered(pair.Key, ownSerial);
                 WritePresenceLog("REPLAY_DISCOVERY", pair.Key, ownSerial, areaId, pair.Value.Length);
             }
         }
@@ -65,9 +81,8 @@ namespace AreaServer.Network.Handlers
                         continue;
                 }
 
-                // The entering vehicle may not exist yet in the remote client's entity table,
-                // so announce it with the discovery packet id (541).
                 SendMovement(client, serial, movement, false);
+                MarkDiscovered(serial, targetSerial);
                 WritePresenceLog("ANNOUNCE_DISCOVERY", serial, targetSerial, areaId, movement.Length);
             }
         }
@@ -81,8 +96,6 @@ namespace AreaServer.Network.Handlers
             var packetSerial = packet.Reader.ReadUInt16();
             var vehicleSerial = packet.Sender.User.VehicleSerial;
 
-            // The authenticated AreaServer session is authoritative. Never let a malformed
-            // or stale client payload update another driver's cached serial.
             if (vehicleSerial == 0)
                 return;
 
@@ -117,14 +130,40 @@ namespace AreaServer.Network.Handlers
                         continue;
                 }
 
-                // 542 is the real server -> client movement ACK. Once the entity has been
-                // created by 541 during EnterArea/announce, all live movement should use
-                // the ACK id so interpolation/presence state is refreshed correctly.
+                // Important: EnterArea can happen before either driver has produced a cached
+                // movement packet. In that case ReplayExisting/Announce cannot discover the
+                // remote entity. The first LIVE movement for each source->target pair must
+                // therefore use 541 once, then normal 542 ACK updates can follow.
+                if (!IsDiscovered(vehicleSerial, targetSerial))
+                {
+                    SendMovement(client, vehicleSerial, movement, false);
+                    MarkDiscovered(vehicleSerial, targetSerial);
+                    WritePresenceLog("LIVE_DISCOVERY", vehicleSerial, targetSerial, areaId, movement.Length);
+                }
+
                 SendMovement(client, vehicleSerial, movement, true);
                 WritePresenceLog("LIVE_ACK", vehicleSerial, targetSerial, areaId, movement.Length);
             }
 
             // Do NOT ReplayExisting here. Replay is only for EnterArea/re-entry.
+        }
+
+        private static uint PairKey(ushort sourceSerial, ushort targetSerial)
+        {
+            return ((uint)sourceSerial << 16) | targetSerial;
+        }
+
+        private static bool IsDiscovered(ushort sourceSerial, ushort targetSerial)
+        {
+            lock (Sync)
+                return DiscoveredPairs.Contains(PairKey(sourceSerial, targetSerial));
+        }
+
+        private static void MarkDiscovered(ushort sourceSerial, ushort targetSerial)
+        {
+            if (sourceSerial == 0 || targetSerial == 0) return;
+            lock (Sync)
+                DiscoveredPairs.Add(PairKey(sourceSerial, targetSerial));
         }
 
         private static void SendMovement(Client client, ushort serial, byte[] movement, bool liveAck)
