@@ -19,79 +19,162 @@ namespace GameServer.Util
             public string KeyItemId;
         }
 
-        public static void ExportExistingCatalogRows()
+        private sealed class DbVehicleRow
+        {
+            public int VehicleId;
+            public string RuntimeIndex;
+            public string Name;
+            public string CurrentKeyItemId;
+        }
+
+        public static void SyncExistingCatalogRows()
         {
             try
             {
                 var mapPath = Path.Combine("system", "data", "VehicleKeyMap.tsv");
                 if (!File.Exists(mapPath))
                 {
-                    Log.Warning("Vehicle key DB export skipped: {0} was not found.", mapPath);
+                    Log.Warning("Vehicle key DB sync skipped: {0} was not found.", mapPath);
                     return;
                 }
 
                 var map = LoadMap(mapPath);
                 if (map.Count == 0)
                 {
-                    Log.Warning("Vehicle key DB export skipped: official key map is empty.");
+                    Log.Warning("Vehicle key DB sync skipped: official key map is empty.");
                     return;
                 }
 
-                var rows = new List<string>();
-                rows.Add("VehicleId,RuntimeIndex,DbName,OfficialRuntimeIndex,OfficialCarName,OfficialUiName,KeyItemId,CurrentKeyItemId,NeedsUpdate");
+                var uniqueNames = BuildUniqueNameMap(map.Values);
+                var dbRows = new List<DbVehicleRow>();
 
                 using (var conn = GameServer.Instance.Database.Connection)
                 {
-                    const string sql = @"
+                    using (var ensure = new MySqlCommand(@"
 IF OBJECT_ID(N'dbo.vehicle_catalog', N'U') IS NOT NULL
-BEGIN
-    SELECT VehicleId, RuntimeIndex, Name,
-           CASE WHEN COL_LENGTH('dbo.vehicle_catalog','KeyItemId') IS NULL THEN NULL ELSE KeyItemId END AS KeyItemId
-    FROM dbo.vehicle_catalog
-    ORDER BY VehicleId;
-END";
+AND COL_LENGTH('dbo.vehicle_catalog', 'KeyItemId') IS NULL
+    ALTER TABLE dbo.vehicle_catalog ADD KeyItemId VARCHAR(32) NULL;", conn))
+                    {
+                        ensure.ExecuteNonQuery();
+                    }
 
-                    using (var cmd = new MySqlCommand(sql, conn))
+                    using (var cmd = new MySqlCommand(@"
+IF OBJECT_ID(N'dbo.vehicle_catalog', N'U') IS NOT NULL
+    SELECT VehicleId, RuntimeIndex, Name, KeyItemId
+    FROM dbo.vehicle_catalog
+    ORDER BY VehicleId;", conn))
                     using (var reader = cmd.ExecuteReader())
                     {
                         while (reader.Read())
                         {
-                            var vehicleId = Convert.ToInt32(reader["VehicleId"], CultureInfo.InvariantCulture);
-                            KeyMapRow official;
-                            if (!map.TryGetValue(vehicleId, out official))
-                                continue;
-
-                            var runtimeIndex = reader["RuntimeIndex"] == DBNull.Value ? string.Empty : Convert.ToString(reader["RuntimeIndex"], CultureInfo.InvariantCulture);
-                            var dbName = reader["Name"] == DBNull.Value ? string.Empty : Convert.ToString(reader["Name"], CultureInfo.InvariantCulture);
-                            var currentKey = reader["KeyItemId"] == DBNull.Value ? string.Empty : Convert.ToString(reader["KeyItemId"], CultureInfo.InvariantCulture);
-                            var needsUpdate = !string.Equals((currentKey ?? string.Empty).Trim(), official.KeyItemId, StringComparison.OrdinalIgnoreCase);
-
-                            rows.Add(string.Join(",", new[]
+                            dbRows.Add(new DbVehicleRow
                             {
-                                vehicleId.ToString(CultureInfo.InvariantCulture),
-                                Csv(runtimeIndex),
-                                Csv(dbName),
-                                official.OfficialRuntimeIndex.ToString(CultureInfo.InvariantCulture),
-                                Csv(official.CarName),
-                                Csv(official.UiName),
-                                Csv(official.KeyItemId),
-                                Csv(currentKey),
-                                needsUpdate ? "1" : "0"
-                            }));
+                                VehicleId = Convert.ToInt32(reader["VehicleId"], CultureInfo.InvariantCulture),
+                                RuntimeIndex = reader["RuntimeIndex"] == DBNull.Value
+                                    ? string.Empty
+                                    : Convert.ToString(reader["RuntimeIndex"], CultureInfo.InvariantCulture),
+                                Name = reader["Name"] == DBNull.Value
+                                    ? string.Empty
+                                    : Convert.ToString(reader["Name"], CultureInfo.InvariantCulture),
+                                CurrentKeyItemId = reader["KeyItemId"] == DBNull.Value
+                                    ? string.Empty
+                                    : Convert.ToString(reader["KeyItemId"], CultureInfo.InvariantCulture)
+                            });
                         }
                     }
+
+                    var updated = 0;
+                    var alreadyCorrect = 0;
+                    var unmatched = 0;
+                    var auditRows = new List<string>
+                    {
+                        "VehicleId,RuntimeIndex,DbName,OfficialRuntimeIndex,OfficialCarName,OfficialUiName,KeyItemId,PreviousKeyItemId,MatchMode,Updated"
+                    };
+
+                    foreach (var dbRow in dbRows)
+                    {
+                        KeyMapRow official;
+                        var matchMode = "VehicleId";
+
+                        if (!map.TryGetValue(dbRow.VehicleId, out official))
+                        {
+                            matchMode = "Name";
+                            if (string.IsNullOrWhiteSpace(dbRow.Name) ||
+                                !uniqueNames.TryGetValue(dbRow.Name.Trim(), out official))
+                            {
+                                unmatched++;
+                                Log.Warning(
+                                    "Vehicle key DB sync: no official key mapping for existing vehicle_catalog row VehicleId={0} RuntimeIndex={1} Name='{2}'.",
+                                    dbRow.VehicleId,
+                                    dbRow.RuntimeIndex,
+                                    dbRow.Name);
+                                continue;
+                            }
+                        }
+
+                        var previousKey = (dbRow.CurrentKeyItemId ?? string.Empty).Trim();
+                        var desiredKey = (official.KeyItemId ?? string.Empty).Trim();
+                        var changed = !string.Equals(previousKey, desiredKey, StringComparison.OrdinalIgnoreCase);
+
+                        if (changed)
+                        {
+                            using (var update = new MySqlCommand(@"
+UPDATE dbo.vehicle_catalog
+SET KeyItemId=@key
+WHERE VehicleId=@vehicleId;", conn))
+                            {
+                                update.Parameters.AddWithValue("@key", desiredKey);
+                                update.Parameters.AddWithValue("@vehicleId", dbRow.VehicleId);
+                                if (update.ExecuteNonQuery() == 1)
+                                {
+                                    updated++;
+                                    Log.Info(
+                                        "Vehicle key DB sync: VehicleId={0} RuntimeIndex={1} Name='{2}' -> KeyItemId={3} ({4}).",
+                                        dbRow.VehicleId,
+                                        dbRow.RuntimeIndex,
+                                        dbRow.Name,
+                                        desiredKey,
+                                        matchMode);
+                                }
+                            }
+                        }
+                        else
+                        {
+                            alreadyCorrect++;
+                        }
+
+                        auditRows.Add(string.Join(",", new[]
+                        {
+                            dbRow.VehicleId.ToString(CultureInfo.InvariantCulture),
+                            Csv(dbRow.RuntimeIndex),
+                            Csv(dbRow.Name),
+                            official.OfficialRuntimeIndex.ToString(CultureInfo.InvariantCulture),
+                            Csv(official.CarName),
+                            Csv(official.UiName),
+                            Csv(desiredKey),
+                            Csv(previousKey),
+                            Csv(matchMode),
+                            changed ? "1" : "0"
+                        }));
+                    }
+
+                    var outputDirectory = Path.Combine("Logs", "Catalogs");
+                    Directory.CreateDirectory(outputDirectory);
+                    var outputPath = Path.Combine(outputDirectory, "VehicleKeysForDatabase.csv");
+                    File.WriteAllLines(outputPath, auditRows, new UTF8Encoding(true));
+
+                    Log.Info(
+                        "Vehicle key DB sync complete: ExistingRows={0} Updated={1} AlreadyCorrect={2} Unmatched={3}. Audit={4}",
+                        dbRows.Count,
+                        updated,
+                        alreadyCorrect,
+                        unmatched,
+                        outputPath);
                 }
-
-                var outputDirectory = Path.Combine("Logs", "Catalogs");
-                Directory.CreateDirectory(outputDirectory);
-                var outputPath = Path.Combine(outputDirectory, "VehicleKeysForDatabase.csv");
-                File.WriteAllLines(outputPath, rows, new UTF8Encoding(true));
-
-                Log.Info("Vehicle key DB export: wrote {0} existing vehicle_catalog rows to {1}.", Math.Max(0, rows.Count - 1), outputPath);
             }
             catch (Exception ex)
             {
-                Log.Warning("Vehicle key DB export failed: {0}", ex.Message);
+                Log.Warning("Vehicle key DB sync failed: {0}", ex.Message);
             }
         }
 
@@ -121,6 +204,44 @@ END";
                 };
             }
             return result;
+        }
+
+        private static Dictionary<string, KeyMapRow> BuildUniqueNameMap(IEnumerable<KeyMapRow> rows)
+        {
+            var result = new Dictionary<string, KeyMapRow>(StringComparer.OrdinalIgnoreCase);
+            var duplicates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var row in rows)
+            {
+                AddUniqueName(result, duplicates, row.CarName, row);
+                AddUniqueName(result, duplicates, row.UiName, row);
+            }
+
+            foreach (var duplicate in duplicates)
+                result.Remove(duplicate);
+
+            return result;
+        }
+
+        private static void AddUniqueName(
+            IDictionary<string, KeyMapRow> result,
+            ISet<string> duplicates,
+            string name,
+            KeyMapRow row)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return;
+            name = name.Trim();
+            if (duplicates.Contains(name)) return;
+
+            KeyMapRow existing;
+            if (result.TryGetValue(name, out existing) && existing.VehicleId != row.VehicleId)
+            {
+                duplicates.Add(name);
+                result.Remove(name);
+                return;
+            }
+
+            result[name] = row;
         }
 
         private static string Csv(string value)
