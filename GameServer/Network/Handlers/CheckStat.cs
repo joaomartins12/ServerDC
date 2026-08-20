@@ -38,9 +38,6 @@ namespace GameServer.Network.Handlers
             }
 
             var equipped = EquippedItemStatResolver.Resolve(character, activeCar);
-
-            // The client exposes three independent contributors in User Information:
-            // Car + Parts + User. Character level belongs to the User block, not Parts.
             var userBonus = (int)character.Level;
             var totalSpeed = stats.Speed + equipped.Speed + userBonus;
             var totalCrash = stats.Crash + equipped.Crash + userBonus;
@@ -69,9 +66,6 @@ namespace GameServer.Network.Handlers
                 TotalAcceleration = totalAccel,
                 TotalBoost = totalBoost,
 
-                // These ten fields remain under protocol research. Keep the two candidate
-                // four-value groups populated for now and capture every packet to the dedicated
-                // Research files so we can correlate changes against the client UI.
                 PerformanceUnknown1 = totalSpeed,
                 PerformanceUnknown2 = totalCrash,
                 PerformanceUnknown3 = totalAccel,
@@ -85,11 +79,12 @@ namespace GameServer.Network.Handlers
                 MitronEfficiency = stats.MitronEfficiency
             };
 
-            // This flow is already stable and extremely repetitive. Keep the full diagnostic
-            // information on disk without flooding the ServerManager console.
+            // Optional runtime reverse-engineering probe. Disabled by default.
+            VehiclePerformanceProbe.Apply(ack);
+
             QuietLog.Write(
                 "StatUpdate",
-                "CID={0} Level={1} CarDbId={2} VehicleId={3} Name={4} Grade=V{5} Source={6} Base[S={7},C={8},A={9},B={10}] Equip[S={11},C={12},A={13},B={14}] User={15} Total[S={16},C={17},A={18},B={19}] Performance1[{20},{21},{22},{23}] Performance2[{24},{25},{26},{27}] Mitron[Capacity={28},Efficiency={29}]",
+                "CID={0} Level={1} CarDbId={2} VehicleId={3} Name={4} Grade=V{5} Source={6} Base[S={7},C={8},A={9},B={10}] Equip[S={11},C={12},A={13},B={14}] User={15} Total[S={16},C={17},A={18},B={19}] Perf[{20},{21},{22},{23},{24},{25},{26},{27},{28},{29}] ProbeField={30} ProbeValue={31} Mitron[Capacity={32},Efficiency={33}]",
                 character.Id,
                 character.Level,
                 activeCar.CarId,
@@ -118,6 +113,10 @@ namespace GameServer.Network.Handlers
                 ack.VehicleDurability,
                 ack.VehicleAcceleration,
                 ack.VehicleBoost,
+                ack.PerformanceUnknown9,
+                ack.PerformanceUnknown10,
+                VehiclePerformanceProbe.Field,
+                VehiclePerformanceProbe.Value,
                 stats.MitronCapacity,
                 stats.MitronEfficiency);
 
