@@ -39,14 +39,14 @@ namespace GameServer.Network.Handlers
 
             var equipped = EquippedItemStatResolver.Resolve(character, activeCar);
 
-            // Character level is a permanent contribution to every effective vehicle stat.
-            // The vehicle/catalog value remains the base block and equipped parts remain the
-            // equipment block; level is applied exactly once when calculating the totals.
-            var levelBonus = (int)character.Level;
-            var totalSpeed = stats.Speed + equipped.Speed + levelBonus;
-            var totalCrash = stats.Crash + equipped.Crash + levelBonus;
-            var totalAccel = stats.Accel + equipped.Accel + levelBonus;
-            var totalBoost = stats.Boost + equipped.Boost + levelBonus;
+            // The client already displays the grade-specific vehicle base stat and the equipped
+            // part contribution separately. Character level must NOT be added to this block.
+            // Example from the current client: Nevera V2 Speed=52 + Small(+1) must total 53,
+            // not 54 because the character happens to be level 1.
+            var totalSpeed = stats.Speed + equipped.Speed;
+            var totalCrash = stats.Crash + equipped.Crash;
+            var totalAccel = stats.Accel + equipped.Accel;
+            var totalBoost = stats.Boost + equipped.Boost;
 
             var ack = new CheckStatAnswer
             {
@@ -65,9 +65,15 @@ namespace GameServer.Network.Handlers
                 TotalAcceleration = totalAccel,
                 TotalBoost = totalBoost,
 
-                // These are a separate vehicle-performance block in StatUpdateAck.
-                // Sending the effective totals here lets the client calculate its
-                // Maximum Speed / Time to reach / Crash Damage / Boost Time panel.
+                // There are two four-value groups in the still partially reverse-engineered
+                // vehicle-performance section. Previous builds only populated the second one,
+                // while the current client kept Maximum Speed / Time to reach / Crash Damage /
+                // Boost Time at zero. Mirror the effective vehicle stats into both groups so the
+                // client has the grade+equipment values regardless of which group this build reads.
+                PerformanceUnknown1 = totalSpeed,
+                PerformanceUnknown2 = totalCrash,
+                PerformanceUnknown3 = totalAccel,
+                PerformanceUnknown4 = totalBoost,
                 VehicleSpeed = totalSpeed,
                 VehicleDurability = totalCrash,
                 VehicleAcceleration = totalAccel,
@@ -78,7 +84,7 @@ namespace GameServer.Network.Handlers
             };
 
             Log.Info(
-                "StatUpdate: CID={0} Level={1} CarDbId={2} VehicleId={3} Name={4} Grade=V{5} Source={6} Base[S={7},C={8},A={9},B={10}] Equip[S={11},C={12},A={13},B={14}] LevelBonus={15} Total[S={16},C={17},A={18},B={19}] Performance[S={20},C={21},A={22},B={23}] Mitron[Capacity={24},Efficiency={25}]",
+                "StatUpdate: CID={0} Level={1} CarDbId={2} VehicleId={3} Name={4} Grade=V{5} Source={6} Base[S={7},C={8},A={9},B={10}] Equip[S={11},C={12},A={13},B={14}] Total[S={15},C={16},A={17},B={18}] Performance1[S={19},C={20},A={21},B={22}] Performance2[S={23},C={24},A={25},B={26}] Mitron[Capacity={27},Efficiency={28}]",
                 character.Id,
                 character.Level,
                 activeCar.CarId,
@@ -94,15 +100,18 @@ namespace GameServer.Network.Handlers
                 equipped.Crash,
                 equipped.Accel,
                 equipped.Boost,
-                levelBonus,
                 totalSpeed,
                 totalCrash,
                 totalAccel,
                 totalBoost,
-                totalSpeed,
-                totalCrash,
-                totalAccel,
-                totalBoost,
+                ack.PerformanceUnknown1,
+                ack.PerformanceUnknown2,
+                ack.PerformanceUnknown3,
+                ack.PerformanceUnknown4,
+                ack.VehicleSpeed,
+                ack.VehicleDurability,
+                ack.VehicleAcceleration,
+                ack.VehicleBoost,
                 stats.MitronCapacity,
                 stats.MitronEfficiency);
 
