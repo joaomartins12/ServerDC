@@ -38,6 +38,7 @@ namespace GameServer.Util
 
                             var part = item as ItemTable.Item;
                             var use = item as UseItemTable.UseItem;
+                            var vehicleKey = IsVehicleKey(item);
 
                             writer.WriteLine("    {");
                             WriteNumber(writer, "tableIndex", i, true);
@@ -56,8 +57,8 @@ namespace GameServer.Util
                             WriteNullableBool(writer, "auctionable", item.Auctionable, true);
                             WriteNullableBool(writer, "partsShop", item.PartsShop, true);
                             WriteNullableBool(writer, "sendable", item.Sendable, true);
-                            WriteBool(writer, "stackable", item.IsStackable(), true);
-                            WriteSafeMaxStack(writer, item, true);
+                            WriteBool(writer, "stackable", !vehicleKey && item.IsStackable(), true);
+                            WriteSafeMaxStack(writer, item, vehicleKey, true);
                             WriteString(writer, "grade", part == null ? null : part.Grade, true);
                             WriteString(writer, "requiredLevel", part == null ? null : part.RequiredLevel, true);
                             WriteString(writer, "basePoints", part == null ? null : part.BasePoints, true);
@@ -94,6 +95,14 @@ namespace GameServer.Util
             {
                 Log.Warning("Unable to export ItemCatalog.json: {0}", ex.Message);
             }
+        }
+
+        private static bool IsVehicleKey(BasicItem item)
+        {
+            if (item == null) return false;
+            if (!string.Equals((item.Category ?? string.Empty).Trim(), "car", StringComparison.OrdinalIgnoreCase))
+                return false;
+            return (item.Name ?? string.Empty).Trim().EndsWith("key", StringComparison.OrdinalIgnoreCase);
         }
 
         private static void WriteString(StreamWriter writer, string name, string value, bool comma)
@@ -140,8 +149,14 @@ namespace GameServer.Util
                 writer.WriteLine("      \"" + Escape(name) + "\": null" + (comma ? "," : string.Empty));
         }
 
-        private static void WriteSafeMaxStack(StreamWriter writer, BasicItem item, bool comma)
+        private static void WriteSafeMaxStack(StreamWriter writer, BasicItem item, bool vehicleKey, bool comma)
         {
+            if (vehicleKey)
+            {
+                writer.WriteLine("      \"maxStack\": 1" + (comma ? "," : string.Empty));
+                return;
+            }
+
             try
             {
                 writer.WriteLine("      \"maxStack\": " + item.GetMaxStack().ToString(CultureInfo.InvariantCulture) + (comma ? "," : string.Empty));
