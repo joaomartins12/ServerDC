@@ -5,7 +5,6 @@ namespace Shared.Network.GameServer
 {
     /// <summary>
     /// sub_521CC00
-    /// TODO: Missing bytes!
     /// </summary>
     public class CheckStatAnswer : OutPacket
     {
@@ -13,12 +12,12 @@ namespace Shared.Network.GameServer
         public int BasedDurability;
         public int BasedAcceleration;
         public int BasedBoost;
-        
+
         public int EquipSpeed;
         public int EquipDurability;
         public int EquipAcceleration;
         public int EquipBoost;
-        
+
         public int CharSpeed;
         public int CharDurability;
         public int CharAcceleration;
@@ -28,12 +27,28 @@ namespace Shared.Network.GameServer
         public int ItemUseCrash;
         public int ItemUseAcceleration;
         public int ItemUseBoost;
-        
+
         public int TotalSpeed;
         public int TotalDurability;
         public int TotalAcceleration;
         public int TotalBoost;
-        
+
+        // Reverse-engineered 40-byte vehicle performance section.
+        // The original client research identified the middle four values as
+        // Vehicle Speed / Durability / Acceleration / Boost. The client uses
+        // these to derive the left-hand performance display (maximum speed,
+        // time to reach, crash damage and boost time).
+        public int PerformanceUnknown1;
+        public int PerformanceUnknown2;
+        public int PerformanceUnknown3;
+        public int PerformanceUnknown4;
+        public int VehicleSpeed;
+        public int VehicleDurability;
+        public int VehicleAcceleration;
+        public int VehicleBoost;
+        public int PerformanceUnknown9;
+        public int PerformanceUnknown10;
+
         // EnChantBonus
         public int Speed;
         public int Crash;
@@ -49,7 +64,7 @@ namespace Shared.Network.GameServer
         {
             return base.CreatePacket(Packets.StatUpdateAck);
         }
-        
+
         public override int ExpectedSize() => 158;
 
         public override byte[] GetBytes()
@@ -62,29 +77,38 @@ namespace Shared.Network.GameServer
                     bs.Write(BasedDurability);
                     bs.Write(BasedAcceleration);
                     bs.Write(BasedBoost);
-                
+
                     bs.Write(EquipSpeed);
                     bs.Write(EquipDurability);
                     bs.Write(EquipAcceleration);
                     bs.Write(EquipBoost);
-                
+
                     bs.Write(CharSpeed);
                     bs.Write(CharDurability);
                     bs.Write(CharAcceleration);
                     bs.Write(CharBoost);
-        
+
                     bs.Write(ItemUseSpeed);
                     bs.Write(ItemUseCrash);
                     bs.Write(ItemUseAcceleration);
                     bs.Write(ItemUseBoost);
-                
+
                     bs.Write(TotalSpeed);
                     bs.Write(TotalDurability);
                     bs.Write(TotalAcceleration);
                     bs.Write(TotalBoost);
 
-                    bs.Write(new byte[40]);
-                    
+                    bs.Write(PerformanceUnknown1);
+                    bs.Write(PerformanceUnknown2);
+                    bs.Write(PerformanceUnknown3);
+                    bs.Write(PerformanceUnknown4);
+                    bs.Write(VehicleSpeed);
+                    bs.Write(VehicleDurability);
+                    bs.Write(VehicleAcceleration);
+                    bs.Write(VehicleBoost);
+                    bs.Write(PerformanceUnknown9);
+                    bs.Write(PerformanceUnknown10);
+
                     // EnChantBonus
                     bs.Write(Speed);
                     bs.Write(Crash);
@@ -98,49 +122,6 @@ namespace Shared.Network.GameServer
                 }
                 return ms.ToArray();
             }
-            
-            /*ack.Writer.Write(0); // Speed (Car) Testvalue:100 -> http://i.imgur.com/AndRGwK.png
-            ack.Writer.Write(0); // Durability (Car) Testvalue:100 -> http://i.imgur.com/zuaxZu5.png
-            ack.Writer.Write(0); // Acceleration (Car) Testvalue:100 -> http://i.imgur.com/97UkLkj.png
-            
-            ack.Writer.Write(0); // Boost (Car) Testvalue:100 -> http://i.imgur.com/FQ9EYVO.png
-            ack.Writer.Write(0); // Speed (Parts) Testvalue:300 -> http://i.imgur.com/FQ9EYVO.png
-            ack.Writer.Write(0); // Durability (Parts) Testvalue:400 -> http://i.imgur.com/FQ9EYVO.png
-            ack.Writer.Write(0); // Acceleration (Parts) Testvalue:500 -> http://i.imgur.com/FQ9EYVO.png
-            ack.Writer.Write(0); // Boost (Parts) Testvalue:600 -> http://i.imgur.com/FQ9EYVO.png
-
-            ack.Writer.Write(0); // Speed (User)
-            ack.Writer.Write(0); // Durability (User)
-            ack.Writer.Write(0); // Acceleration (User)
-            ack.Writer.Write(0); // Boost (User)
-            ack.Writer.Write(0); // Speed (User) WTF?
-            ack.Writer.Write(0); // Durability (User) WTF?
-            ack.Writer.Write(0); // Acceleration (User) WTF?
-            ack.Writer.Write(0); // Boost (User) WTF?
-            ack.Writer.Write(0); // Char Speed
-            ack.Writer.Write(0); // Char Durability
-            ack.Writer.Write(0); // Char Acceleration
-            ack.Writer.Write(0); // Char Boost
-            ack.Writer.Write(0); // int ItemUseSpeed;
-            ack.Writer.Write(0); // int ItemUseCrash;
-            ack.Writer.Write(0); // int ItemUseAccel;
-            ack.Writer.Write(0); // int ItemUseBoost;
-            ack.Writer.Write(0); // Unknown
-            ack.Writer.Write(0); // Unknown
-            ack.Writer.Write(0); // Unknown
-            ack.Writer.Write(0); // Unknown
-            ack.Writer.Write(0); // Vehicle Speed Testvalue:100 -> http://i.imgur.com/3GV9enQ.png
-            ack.Writer.Write(0); // Vehicle Durability Testvalue:200 -> http://i.imgur.com/3GV9enQ.png
-            ack.Writer.Write(0); // Vehicle Acceleration Testvalue:300 -> http://i.imgur.com/3GV9enQ.png
-            ack.Writer.Write(0); // Vehicle Boost Testvalue:400 -> http://i.imgur.com/3GV9enQ.png
-            ack.Writer.Write(0); // Unknown
-            ack.Writer.Write(0); // Unknown
-            ack.Writer.Write(0); // Unknown
-            ack.Writer.Write(0); // Unknown
-            ack.Writer.Write(0); // Unknown
-            ack.Writer.Write(0); // Unknown
-            ack.Writer.Write((short) 0); // Unknown
-            */
         }
     }
 }
