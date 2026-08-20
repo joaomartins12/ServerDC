@@ -6,6 +6,7 @@ using Shared;
 using Shared.Models;
 using Shared.Network;
 using Shared.Network.GameServer;
+using Shared.Objects;
 using Shared.Util;
 
 namespace GameServer.Network.Handlers.Dealership
@@ -32,12 +33,30 @@ namespace GameServer.Network.Handlers.Dealership
                 return;
             }
 
+            CompleteSale(packet, character, vehicleId, false);
+        }
+
+        public static bool AutoCompleteAfterUnequip(Packet packet, Character character, uint vehicleId)
+        {
+            if (packet == null || character == null || vehicleId == 0)
+                return false;
+
+            if (vehicleId == character.ActiveVehicleId ||
+                (character.ActiveCar != null && vehicleId == character.ActiveCar.CarId))
+                return false;
+
+            Log.Info("SellCar auto-complete triggered after final unequip: CID={0} CarId={1}.", character.Id, vehicleId);
+            return CompleteSale(packet, character, vehicleId, true);
+        }
+
+        private static bool CompleteSale(Packet packet, Character character, uint vehicleId, bool autoAfterUnequip)
+        {
             if (vehicleId == character.ActiveVehicleId ||
                 (character.ActiveCar != null && vehicleId == character.ActiveCar.CarId))
             {
                 Log.Info("SellCar rejected: CID={0} attempted to sell active CarId={1}.", character.Id, vehicleId);
-                packet.Sender.SendError("Cannot sell the car currently in use.");
-                return;
+                if (!autoAfterUnequip) packet.Sender.SendError("Cannot sell the car currently in use.");
+                return false;
             }
 
             var vehicle = character.GarageVehicles == null
@@ -45,9 +64,9 @@ namespace GameServer.Network.Handlers.Dealership
                 : character.GarageVehicles.FirstOrDefault(veh => veh != null && veh.CarId == vehicleId);
             if (vehicle == null)
             {
-                Log.Warning("SellCar rejected: CID={0} does not own CarId={1}.", character.Id, vehicleId);
-                packet.Sender.SendError("Vehicle not found.");
-                return;
+                Log.Warning("SellCar skipped: CID={0} does not own CarId={1}.", character.Id, vehicleId);
+                if (!autoAfterUnequip) packet.Sender.SendError("Vehicle not found.");
+                return false;
             }
 
             var vehicleData = ServerMain.Vehicles == null
@@ -64,7 +83,7 @@ namespace GameServer.Network.Handlers.Dealership
             {
                 Log.Error("SellCar: vehicle definition missing for CarId={0} CarType={1}.", vehicleId, vehicle.CarType);
                 packet.Sender.SendError("Failed to sell the car.");
-                return;
+                return false;
             }
 
             var gradeIndex = vehicle.Grade > 0 ? checked((int)vehicle.Grade - 1) : 0;
@@ -72,23 +91,18 @@ namespace GameServer.Network.Handlers.Dealership
             var vehicleUpgrade = vehicleData.Upgrades[gradeIndex];
             if (vehicleUpgrade == null)
             {
-                Log.Error("SellCar: missing upgrade row CarType={0} GradeIndex={1}.", vehicle.CarType, gradeIndex);
                 packet.Sender.SendError("Failed to sell the car.");
-                return;
+                return false;
             }
 
             int price;
             if (!int.TryParse(vehicleUpgrade.Sell, NumberStyles.Integer, CultureInfo.InvariantCulture, out price))
             {
-                Log.Error("SellCar: invalid sell price '{0}' for CarType={1} GradeIndex={2}.",
-                    vehicleUpgrade.Sell, vehicle.CarType, gradeIndex);
+                Log.Error("SellCar: invalid sell price '{0}' for CarType={1} GradeIndex={2}.", vehicleUpgrade.Sell, vehicle.CarType, gradeIndex);
                 packet.Sender.SendError("Failed to sell the car.");
-                return;
+                return false;
             }
 
-            // Safety net: the client normally sends CmdUnEquipItem for every attached part before
-            // CmdSellCar. If anything remains linked, detach it here without leaving LastCarId or
-            // Belonging pointing at the vehicle that is about to be deleted.
             var unequippedPartSlots = new List<uint>();
             if (character.InventoryItems != null)
             {
@@ -98,33 +112,22 @@ namespace GameServer.Network.Handlers.Dealership
 
                 foreach (var item in equippedParts)
                 {
-                    var oldSlot = item.Slot;
                     item.LastCarId = 0;
                     item.CarId = 0;
                     item.State = 0;
                     item.Slot = 0;
                     item.Belonging = 0;
-
                     ItemModel.Update(GameServer.Instance.Database.Connection, item);
                     character.AddItemMod(item, true);
                     unequippedPartSlots.Add(item.InventoryIndex);
-
-                    Log.Info(
-                        "SellCar auto-unequip: CID={0} CarId={1} InvenIdx={2} TableIndex={3} OldSlot={4} -> CarId=0 LastCarId=0",
-                        character.Id,
-                        vehicleId,
-                        item.InventoryIndex,
-                        item.TableIndex,
-                        oldSlot);
                 }
             }
 
             if (!VehicleModel.Remove(GameServer.Instance.Database.Connection, vehicleId))
             {
-                Log.Error("SellCar: couldn't remove CarId={0} from DB after auto-unequipping {1} parts.",
-                    vehicleId, unequippedPartSlots.Count);
+                Log.Error("SellCar: couldn't remove CarId={0} from DB.", vehicleId);
                 packet.Sender.SendError("Failed to sell the car.");
-                return;
+                return false;
             }
 
             character.GarageVehicles.Remove(vehicle);
@@ -159,23 +162,17 @@ namespace GameServer.Network.Handlers.Dealership
             packet.Sender.Send(new ItemListAnswer
             {
                 InventoryItems = character.InventoryItems == null
-                    ? new Shared.Objects.InventoryItem[0]
+                    ? new InventoryItem[0]
                     : character.InventoryItems.OrderBy(i => i.InventoryIndex).ToArray()
             }.CreatePacket());
 
             character.FlushItemModBuffer(packet.Sender);
 
             Log.Info(
-                "SellCar complete: CID={0} CarId={1} CarType={2} Grade=V{3} GradeIndex={4} SellPrice={5} Mito={6} AutoUnequippedParts={7} RemovedLinkedItems={8}",
-                character.Id,
-                vehicleId,
-                vehicle.CarType,
-                vehicle.Grade,
-                gradeIndex,
-                price,
-                character.MitoMoney,
-                unequippedPartSlots.Count,
-                removedKeySlots.Count);
+                "SellCar complete: CID={0} CarId={1} CarType={2} Grade=V{3} GradeIndex={4} SellPrice={5} Mito={6} AutoAfterUnequip={7} AutoUnequippedParts={8} RemovedLinkedItems={9}",
+                character.Id, vehicleId, vehicle.CarType, vehicle.Grade, gradeIndex, price,
+                character.MitoMoney, autoAfterUnequip, unequippedPartSlots.Count, removedKeySlots.Count);
+            return true;
         }
     }
 }
