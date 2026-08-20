@@ -1,6 +1,5 @@
 using System;
 using System.Linq;
-using GameServer.Network.Handlers.Dealership;
 using Shared.Models;
 using Shared.Network;
 using Shared.Network.GameServer;
@@ -15,7 +14,7 @@ namespace GameServer.Network.Handlers
         public static void Equip(Packet packet)
         {
             var character = packet.Sender.User == null ? null : packet.Sender.User.ActiveCharacter;
-            if (character == null || character.ActiveCar == null) return;
+            if (character == null) return;
 
             if (packet.Reader.BaseStream.Length - packet.Reader.BaseStream.Position < 12)
             {
@@ -26,10 +25,38 @@ namespace GameServer.Network.Handlers
             var inventoryIndex = packet.Reader.ReadUInt32();
             var targetSlot = packet.Reader.ReadUInt32();
             var carId = packet.Reader.ReadUInt32();
-            if (carId != character.ActiveCar.CarId || targetSlot > ushort.MaxValue) return;
+
+            if (targetSlot > ushort.MaxValue)
+                return;
+
+            // The dealership/garage UI can equip parts directly onto a vehicle that is not
+            // currently selected. The client sends the actual target CarId in the packet, so
+            // validate ownership instead of requiring ActiveCar.CarId.
+            var targetVehicle = character.GarageVehicles == null
+                ? null
+                : character.GarageVehicles.FirstOrDefault(v => v != null && v.CarId == carId);
+            if (targetVehicle == null)
+            {
+                Log.Warning(
+                    "CmdEquipItem rejected: CID={0} does not own target CarId={1}. InvenIdx={2} Slot={3}",
+                    character.Id,
+                    carId,
+                    inventoryIndex,
+                    targetSlot);
+                return;
+            }
 
             var item = character.InventoryItems.FirstOrDefault(x => x.InventoryIndex == inventoryIndex);
-            if (item == null) return;
+            if (item == null)
+            {
+                Log.Warning(
+                    "CmdEquipItem rejected: inventory item not found. CID={0} InvenIdx={1} TargetCarId={2} Slot={3}",
+                    character.Id,
+                    inventoryIndex,
+                    carId,
+                    targetSlot);
+                return;
+            }
 
             using (var connection = GameServer.Instance.Database.Connection)
             {
@@ -39,10 +66,12 @@ namespace GameServer.Network.Handlers
                 if (previous != null)
                 {
                     previous.LastCarId = 0;
+                    previous.CarId = 0;
                     previous.State = 0;
                     previous.Slot = 0;
                     previous.Belonging = 0;
                     ItemModel.Update(connection, previous);
+                    character.AddItemMod(previous, true);
                 }
 
                 item.LastCarId = 0;
@@ -51,12 +80,23 @@ namespace GameServer.Network.Handlers
                 item.Slot = (ushort)targetSlot;
                 item.Belonging = 1;
                 ItemModel.Update(connection, item);
+                character.AddItemMod(item, true);
             }
 
             ResyncInventory(packet, character);
-            Log.Info("Item equipped: InvenIdx={0} TableIndex={1} CarId={2} Slot={3} LastCarId={4}",
-                item.InventoryIndex, item.TableIndex, item.CarId, item.Slot, item.LastCarId);
-            CheckStat.Handle(packet);
+            character.FlushItemModBuffer(packet.Sender);
+
+            Log.Info(
+                "Item equipped: InvenIdx={0} TableIndex={1} TargetCarId={2} Slot={3} ActiveCarId={4}",
+                item.InventoryIndex,
+                item.TableIndex,
+                item.CarId,
+                item.Slot,
+                character.ActiveCar == null ? 0 : character.ActiveCar.CarId);
+
+            // Only the currently driven car affects the live stat panel.
+            if (character.ActiveCar != null && character.ActiveCar.CarId == carId)
+                CheckStat.Handle(packet);
         }
 
         [Packet(Packets.CmdUnEquipItem)]
@@ -87,14 +127,17 @@ namespace GameServer.Network.Handlers
 
             InventoryItem item = equipped.FirstOrDefault(x => x.InventoryIndex == a);
             if (item == null) item = equipped.FirstOrDefault(x => x.Slot == a);
+
             if (item == null && raw.Length >= 12 && c != targetCarId)
                 item = equipped.FirstOrDefault(x => x.InventoryIndex == c || x.Slot == c);
+
             if (item == null && equipped.Count == 1)
                 item = equipped[0];
 
             if (item == null)
             {
-                Log.Warning("CmdUnEquipItem: could not resolve equipped item from payload a={0} b={1} c={2} TargetCarId={3} Candidates={4}.",
+                Log.Warning(
+                    "CmdUnEquipItem: could not resolve equipped item from payload a={0} b={1} c={2} TargetCarId={3} Candidates={4}.",
                     a, b, c, targetCarId, equipped.Count);
                 return;
             }
@@ -110,26 +153,33 @@ namespace GameServer.Network.Handlers
                 ItemModel.Update(connection, item);
                 character.AddItemMod(item, true);
 
-                Log.Info("Item unequipped: InvenIdx={0} TableIndex={1} PreviousCarId={2} TargetCarId={3} -> CarId=0 LastCarId=0 State=0 Slot=0",
+                Log.Info(
+                    "Item unequipped: InvenIdx={0} TableIndex={1} PreviousCarId={2} TargetCarId={3} -> CarId=0 LastCarId=0 State=0 Slot=0",
                     item.InventoryIndex, item.TableIndex, previousCarId, targetCarId);
             }
 
             ResyncInventory(packet, character);
             character.FlushItemModBuffer(packet.Sender);
-            CheckStat.Handle(packet);
+
+            if (character.ActiveCar != null && character.ActiveCar.CarId == targetCarId)
+                CheckStat.Handle(packet);
 
             var remainingOnCar = character.InventoryItems.Count(x =>
                 x != null && x.State == 1 && x.CarId == targetCarId);
             Log.Info("CmdUnEquipItem complete: TargetCarId={0} RemainingEquipped={1}", targetCarId, remainingOnCar);
 
-            // In the dealership sale flow the client does not send CmdSellCar after it has asked
-            // the server to unequip the last part from a non-active vehicle. Finish the sale here
-            // so the UI does not remain locked on the selected vehicle.
-            var activeCarId = character.ActiveCar == null ? 0u : character.ActiveCar.CarId;
-            if (remainingOnCar == 0 && targetCarId != 0 &&
-                targetCarId != character.ActiveVehicleId && targetCarId != activeCarId)
+            // When the dealership asks the client to remove all parts from a non-active vehicle,
+            // some client builds never send CmdSellCar after the final unequip. Finish the sale
+            // immediately once the target vehicle is clean.
+            if (remainingOnCar == 0 &&
+                targetCarId != 0 &&
+                (character.ActiveCar == null || character.ActiveCar.CarId != targetCarId) &&
+                character.GarageVehicles != null &&
+                character.GarageVehicles.Any(v => v != null && v.CarId == targetCarId))
             {
-                SellCar.AutoCompleteAfterUnequip(packet, character, targetCarId);
+                Log.Info("SellCar auto-complete triggered after final unequip: CID={0} CarId={1}",
+                    character.Id, targetCarId);
+                GameServer.Network.Handlers.Dealership.SellCar.CompleteSale(packet, targetCarId, true);
             }
         }
 
