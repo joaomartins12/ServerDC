@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using Shared.Network;
+using Shared.Objects;
 
 namespace AreaServer.Network.Handlers
 {
