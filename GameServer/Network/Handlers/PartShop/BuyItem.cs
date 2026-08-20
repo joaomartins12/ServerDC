@@ -1,4 +1,5 @@
 ﻿using System;
+using GameServer.Util;
 using MySql.Data.MySqlClient;
 using Shared;
 using Shared.Models;
@@ -35,8 +36,9 @@ namespace GameServer.Network.Handlers
                 return;
             }
 
-            Log.Info(
-                "BuyItem resolve: ProtocolTableIndex={0} -> CatalogIndex={1} Source={2} ItemId={3} Name={4} BuyValue={5} SellValue={6}",
+            QuietLog.Write(
+                "ShopBuy",
+                "ProtocolTableIndex={0} CatalogIndex={1} Source={2} ItemId={3} Name={4} BuyValue={5} SellValue={6}",
                 protocolTableIndex,
                 catalogIndex,
                 isUseItem ? "UseItem" : "Item",
@@ -64,11 +66,6 @@ namespace GameServer.Network.Handlers
                 return;
             }
 
-            // GiveItem needs the merged server catalog index so it can resolve the XML definition.
-            // Shop purchases must enter the inventory as completely unequipped items. GiveItem's
-            // generic constructor historically associates a new item with the active car; when that
-            // CarId is sent to the client before the first equip, the client interprets it as part of
-            // the displayed stat (for example CarId 10078 + Small(+1) showed as Speed +10079).
             var inventoryItem = character.GiveItem(
                 GameServer.Instance.Database.Connection,
                 catalogIndex,
@@ -81,17 +78,15 @@ namespace GameServer.Network.Handlers
 
             var requiresPersist = false;
 
-            // Inventory packets must keep the client's TableIndex, not the server XML runtime index.
-            // This matters for normal Items too: current ItemClient.tdf ordering no longer exactly
-            // matches Items.xml after the first entries.
             if (inventoryItem.TableIndex != protocolTableIndex)
             {
                 var oldIndex = inventoryItem.TableIndex;
                 inventoryItem.TableIndex = protocolTableIndex;
                 requiresPersist = true;
 
-                Log.Info(
-                    "Client item index persisted: DbId={0} InvenIdx={1} CatalogIndex={2} OldTableIndex={3} ProtocolTableIndex={4} ItemId={5} Name={6}",
+                QuietLog.Write(
+                    "ShopBuy",
+                    "Client index persisted: DbId={0} InvenIdx={1} CatalogIndex={2} OldTableIndex={3} ProtocolTableIndex={4} ItemId={5} Name={6}",
                     inventoryItem.DbId,
                     inventoryItem.InventoryIndex,
                     catalogIndex,
@@ -101,16 +96,15 @@ namespace GameServer.Network.Handlers
                     itemData.Name);
             }
 
-            // A freshly purchased item is not installed in any vehicle yet.
-            // Keep every relationship/state field neutral until CmdEquipItem explicitly assigns it.
             if (inventoryItem.CarId != 0 ||
                 inventoryItem.LastCarId != 0 ||
                 inventoryItem.State != 0 ||
                 inventoryItem.Slot != 0 ||
                 inventoryItem.Belonging != 0)
             {
-                Log.Debug(
-                    "PartShop clearing new item linkage: DbId={0} InvenIdx={1} CarId={2} LastCarId={3} State={4} Slot={5} Belonging={6}",
+                QuietLog.Write(
+                    "ShopBuy",
+                    "Clearing new item linkage: DbId={0} InvenIdx={1} CarId={2} LastCarId={3} State={4} Slot={5} Belonging={6}",
                     inventoryItem.DbId,
                     inventoryItem.InventoryIndex,
                     inventoryItem.CarId,
@@ -130,8 +124,9 @@ namespace GameServer.Network.Handlers
             if (requiresPersist)
                 ItemModel.Update(GameServer.Instance.Database.Connection, inventoryItem);
 
-            Log.Debug(
-                "PartShop item instance: DbId={0} InvenIdx={1} TableIndex={2} CarId={3} LastCarId={4} State={5} Slot={6} Belonging={7} Random={8} Upgrade={9} UpgradePoint={10}",
+            QuietLog.Write(
+                "ShopBuy",
+                "Item instance: DbId={0} InvenIdx={1} TableIndex={2} CarId={3} LastCarId={4} State={5} Slot={6} Belonging={7} Random={8} Upgrade={9} UpgradePoint={10} TotalPrice={11}",
                 inventoryItem.DbId,
                 inventoryItem.InventoryIndex,
                 inventoryItem.TableIndex,
@@ -142,7 +137,8 @@ namespace GameServer.Network.Handlers
                 inventoryItem.Belonging,
                 inventoryItem.Random,
                 inventoryItem.Upgrade,
-                inventoryItem.UpgradePoint);
+                inventoryItem.UpgradePoint,
+                price);
 
             character.MitoMoney -= price;
             CharacterModel.Update(GameServer.Instance.Database.Connection, character);
@@ -173,8 +169,6 @@ namespace GameServer.Network.Handlers
 
             var firstUseItemCatalogIndex = FindFirstUseItemCatalogIndex();
 
-            // UseItems shop packets use their historical 0x580 namespace. Keep this path first,
-            // because client_item_lookup stores the global inventory index instead.
             if (firstUseItemCatalogIndex >= 0 && protocolTableIndex > UseItemProtocolBase)
             {
                 var useItemIndex = protocolTableIndex - UseItemProtocolBase - 1;
@@ -191,9 +185,6 @@ namespace GameServer.Network.Handlers
                 }
             }
 
-            // Normal ItemClient.tdf indexes must be translated through the imported client table.
-            // ItemClient ordering differs from Items.xml, which previously made Small correct only
-            // by coincidence while Intro/Bfemil/Chorus resolved another server item and price.
             string itemId;
             if (TryGetClientItemId(protocolTableIndex, out itemId))
             {
@@ -215,7 +206,6 @@ namespace GameServer.Network.Handlers
                     itemId);
             }
 
-            // Compatibility fallback for installations that have not imported ItemClient.tdf yet.
             if (protocolTableIndex < ServerMain.Items.Count &&
                 ServerMain.Items[protocolTableIndex] is ItemTable.Item)
             {
