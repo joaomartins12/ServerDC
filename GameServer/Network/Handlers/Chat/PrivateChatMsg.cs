@@ -204,6 +204,12 @@ namespace GameServer.Network.Handlers
                 return;
             }
 
+            // ChatMsgAck already contains the protocol discriminator in MessageType
+            // ("private" for whisper, just as the blue server message uses "channel").
+            // The current client does not render a visible whisper caption for "private",
+            // so keep the proven packet type and add a compact textual marker.
+            var displayMessage = "[Whisper] " + (message ?? string.Empty);
+
             Packet recipientPacket;
             Packet senderEchoPacket;
             string stage;
@@ -212,11 +218,11 @@ namespace GameServer.Network.Handlers
             {
                 recipientPacket = new Packet(Packets.CmdPrivateChatMsg);
                 recipientPacket.Writer.WriteUnicodeStatic(senderName, 21, true);
-                recipientPacket.Writer.WriteUnicode(message ?? string.Empty);
+                recipientPacket.Writer.WriteUnicode(displayMessage);
 
                 senderEchoPacket = new Packet(Packets.CmdPrivateChatMsg);
                 senderEchoPacket.Writer.WriteUnicodeStatic(targetDisplayName, 21, true);
-                senderEchoPacket.Writer.WriteUnicode(message ?? string.Empty);
+                senderEchoPacket.Writer.WriteUnicode(displayMessage);
                 stage = "OUT149";
             }
             else
@@ -225,7 +231,7 @@ namespace GameServer.Network.Handlers
                 {
                     MessageType = mode,
                     SenderCharacterName = senderName,
-                    Message = message ?? string.Empty
+                    Message = displayMessage
                 }.CreatePacket();
 
                 // The sender must receive its own whisper too. For the local echo the
@@ -235,7 +241,7 @@ namespace GameServer.Network.Handlers
                 {
                     MessageType = mode,
                     SenderCharacterName = targetDisplayName,
-                    Message = message ?? string.Empty
+                    Message = displayMessage
                 }.CreatePacket();
                 stage = "OUT147_" + mode.ToUpperInvariant();
             }
