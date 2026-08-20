@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using GameServer.Util;
 using Shared.Models;
 using Shared.Network;
 using Shared.Network.GameServer;
@@ -29,9 +30,6 @@ namespace GameServer.Network.Handlers
             if (targetSlot > ushort.MaxValue)
                 return;
 
-            // The dealership/garage UI can equip parts directly onto a vehicle that is not
-            // currently selected. The client sends the actual target CarId in the packet, so
-            // validate ownership instead of requiring ActiveCar.CarId.
             var targetVehicle = character.GarageVehicles == null
                 ? null
                 : character.GarageVehicles.FirstOrDefault(v => v != null && v.CarId == carId);
@@ -86,7 +84,8 @@ namespace GameServer.Network.Handlers
             ResyncInventory(packet, character);
             character.FlushItemModBuffer(packet.Sender);
 
-            Log.Info(
+            QuietLog.Write(
+                "Equip",
                 "Item equipped: InvenIdx={0} TableIndex={1} TargetCarId={2} Slot={3} ActiveCarId={4}",
                 item.InventoryIndex,
                 item.TableIndex,
@@ -94,7 +93,6 @@ namespace GameServer.Network.Handlers
                 item.Slot,
                 character.ActiveCar == null ? 0 : character.ActiveCar.CarId);
 
-            // Only the currently driven car affects the live stat panel.
             if (character.ActiveCar != null && character.ActiveCar.CarId == carId)
                 CheckStat.Handle(packet);
         }
@@ -108,9 +106,9 @@ namespace GameServer.Network.Handlers
             var remaining = (int)Math.Max(0L, packet.Reader.BaseStream.Length - packet.Reader.BaseStream.Position);
             var raw = remaining > 0 ? packet.Reader.ReadBytes(remaining) : new byte[0];
 
-            Log.Info("CmdUnEquipItem: CID={0} PayloadBytes={1}", character.Id, raw.Length);
+            QuietLog.Write("Equip", "CmdUnEquipItem: CID={0} PayloadBytes={1}", character.Id, raw.Length);
             if (raw.Length > 0)
-                Log.Debug("CmdUnEquipItem payload HEX:\n{0}", BinaryWriterExt.HexDump(raw));
+                QuietLog.Write("Equip", "CmdUnEquipItem payload HEX: {0}", BinaryWriterExt.HexDump(raw).Replace(Environment.NewLine, " | "));
 
             uint a = 0, b = 0, c = 0;
             if (raw.Length >= 4) a = BitConverter.ToUInt32(raw, 0);
@@ -153,8 +151,9 @@ namespace GameServer.Network.Handlers
                 ItemModel.Update(connection, item);
                 character.AddItemMod(item, true);
 
-                Log.Info(
-                    "Item unequipped: InvenIdx={0} TableIndex={1} PreviousCarId={2} TargetCarId={3} -> CarId=0 LastCarId=0 State=0 Slot=0",
+                QuietLog.Write(
+                    "Equip",
+                    "Item unequipped: InvenIdx={0} TableIndex={1} PreviousCarId={2} TargetCarId={3} -> neutral inventory state",
                     item.InventoryIndex, item.TableIndex, previousCarId, targetCarId);
             }
 
@@ -166,11 +165,8 @@ namespace GameServer.Network.Handlers
 
             var remainingOnCar = character.InventoryItems.Count(x =>
                 x != null && x.State == 1 && x.CarId == targetCarId);
-            Log.Info("CmdUnEquipItem complete: TargetCarId={0} RemainingEquipped={1}", targetCarId, remainingOnCar);
+            QuietLog.Write("Equip", "CmdUnEquipItem complete: TargetCarId={0} RemainingEquipped={1}", targetCarId, remainingOnCar);
 
-            // When the dealership asks the client to remove all parts from a non-active vehicle,
-            // some client builds never send CmdSellCar after the final unequip. Finish the sale
-            // immediately once the target vehicle is clean.
             if (remainingOnCar == 0 &&
                 targetCarId != 0 &&
                 (character.ActiveCar == null || character.ActiveCar.CarId != targetCarId) &&
@@ -195,7 +191,7 @@ namespace GameServer.Network.Handlers
             var remaining = Math.Max(0L, stream.Length - stream.Position);
             var bytes = remaining > 0 ? packet.Reader.ReadBytes(checked((int)remaining)) : new byte[0];
             Log.Warning("INVENTORY RESEARCH {0} ({1},0x{1:X}) PayloadBytes={2}", name, packetId, bytes.Length);
-            if (bytes.Length > 0) Log.Debug("{0} payload HEX:\n{1}", name, BinaryWriterExt.HexDump(bytes));
+            if (bytes.Length > 0) QuietLog.Write("Equip", "{0} payload HEX: {1}", name, BinaryWriterExt.HexDump(bytes).Replace(Environment.NewLine, " | "));
         }
     }
 }
