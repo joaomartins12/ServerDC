@@ -233,8 +233,8 @@ BEGIN
         SourceDay TINYINT NOT NULL,
         Flag BIGINT NOT NULL,
         HeaderOffset BIGINT NOT NULL,
-        ColumnCount INT NOT NULL,
-        RowCount INT NOT NULL,
+        [ColumnCount] INT NOT NULL,
+        [RowCount] INT NOT NULL,
         GlobalBaseIndex INT NULL,
         ImportedAt DATETIME2 NOT NULL CONSTRAINT DF_client_tdf_manifest_ImportedAt DEFAULT(SYSUTCDATETIME())
     );
@@ -255,8 +255,8 @@ BEGIN
         SourceDay TINYINT NOT NULL,
         Flag BIGINT NOT NULL,
         HeaderOffset BIGINT NOT NULL,
-        ColumnCount INT NOT NULL,
-        RowCount INT NOT NULL,
+        [ColumnCount] INT NOT NULL,
+        [RowCount] INT NOT NULL,
         GlobalBaseIndex INT NULL,
         ImportedAt DATETIME2 NOT NULL CONSTRAINT DF_client_tdf_manifest_ImportedAt DEFAULT(SYSUTCDATETIME())
     );
@@ -389,7 +389,7 @@ IF OBJECT_ID(N'dbo.client_tdf_rows', N'U') IS NOT NULL DROP TABLE dbo.client_tdf
             const string sql = @"
 INSERT INTO dbo.client_tdf_manifest
 (FileName, TableName, FileHash, HeaderBytes, VersionMajor, VersionMinor, SourceYear, SourceMonth, SourceDay,
- Flag, HeaderOffset, ColumnCount, RowCount, GlobalBaseIndex, ImportedAt)
+ Flag, HeaderOffset, [ColumnCount], [RowCount], GlobalBaseIndex, ImportedAt)
 VALUES
 (@FileName, @TableName, @FileHash, @HeaderBytes, @VersionMajor, @VersionMinor, @SourceYear, @SourceMonth, @SourceDay,
  @Flag, @HeaderOffset, @ColumnCount, @RowCount, @GlobalBaseIndex, SYSUTCDATETIME());";
