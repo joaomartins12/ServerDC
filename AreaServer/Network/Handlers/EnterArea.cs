@@ -1,7 +1,6 @@
 ﻿using Shared.Models;
 using Shared.Network;
 using Shared.Network.AreaServer;
-using Shared.Util;
 
 namespace AreaServer.Network.Handlers
 {
@@ -11,7 +10,7 @@ namespace AreaServer.Network.Handlers
         public static void Handle(Packet packet)
         {
             var enterAreaPacket = new EnterAreaPacket(packet);
-            
+
             if (packet.Sender.User == null || packet.Sender.User.VehicleSerial != enterAreaPacket.VehicleSerial)
             {
                 var character = CharacterModel.Retrieve(AreaServer.Instance.Database.Connection, enterAreaPacket.CharacterName);
@@ -20,14 +19,14 @@ namespace AreaServer.Network.Handlers
                     packet.Sender.KillConnection("Invalid charactername");
                     return;
                 }
-                
+
                 var account = AccountModel.RetrieveFromSerial(AreaServer.Instance.Database.Connection, character.Uid, enterAreaPacket.VehicleSerial);
                 if (account == null)
                 {
                     packet.Sender.KillConnection("Invalid serial");
                     return;
                 }
-                
+
                 packet.Sender.User = account;
                 packet.Sender.User.ActiveCharacter = character;
 
@@ -38,16 +37,26 @@ namespace AreaServer.Network.Handlers
                         packet.Sender.KillConnection($"[{packet.Sender.User.VehicleSerial} vs {enterAreaPacket.VehicleSerial}] Still wrong user.");
                         return;
                     }
-
-                }else
+                }
+                else
+                {
                     DefaultServer.ActiveSerials.Add(enterAreaPacket.VehicleSerial, packet.Sender.User);
+                }
             }
+
+            MoveVehicle.RegisterArea(enterAreaPacket.VehicleSerial, enterAreaPacket.AreaId);
 
             packet.Sender.Send(new EnterAreaAnswer
             {
                 LocalTime = enterAreaPacket.LocalTime,
                 AreaId = enterAreaPacket.AreaId
             }.CreatePacket());
+
+            // A player that enters after another driver stopped moving would otherwise
+            // never receive that driver's serial/movement and therefore never request
+            // PlayerInfo 801. Replay the last known movement of drivers already in the
+            // same area so discovery works regardless of login order.
+            MoveVehicle.ReplayExisting(packet.Sender, enterAreaPacket.VehicleSerial, enterAreaPacket.AreaId);
         }
     }
 }
