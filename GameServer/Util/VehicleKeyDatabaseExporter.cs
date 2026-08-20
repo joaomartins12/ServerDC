@@ -31,38 +31,31 @@ namespace GameServer.Util
         {
             try
             {
-                var mapPath = Path.Combine("system", "data", "VehicleKeyMap.tsv");
-                if (!File.Exists(mapPath))
-                {
-                    Log.Warning("Vehicle key DB sync skipped: {0} was not found.", mapPath);
-                    return;
-                }
-
-                var map = LoadMap(mapPath);
-                if (map.Count == 0)
-                {
-                    Log.Warning("Vehicle key DB sync skipped: official key map is empty.");
-                    return;
-                }
-
-                var uniqueNames = BuildUniqueNameMap(map.Values);
-                var dbRows = new List<DbVehicleRow>();
-
                 using (var conn = GameServer.Instance.Database.Connection)
                 {
-                    using (var ensure = new MySqlCommand(@"
-IF OBJECT_ID(N'dbo.vehicle_catalog', N'U') IS NOT NULL
-AND COL_LENGTH('dbo.vehicle_catalog', 'KeyItemId') IS NULL
-    ALTER TABLE dbo.vehicle_catalog ADD KeyItemId VARCHAR(32) NULL;", conn))
+                    EnsureKeyItemIdColumn(conn);
+
+                    var mapPath = Path.Combine("system", "data", "VehicleKeyMap.tsv");
+                    if (!File.Exists(mapPath))
                     {
-                        ensure.ExecuteNonQuery();
+                        Log.Warning("Vehicle key DB sync skipped after schema preparation: {0} was not found.", mapPath);
+                        return;
                     }
 
+                    var map = LoadMap(mapPath);
+                    if (map.Count == 0)
+                    {
+                        Log.Warning("Vehicle key DB sync skipped: official key map is empty.");
+                        return;
+                    }
+
+                    var uniqueNames = BuildUniqueNameMap(map.Values);
+                    var dbRows = new List<DbVehicleRow>();
+
                     using (var cmd = new MySqlCommand(@"
-IF OBJECT_ID(N'dbo.vehicle_catalog', N'U') IS NOT NULL
-    SELECT VehicleId, RuntimeIndex, Name, KeyItemId
-    FROM dbo.vehicle_catalog
-    ORDER BY VehicleId;", conn))
+SELECT VehicleId, RuntimeIndex, Name, KeyItemId
+FROM dbo.vehicle_catalog
+ORDER BY VehicleId;", conn))
                     using (var reader = cmd.ExecuteReader())
                     {
                         while (reader.Read())
@@ -120,7 +113,8 @@ IF OBJECT_ID(N'dbo.vehicle_catalog', N'U') IS NOT NULL
                         {
                             using (var update = new MySqlCommand(@"
 UPDATE dbo.vehicle_catalog
-SET KeyItemId=@key
+SET KeyItemId=@key,
+    AdminUpdatedAt=SYSUTCDATETIME()
 WHERE VehicleId=@vehicleId;", conn))
                             {
                                 update.Parameters.AddWithValue("@key", desiredKey);
@@ -178,6 +172,45 @@ WHERE VehicleId=@vehicleId;", conn))
             }
         }
 
+        private static void EnsureKeyItemIdColumn(MySqlConnection conn)
+        {
+            using (var ensureTable = new MySqlCommand(@"
+IF OBJECT_ID(N'dbo.vehicle_catalog', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.vehicle_catalog
+    (
+        VehicleId INT NOT NULL CONSTRAINT PK_vehicle_catalog PRIMARY KEY,
+        RuntimeIndex INT NULL,
+        Name NVARCHAR(255) NULL,
+        Type VARCHAR(64) NULL,
+        TypeString VARCHAR(128) NULL,
+        Sellable BIT NOT NULL CONSTRAINT DF_vehicle_catalog_Sellable DEFAULT(0),
+        Grade VARCHAR(32) NULL,
+        BaseAccel INT NULL,
+        BaseSpeed INT NULL,
+        BaseCrash INT NULL,
+        BaseBoost INT NULL,
+        RequiredLevel INT NULL,
+        Level INT NULL,
+        IsEnabled BIT NOT NULL CONSTRAINT DF_vehicle_catalog_IsEnabled DEFAULT(1),
+        ServerBuyPrice INT NULL,
+        ServerSellPrice INT NULL,
+        SourceUpdatedAt DATETIME2 NOT NULL CONSTRAINT DF_vehicle_catalog_SourceUpdatedAt DEFAULT(SYSUTCDATETIME()),
+        AdminUpdatedAt DATETIME2 NULL,
+        KeyItemId VARCHAR(32) NULL
+    );
+END
+ELSE IF COL_LENGTH(N'dbo.vehicle_catalog', N'KeyItemId') IS NULL
+BEGIN
+    ALTER TABLE dbo.vehicle_catalog ADD KeyItemId VARCHAR(32) NULL;
+END;", conn))
+            {
+                ensureTable.ExecuteNonQuery();
+            }
+
+            Log.Info("Vehicle key DB sync: dbo.vehicle_catalog.KeyItemId is ready.");
+        }
+
         private static Dictionary<int, KeyMapRow> LoadMap(string path)
         {
             var result = new Dictionary<int, KeyMapRow>();
@@ -191,16 +224,22 @@ WHERE VehicleId=@vehicleId;", conn))
 
                 int vehicleId;
                 int runtimeIndex;
-                if (!int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out vehicleId)) continue;
-                if (!int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out runtimeIndex)) runtimeIndex = -1;
+                if (!int.TryParse((parts[0] ?? string.Empty).Trim().TrimStart('\uFEFF'), NumberStyles.Integer, CultureInfo.InvariantCulture, out vehicleId))
+                    continue;
+                if (!int.TryParse((parts[1] ?? string.Empty).Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out runtimeIndex))
+                    runtimeIndex = -1;
+
+                var keyItemId = (parts[4] ?? string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(keyItemId))
+                    continue;
 
                 result[vehicleId] = new KeyMapRow
                 {
                     VehicleId = vehicleId,
                     OfficialRuntimeIndex = runtimeIndex,
-                    CarName = parts[2],
-                    UiName = parts[3],
-                    KeyItemId = parts[4]
+                    CarName = (parts[2] ?? string.Empty).Trim(),
+                    UiName = (parts[3] ?? string.Empty).Trim(),
+                    KeyItemId = keyItemId
                 };
             }
             return result;
