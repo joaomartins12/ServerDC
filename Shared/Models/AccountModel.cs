@@ -140,9 +140,17 @@ namespace Shared.Models
                 cmd.Set("Password", password);
                 cmd.Set("Salt", salt);
                 cmd.Set("Status", 1);
-                cmd.Set("CreateIP", ip);
+                cmd.Set("CreateIP", string.IsNullOrWhiteSpace(ip) ? "127.0.0.1" : ip);
                 cmd.Set("CreateDate", DateTimeOffset.Now.ToUnixTimeSeconds());
                 cmd.Set("Ticket", 0);
+
+                // Keep account creation independent from database DEFAULT constraints.
+                // The SQL Server schema used by the manager exposes these columns as part
+                // of every account row, so initialize them explicitly for new accounts.
+                cmd.Set("Permission", (int)UserPermission.User);
+                cmd.Set("LastActiveChar", 0);
+                cmd.Set("BanValidUntil", 0);
+                cmd.Set("VehicleSerial", 0);
 
                 cmd.Execute();
                 userId = cmd.LastId;
@@ -229,9 +237,9 @@ namespace Shared.Models
         ///     Sets new randomized session key for the account and returns it.
         ///     FIXME: Possible collision issue! Two users with same sessionkeys would be bad!
         /// </summary>
-        /// <param name="dbconn">The mysql connection</param>
-        /// <param name="username">The account username</param>
-        /// <returns>A new sessionkey</returns>
+        /// <param name="dbconn"></param>
+        /// <param name="username"></param>
+        /// <returns></returns>
         public static uint CreateSession(MySqlConnection dbconn, string username)
         {
             using (var mc = new MySqlCommand("UPDATE `Users` SET `Ticket` = @ticketKey WHERE `Username` = @user",
