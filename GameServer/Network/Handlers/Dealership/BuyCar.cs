@@ -169,10 +169,11 @@ namespace GameServer.Network.Handlers.Dealership
             }
             else
             {
-                var expectedId = "pc_" + buyCarPacket.CarType.ToString("x5", System.Globalization.CultureInfo.InvariantCulture);
+                var expectedHexId = "pc_" + buyCarPacket.CarType.ToString("x5", System.Globalization.CultureInfo.InvariantCulture);
+                var expectedDecimalId = "pc_" + buyCarPacket.CarType.ToString("D5", System.Globalization.CultureInfo.InvariantCulture);
                 Log.Warning(
-                    "BuyCar: no matching key item found for CarType={0} Vehicle='{1}'. Expected ItemId={2} (name fallback '{1} key').",
-                    buyCarPacket.CarType, vehicleData.Name, expectedId);
+                    "BuyCar: no matching key item found for CarType={0} Vehicle='{1}'. Tried ItemId={2}, ItemId={3}, and name '{1} key'.",
+                    buyCarPacket.CarType, vehicleData.Name, expectedHexId, expectedDecimalId);
             }
 
             var carInfo = new XiStrCarInfo
@@ -232,18 +233,19 @@ namespace GameServer.Network.Handlers.Dealership
             if (ServerMain.Items == null)
                 return -1;
 
-            // UseItems vehicle keys encode CarType as five hexadecimal digits.
-            // Example: CarType 12 (0x0C) -> pc_0000c; CarType 81 (0x51) -> pc_00051.
-            var expectedId = "pc_" + carType.ToString("x5", System.Globalization.CultureInfo.InvariantCulture);
+            var expectedHexId = "pc_" + carType.ToString("x5", System.Globalization.CultureInfo.InvariantCulture);
+            var expectedDecimalId = "pc_" + carType.ToString("D5", System.Globalization.CultureInfo.InvariantCulture);
+
             for (var i = 0; i < ServerMain.Items.Count; i++)
             {
                 var item = ServerMain.Items[i];
-                if (item != null && string.Equals((item.Id ?? string.Empty).Trim(), expectedId,
-                        StringComparison.OrdinalIgnoreCase))
+                if (item == null) continue;
+                var id = (item.Id ?? string.Empty).Trim();
+                if (string.Equals(id, expectedHexId, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(id, expectedDecimalId, StringComparison.OrdinalIgnoreCase))
                     return i;
             }
 
-            // Keep the readable-name lookup as a compatibility fallback for unusual tables.
             if (!string.IsNullOrWhiteSpace(vehicleName))
             {
                 var expectedName = vehicleName.Trim() + " key";
