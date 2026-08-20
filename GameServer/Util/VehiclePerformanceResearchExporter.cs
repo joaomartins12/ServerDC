@@ -16,7 +16,7 @@ namespace GameServer.Util
         public static void Capture(
             Character character,
             Vehicle vehicle,
-            VehicleResolvedStats vehicleStats,
+            ResolvedVehicleStats vehicleStats,
             EquippedItemStats equipped,
             int userBonus,
             CheckStatAnswer ack)
