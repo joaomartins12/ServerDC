@@ -37,13 +37,18 @@ namespace GameServer.Network.Handlers
 
                 if (previous != null)
                 {
+                    previous.LastCarId = 0;
                     previous.State = 0;
                     previous.Slot = 0;
                     previous.Belonging = 0;
                     ItemModel.Update(connection, previous);
                 }
 
-                item.LastCarId = item.CarId;
+                // LastCarId is serialized to the client but is not persisted by ItemModel.
+                // Feeding the previous car id back on every equip made the client treat the
+                // same part transition as additional state and visually accumulate bonuses.
+                // The real car association is CarId; keep the transient field neutral.
+                item.LastCarId = 0;
                 item.CarId = carId;
                 item.State = 1;
                 item.Slot = (ushort)targetSlot;
@@ -52,7 +57,8 @@ namespace GameServer.Network.Handlers
             }
 
             ResyncInventory(packet, character);
-            Log.Info("Item equipped: InvenIdx={0} TableIndex={1} CarId={2} Slot={3}", item.InventoryIndex, item.TableIndex, item.CarId, item.Slot);
+            Log.Info("Item equipped: InvenIdx={0} TableIndex={1} CarId={2} Slot={3} LastCarId={4}",
+                item.InventoryIndex, item.TableIndex, item.CarId, item.Slot, item.LastCarId);
             CheckStat.Handle(packet);
         }
 
@@ -74,9 +80,6 @@ namespace GameServer.Network.Handlers
             if (raw.Length >= 8) b = BitConverter.ToUInt32(raw, 4);
             if (raw.Length >= 12) c = BitConverter.ToUInt32(raw, 8);
 
-            // Until we have the first real 411 capture, resolve defensively against the
-            // currently equipped set. Values used by the client are expected to be one of
-            // InventoryIndex, equipment Slot and CarId.
             InventoryItem item = null;
             var equipped = character.InventoryItems.Where(x => x.State == 1 && x.CarId == character.ActiveCar.CarId).ToList();
 
@@ -85,8 +88,6 @@ namespace GameServer.Network.Handlers
             if (item == null && raw.Length >= 8) item = equipped.FirstOrDefault(x => x.InventoryIndex == b || x.Slot == b);
             if (item == null && raw.Length >= 12) item = equipped.FirstOrDefault(x => x.InventoryIndex == c || x.Slot == c);
 
-            // If the client sends only the current equipment slot and there is exactly one
-            // equipped item in that slot context, use that item rather than silently failing.
             if (item == null && equipped.Count == 1)
                 item = equipped[0];
 
@@ -98,7 +99,9 @@ namespace GameServer.Network.Handlers
 
             using (var connection = GameServer.Instance.Database.Connection)
             {
-                item.LastCarId = item.CarId;
+                // Keep CarId as the owning-car association, but never serialize a stale
+                // previous-car value back to the client during equipment transitions.
+                item.LastCarId = 0;
                 item.State = 0;
                 item.Slot = 0;
                 item.Belonging = 0;
@@ -106,7 +109,8 @@ namespace GameServer.Network.Handlers
             }
 
             ResyncInventory(packet, character);
-            Log.Info("Item unequipped: InvenIdx={0} TableIndex={1} CarId={2}", item.InventoryIndex, item.TableIndex, item.CarId);
+            Log.Info("Item unequipped: InvenIdx={0} TableIndex={1} CarId={2} LastCarId={3}",
+                item.InventoryIndex, item.TableIndex, item.CarId, item.LastCarId);
             CheckStat.Handle(packet);
         }
 
