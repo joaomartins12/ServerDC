@@ -22,9 +22,7 @@ namespace AreaServer.Network.Handlers
 
             List<KeyValuePair<ushort, byte[]>> snapshot;
             lock (Sync)
-            {
                 snapshot = new List<KeyValuePair<ushort, byte[]>>(LastMovement);
-            }
 
             foreach (var pair in snapshot)
             {
@@ -37,11 +35,9 @@ namespace AreaServer.Network.Handlers
                         continue;
                 }
 
-                // Client sends CmdMoveVehicle (541), server relays MoveVehicleAck (542).
-                // Replaying the command id back to clients makes their interpolation/state
-                // machine treat remote movement as local/input traffic and causes visible
-                // position prediction errors.
-                var replay = new Packet(Packets.MoveVehicleAck);
+                // This client discovers remote vehicles from the same movement packet id
+                // it emits (541). Replaying 542 prevents remote-player discovery.
+                var replay = new Packet(Packets.CmdMoveVehicle);
                 replay.Writer.Write(pair.Key);
                 replay.Writer.Write(pair.Value);
                 client.Send(replay);
@@ -52,15 +48,17 @@ namespace AreaServer.Network.Handlers
         public static void Handle(Packet packet)
         {
             var vehicleSerial = packet.Reader.ReadUInt16();
-            var movement = packet.Reader.ReadBytes(112);
+
+            // Movement bodies are not always the same size in this client (the captured
+            // wire packets vary). Preserve every remaining byte instead of truncating or
+            // padding to a guessed 112-byte structure.
+            var remaining = (int)(packet.Reader.BaseStream.Length - packet.Reader.BaseStream.Position);
+            var movement = remaining > 0 ? packet.Reader.ReadBytes(remaining) : new byte[0];
 
             lock (Sync)
-            {
                 LastMovement[vehicleSerial] = movement;
-            }
 
-            // 541 is client -> server. Remote clients must receive 542.
-            var move = new Packet(Packets.MoveVehicleAck);
+            var move = new Packet(Packets.CmdMoveVehicle);
             move.Writer.Write(vehicleSerial);
             move.Writer.Write(movement);
 
