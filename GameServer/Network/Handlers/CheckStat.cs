@@ -87,7 +87,7 @@ namespace GameServer.Network.Handlers
 
             QuietLog.Write(
                 "StatUpdate",
-                "CID={0} Level={1} CarDbId={2} VehicleId={3} Name={4} Grade=V{5} Source={6} Base[S={7},C={8},A={9},B={10}] Equip[S={11},C={12},A={13},B={14}] User={15} Total[S={16},C={17},A={18},B={19}] Perf8[{20},{21},{22},{23},{24},{25},{26},{27}] ProbeField={28} ProbeValue={29} Enchant[S={30},C={31},A={32},B={33},AddS={34}] Mitron[Capacity={35},Efficiency={36}] Tail[{37},{38}]",
+                "CID={0} Level={1} CarDbId={2} VehicleId={3} Name={4} Grade=V{5} Source={6} Base[S={7},C={8},A={9},B={10}] Equip[S={11},C={12},A={13},B={14}] User={15} Total[S={16},C={17},A={18},B={19}] Perf8[{20},{21},{22},{23},{24},{25},{26},{27}] ProbeField={28} ProbeMode={29} ProbeRaw={30} ProbeFloat={31} Enchant[S={32},C={33},A={34},B={35},AddS={36}] Mitron[Capacity={37},Efficiency={38}] Tail[{39},{40}]",
                 character.Id,
                 character.Level,
                 activeCar.CarId,
@@ -117,7 +117,9 @@ namespace GameServer.Network.Handlers
                 ack.VehicleAcceleration,
                 ack.VehicleBoost,
                 VehiclePerformanceProbe.Field,
-                VehiclePerformanceProbe.Value,
+                VehiclePerformanceProbe.Mode,
+                VehiclePerformanceProbe.RawValue,
+                VehiclePerformanceProbe.FloatValue,
                 ack.Speed,
                 ack.Crash,
                 ack.Accel,
