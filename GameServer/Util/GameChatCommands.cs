@@ -1,6 +1,7 @@
 ﻿using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Threading.Tasks;
 using Shared.Models;
 using Shared.Network;
 using Shared.Network.GameServer;
@@ -35,6 +36,64 @@ namespace GameServer.Util
             Add("gm", "/gm", 0x1000, "Toggles your GM Status", ToggleGmStatusCommandHandler);
             Add("perfprobe", "/perfprobe int [1-19] [value] | /perfprobe float [1-19] [value] | /perfprobe off", 0x8000,
                 "Temporarily probes raw StatUpdate fields as int or IEEE-754 float", PerformanceProbeCommandHandler);
+            Add("perfresearch", "/perfresearch", 0x8000,
+                "Scans imported client TDF tables for vehicle-performance candidates", PerformanceResearchCommandHandler);
+        }
+
+        private static CommandResult PerformanceResearchCommandHandler(DefaultServer server, Client sender, string command,
+            IList<string> args)
+        {
+            var character = sender.User == null ? null : sender.User.ActiveCharacter;
+            if (character == null)
+            {
+                sender.SendChatMessage("Performance research failed: no active character.");
+                return CommandResult.Fail;
+            }
+
+            var activeCar = character.ActiveCar;
+            if (activeCar == null && character.GarageVehicles != null)
+                activeCar = character.GarageVehicles.Find(v => v != null && v.CarId == character.ActiveVehicleId);
+            if (activeCar == null)
+            {
+                sender.SendChatMessage("Performance research failed: no active vehicle.");
+                return CommandResult.Fail;
+            }
+
+            var stats = VehicleStatResolver.Resolve(activeCar);
+            if (stats == null)
+            {
+                sender.SendChatMessage("Performance research failed: vehicle stats could not be resolved.");
+                return CommandResult.Fail;
+            }
+
+            var equipped = EquippedItemStatResolver.Resolve(character, activeCar);
+            sender.SendChatMessage("Vehicle performance research started in background. This scans the imported client_* tables.");
+
+            Task.Run(delegate
+            {
+                try
+                {
+                    var result = VehiclePerformanceCandidateExporter.Export(character, activeCar, stats, equipped);
+                    try
+                    {
+                        sender.SendChatMessage("Performance research complete: " + result.CandidateRows +
+                                               " candidates from " + result.TablesScanned + " tables / " +
+                                               result.RowsScanned + " rows. Check Logs\\...\\GameServer\\Research.");
+                    }
+                    catch
+                    {
+                        // The player may have disconnected while the background scan was running.
+                    }
+                }
+                catch (System.Exception ex)
+                {
+                    QuietLog.Write("VehiclePerformanceResearch", "Candidate scan failed: {0}", ex);
+                    try { sender.SendChatMessage("Performance research failed: " + ex.Message); }
+                    catch { }
+                }
+            });
+
+            return CommandResult.Okay;
         }
 
         private static CommandResult PerformanceProbeCommandHandler(DefaultServer server, Client sender, string command,
@@ -190,7 +249,6 @@ namespace GameServer.Util
             }.CreatePacket();
 
             server.Broadcast(ack);
-
             return CommandResult.Okay;
         }
 
