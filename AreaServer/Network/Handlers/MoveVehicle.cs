@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using Shared.Network;
@@ -10,28 +10,12 @@ namespace AreaServer.Network.Handlers
         private static readonly object Sync = new object();
         private static readonly Dictionary<ushort, byte[]> LastMovement = new Dictionary<ushort, byte[]>();
         private static readonly Dictionary<ushort, int> SerialArea = new Dictionary<ushort, int>();
-        private static readonly HashSet<uint> DiscoveredPairs = new HashSet<uint>();
 
         public static void RegisterArea(ushort serial, int areaId)
         {
             if (serial == 0) return;
             lock (Sync)
-            {
                 SerialArea[serial] = areaId;
-
-                // Re-entering/changing area means remote entity discovery must be rebuilt.
-                var stale = new List<uint>();
-                foreach (var key in DiscoveredPairs)
-                {
-                    var source = (ushort)(key >> 16);
-                    var target = (ushort)(key & 0xFFFF);
-                    if (source == serial || target == serial)
-                        stale.Add(key);
-                }
-
-                foreach (var key in stale)
-                    DiscoveredPairs.Remove(key);
-            }
         }
 
         public static void ReplayExisting(Client client, ushort ownSerial, int areaId)
@@ -53,9 +37,8 @@ namespace AreaServer.Network.Handlers
                         continue;
                 }
 
-                SendMovement(client, pair.Key, pair.Value, false);
-                MarkDiscovered(pair.Key, ownSerial);
-                WritePresenceLog("REPLAY_DISCOVERY", pair.Key, ownSerial, areaId, pair.Value.Length);
+                SendMovement(client, pair.Key, pair.Value);
+                WritePresenceLog("REPLAY", pair.Key, ownSerial, areaId, pair.Value.Length);
             }
         }
 
@@ -81,9 +64,8 @@ namespace AreaServer.Network.Handlers
                         continue;
                 }
 
-                SendMovement(client, serial, movement, false);
-                MarkDiscovered(serial, targetSerial);
-                WritePresenceLog("ANNOUNCE_DISCOVERY", serial, targetSerial, areaId, movement.Length);
+                SendMovement(client, serial, movement);
+                WritePresenceLog("ANNOUNCE", serial, targetSerial, areaId, movement.Length);
             }
         }
 
@@ -95,7 +77,6 @@ namespace AreaServer.Network.Handlers
 
             var packetSerial = packet.Reader.ReadUInt16();
             var vehicleSerial = packet.Sender.User.VehicleSerial;
-
             if (vehicleSerial == 0)
                 return;
 
@@ -130,45 +111,18 @@ namespace AreaServer.Network.Handlers
                         continue;
                 }
 
-                // Important: EnterArea can happen before either driver has produced a cached
-                // movement packet. In that case ReplayExisting/Announce cannot discover the
-                // remote entity. The first LIVE movement for each source->target pair must
-                // therefore use 541 once, then normal 542 ACK updates can follow.
-                if (!IsDiscovered(vehicleSerial, targetSerial))
-                {
-                    SendMovement(client, vehicleSerial, movement, false);
-                    MarkDiscovered(vehicleSerial, targetSerial);
-                    WritePresenceLog("LIVE_DISCOVERY", vehicleSerial, targetSerial, areaId, movement.Length);
-                }
-
-                SendMovement(client, vehicleSerial, movement, true);
-                WritePresenceLog("LIVE_ACK", vehicleSerial, targetSerial, areaId, movement.Length);
+                // This build uses packet 541 for both remote-vehicle discovery and live
+                // movement. Packet 542 makes an already visible remote vehicle disappear.
+                // Relay exactly one fresh 541 per incoming movement; never replay cached
+                // movement here, which previously doubled traffic and caused rubber-banding.
+                SendMovement(client, vehicleSerial, movement);
+                WritePresenceLog("LIVE", vehicleSerial, targetSerial, areaId, movement.Length);
             }
-
-            // Do NOT ReplayExisting here. Replay is only for EnterArea/re-entry.
         }
 
-        private static uint PairKey(ushort sourceSerial, ushort targetSerial)
+        private static void SendMovement(Client client, ushort serial, byte[] movement)
         {
-            return ((uint)sourceSerial << 16) | targetSerial;
-        }
-
-        private static bool IsDiscovered(ushort sourceSerial, ushort targetSerial)
-        {
-            lock (Sync)
-                return DiscoveredPairs.Contains(PairKey(sourceSerial, targetSerial));
-        }
-
-        private static void MarkDiscovered(ushort sourceSerial, ushort targetSerial)
-        {
-            if (sourceSerial == 0 || targetSerial == 0) return;
-            lock (Sync)
-                DiscoveredPairs.Add(PairKey(sourceSerial, targetSerial));
-        }
-
-        private static void SendMovement(Client client, ushort serial, byte[] movement, bool liveAck)
-        {
-            var move = new Packet(liveAck ? Packets.MoveVehicleAck : Packets.CmdMoveVehicle);
+            var move = new Packet(Packets.CmdMoveVehicle);
             move.Writer.Write(serial);
             move.Writer.Write(movement ?? new byte[0]);
             client.Send(move);
