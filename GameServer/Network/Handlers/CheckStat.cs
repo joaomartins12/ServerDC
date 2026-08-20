@@ -66,6 +66,10 @@ namespace GameServer.Network.Handlers
                 TotalAcceleration = totalAccel,
                 TotalBoost = totalBoost,
 
+                // The eight ints at payload offsets 0x50..0x6F remain under research.
+                // Keep the effective totals in both candidate groups until probes identify
+                // their real semantics. Do not write anything beyond these eight values:
+                // offset 0x70 is the start of XiStrEnchantBonus.
                 PerformanceUnknown1 = totalSpeed,
                 PerformanceUnknown2 = totalCrash,
                 PerformanceUnknown3 = totalAccel,
@@ -79,12 +83,11 @@ namespace GameServer.Network.Handlers
                 MitronEfficiency = stats.MitronEfficiency
             };
 
-            // Optional runtime reverse-engineering probe. Disabled by default.
             VehiclePerformanceProbe.Apply(ack);
 
             QuietLog.Write(
                 "StatUpdate",
-                "CID={0} Level={1} CarDbId={2} VehicleId={3} Name={4} Grade=V{5} Source={6} Base[S={7},C={8},A={9},B={10}] Equip[S={11},C={12},A={13},B={14}] User={15} Total[S={16},C={17},A={18},B={19}] Perf[{20},{21},{22},{23},{24},{25},{26},{27},{28},{29}] ProbeField={30} ProbeValue={31} Mitron[Capacity={32},Efficiency={33}]",
+                "CID={0} Level={1} CarDbId={2} VehicleId={3} Name={4} Grade=V{5} Source={6} Base[S={7},C={8},A={9},B={10}] Equip[S={11},C={12},A={13},B={14}] User={15} Total[S={16},C={17},A={18},B={19}] Perf8[{20},{21},{22},{23},{24},{25},{26},{27}] ProbeField={28} ProbeValue={29} Enchant[S={30},C={31},A={32},B={33},AddS={34}] Mitron[Capacity={35},Efficiency={36}] Tail[{37},{38}]",
                 character.Id,
                 character.Level,
                 activeCar.CarId,
@@ -113,12 +116,17 @@ namespace GameServer.Network.Handlers
                 ack.VehicleDurability,
                 ack.VehicleAcceleration,
                 ack.VehicleBoost,
-                ack.PerformanceUnknown9,
-                ack.PerformanceUnknown10,
                 VehiclePerformanceProbe.Field,
                 VehiclePerformanceProbe.Value,
+                ack.Speed,
+                ack.Crash,
+                ack.Accel,
+                ack.Boost,
+                ack.AddSpeed,
                 stats.MitronCapacity,
-                stats.MitronEfficiency);
+                stats.MitronEfficiency,
+                ack.TrailingUnknown1,
+                ack.TrailingUnknown2);
 
             VehiclePerformanceResearchExporter.Capture(character, activeCar, stats, equipped, userBonus, ack);
             packet.Sender.Send(ack.CreatePacket());
