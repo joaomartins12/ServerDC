@@ -69,9 +69,9 @@ namespace GameServer.Network.Handlers
                 TotalAcceleration = totalAccel,
                 TotalBoost = totalBoost,
 
-                // These fields are still under protocol research. Keeping the effective totals in
-                // both candidate groups preserves the diagnostic signal without mixing them with
-                // the separate Car / Parts / User blocks above.
+                // These ten fields remain under protocol research. Keep the two candidate
+                // four-value groups populated for now and capture every packet to the dedicated
+                // Research files so we can correlate changes against the client UI.
                 PerformanceUnknown1 = totalSpeed,
                 PerformanceUnknown2 = totalCrash,
                 PerformanceUnknown3 = totalAccel,
@@ -85,8 +85,11 @@ namespace GameServer.Network.Handlers
                 MitronEfficiency = stats.MitronEfficiency
             };
 
-            Log.Info(
-                "StatUpdate: CID={0} Level={1} CarDbId={2} VehicleId={3} Name={4} Grade=V{5} Source={6} Base[S={7},C={8},A={9},B={10}] Equip[S={11},C={12},A={13},B={14}] User[S={15},C={16},A={17},B={18}] Total[S={19},C={20},A={21},B={22}] Performance1[S={23},C={24},A={25},B={26}] Performance2[S={27},C={28},A={29},B={30}] Mitron[Capacity={31},Efficiency={32}]",
+            // This flow is already stable and extremely repetitive. Keep the full diagnostic
+            // information on disk without flooding the ServerManager console.
+            QuietLog.Write(
+                "StatUpdate",
+                "CID={0} Level={1} CarDbId={2} VehicleId={3} Name={4} Grade=V{5} Source={6} Base[S={7},C={8},A={9},B={10}] Equip[S={11},C={12},A={13},B={14}] User={15} Total[S={16},C={17},A={18},B={19}] Performance1[{20},{21},{22},{23}] Performance2[{24},{25},{26},{27}] Mitron[Capacity={28},Efficiency={29}]",
                 character.Id,
                 character.Level,
                 activeCar.CarId,
@@ -102,10 +105,7 @@ namespace GameServer.Network.Handlers
                 equipped.Crash,
                 equipped.Accel,
                 equipped.Boost,
-                ack.CharSpeed,
-                ack.CharDurability,
-                ack.CharAcceleration,
-                ack.CharBoost,
+                userBonus,
                 totalSpeed,
                 totalCrash,
                 totalAccel,
@@ -121,6 +121,7 @@ namespace GameServer.Network.Handlers
                 stats.MitronCapacity,
                 stats.MitronEfficiency);
 
+            VehiclePerformanceResearchExporter.Capture(character, activeCar, stats, equipped, userBonus, ack);
             packet.Sender.Send(ack.CreatePacket());
         }
     }
