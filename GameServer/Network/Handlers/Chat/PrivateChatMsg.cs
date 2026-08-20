@@ -225,38 +225,34 @@ namespace GameServer.Network.Handlers
             }
             else
             {
-                // The packet format itself does not contain RGB values. This client maps
-                // colours from MessageType. "debug" is a native ChatMsgAck type already
-                // documented by the packet structure, so use it as the whisper visual
-                // style while keeping LastMessageFrom for whisper routing/replies.
-                const string visualType = "debug";
-
+                // Keep the proven private ChatMsgAck route. Unknown visual types such as
+                // "debug" produce an invalid/empty packet in this client build.
                 recipientPacket = new ChatMessageAnswer
                 {
-                    MessageType = visualType,
+                    MessageType = "private",
                     SenderCharacterName = "Whisper From",
                     Message = recipientDisplayMessage
                 }.CreatePacket();
 
                 senderEchoPacket = new ChatMessageAnswer
                 {
-                    MessageType = visualType,
+                    MessageType = "private",
                     SenderCharacterName = "Whisper To",
                     Message = senderDisplayMessage
                 }.CreatePacket();
-                stage = "OUT147_DEBUG_WHISPER";
+                stage = "OUT147_PRIVATE_WHISPER";
             }
 
             WriteWhisperResearch(stage, packet.Sender.User.VehicleSerial,
                 target.User.VehicleSerial, senderCharacter.Name,
                 target.User.ActiveCharacter.Name, message, recipientPacket,
-                "mode=" + mode + " visual=debug direction=recipient");
+                "mode=" + mode + " visual=private direction=recipient");
             target.Send(recipientPacket);
 
             WriteWhisperResearch(stage + "_ECHO", packet.Sender.User.VehicleSerial,
                 packet.Sender.User.VehicleSerial, target.User.ActiveCharacter.Name,
                 senderCharacter.Name, message, senderEchoPacket,
-                "mode=" + mode + " visual=debug direction=sender");
+                "mode=" + mode + " visual=private direction=sender");
             packet.Sender.Send(senderEchoPacket);
 
             senderCharacter.LastMessageFrom = target.User.ActiveCharacter.Name;
