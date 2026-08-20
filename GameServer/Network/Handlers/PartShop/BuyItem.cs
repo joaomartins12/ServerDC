@@ -74,10 +74,10 @@ namespace GameServer.Network.Handlers
                 return;
             }
 
-            if (isUseItem && inventoryItem.TableIndex != (uint)protocolTableIndex)
+            if (isUseItem && inventoryItem.TableIndex != protocolTableIndex)
             {
                 var oldIndex = inventoryItem.TableIndex;
-                inventoryItem.TableIndex = checked((uint)protocolTableIndex);
+                inventoryItem.TableIndex = protocolTableIndex;
                 ItemModel.Update(GameServer.Instance.Database.Connection, inventoryItem);
 
                 Log.Info(
