@@ -142,12 +142,11 @@ namespace GameServer
                 Log.Debug("Exp Table Load failed.");
             }
 
-            // Runtime/client data is exported only. Database synchronization is deliberately
-            // performed offline from DCServerManager while GameServer.exe is stopped.
             GameDataCatalogExporter.Export(Items, VisualItems, Vehicles, Quests, LevelTable);
             ItemCatalogJsonExporter.Export(Items);
             VehicleCatalogJsonExporter.Export(Vehicles);
-            Log.Info("ItemCatalog.json and VehicleCatalog.json ready for offline database import from Server Manager.");
+            VehicleKeyResearchExporter.Export(Vehicles, Items);
+            Log.Info("ItemCatalog.json, VehicleCatalog.json and VehicleKeyResearch.csv ready in Logs\\Catalogs.");
 
             Server = new DefaultServer(Config.Game.Port);
             Server.Start();
