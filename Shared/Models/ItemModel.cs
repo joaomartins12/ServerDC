@@ -12,54 +12,26 @@ namespace Shared.Models
     {
         public static List<InventoryItem> RetrieveAll(MySqlConnection dbconn, ulong characterId)
         {
-            var command = new MySqlCommand(
-                "SELECT * FROM items WHERE CharacterId = @cid",
-                dbconn);
-            command.Parameters.AddWithValue("@cid", characterId);
-
-            var items = new List<InventoryItem>();
-            using (DbDataReader reader = command.ExecuteReader())
+            using (var command = new MySqlCommand("SELECT * FROM items WHERE CharacterId = @cid ORDER BY InventoryIndex ASC", dbconn))
             {
-                while (reader.Read())
+                command.Parameters.AddWithValue("@cid", characterId);
+                var items = new List<InventoryItem>();
+                using (DbDataReader reader = command.ExecuteReader())
                 {
-                    var item = InventoryItem.ReadFromDb(reader);
-                    items.Add(item);
+                    while (reader.Read()) items.Add(InventoryItem.ReadFromDb(reader));
                 }
+                return items;
             }
-            return items;
         }
-        
+
         public static void RetrieveAll(MySqlConnection dbconn, ref Character character)
         {
-            var command = new MySqlCommand(
-                "SELECT * FROM items WHERE CharacterId = @cid",
-                dbconn);
-            command.Parameters.AddWithValue("@cid", character.Id);
-            
-            using (DbDataReader reader = command.ExecuteReader())
-            {
-                while (reader.Read())
-                {
-                    var item = InventoryItem.ReadFromDb(reader);
-                    character.InventoryItems.Add(item);
-                    /*if (item.InventoryIndex > character.InventoryItems.Count)
-                    {
-                        Log.Error("Item slot <> Inventory length mismatch");
-                        continue;
-                    }
-                    if (character.InventoryItems[(int)item.InventoryIndex] != null)
-                    {
-                        Log.Error("Duplicated inventory item!");
-                        continue;
-                    }
-                    
-                    character.InventoryItems[(int)item.InventoryIndex] = item;
-                    //items.Add(item);
-                    */
-                }
-            }
+            if (character == null) return;
+            var items = RetrieveAll(dbconn, character.Id);
+            character.InventoryItems.Clear();
+            character.InventoryItems.AddRange(items);
         }
-        
+
         public static void Update(MySqlConnection dbconn, InventoryItem inventoryItem)
         {
             using (var cmd = new UpdateCommand("UPDATE items SET {0} WHERE Id=@id", dbconn))
@@ -70,31 +42,42 @@ namespace Shared.Models
                 cmd.Execute();
             }
         }
-        
+
         public static InventoryItem RetrieveOne(MySqlConnection dbconn, long id)
         {
-            return null;
+            using (var command = new MySqlCommand("SELECT * FROM items WHERE Id=@id", dbconn))
+            {
+                command.Parameters.AddWithValue("@id", id);
+                using (DbDataReader reader = command.ExecuteReader())
+                    return reader.Read() ? InventoryItem.ReadFromDb(reader) : null;
+            }
         }
 
         public static bool Create(MySqlConnection dbconn, InventoryItem item)
         {
-            if (item.CharacterId == 0 || item.CarId == 0 || item.StackNum == 0)
+            // CarId=0 is valid for an unequipped inventory item.
+            if (item == null || item.CharacterId == 0 || item.StackNum == 0 || item.TableIndex < 0)
                 return false;
-            
+
             using (var cmd = new InsertCommand("INSERT INTO `items` {0}", dbconn))
             {
                 var insertCommand = cmd;
                 item.WriteToDb(ref insertCommand);
-                return cmd.Execute() == 1;
+                var result = cmd.Execute();
+                if (result == 1 && cmd.LastInsertedId > 0)
+                    item.DbId = checked((int)cmd.LastInsertedId);
+                return result == 1;
             }
         }
 
         public static bool Remove(MySqlConnection dbconn, ulong charId, int slot)
         {
-            var command = new MySqlCommand("DELETE FROM `items` WHERE CharacterId = @cid AND InventoryIndex = @slot", dbconn);
-            command.Parameters.AddWithValue("@slot", slot);
-            command.Parameters.AddWithValue("@cid", charId);
-            return command.ExecuteNonQuery() == 1;
+            using (var command = new MySqlCommand("DELETE FROM `items` WHERE CharacterId = @cid AND InventoryIndex = @slot", dbconn))
+            {
+                command.Parameters.AddWithValue("@slot", slot);
+                command.Parameters.AddWithValue("@cid", charId);
+                return command.ExecuteNonQuery() == 1;
+            }
         }
     }
 }
