@@ -27,41 +27,47 @@ namespace GameServer.Network.Handlers.Dealership
                 VehicleModel.Update(GameServer.Instance.Database.Connection, character.ActiveCar);
 
             var buyCarPacket = new BuyCarPacket(packet);
-            var price = 10;
-            var vehicleData = ServerMain.Vehicles.Find(vehicle =>
-            {
-                uint uniqueId;
-                return uint.TryParse(vehicle.UniqueId, out uniqueId) && uniqueId == buyCarPacket.CarType;
-            });
-
-            if (vehicleData == null)
+            var vehicleRuntimeIndex = FindVehicleRuntimeIndex(buyCarPacket.CarType);
+            if (vehicleRuntimeIndex < 0)
             {
                 Log.Error("BuyCar: vehicle definition not found for CarType={0}.", buyCarPacket.CarType);
                 packet.Sender.SendError("Failed to purchase the car.");
                 return;
             }
 
-            if (vehicleData.Upgrades == null || vehicleData.Upgrades.Count == 0)
+            var vehicleData = ServerMain.Vehicles[vehicleRuntimeIndex];
+            if (vehicleData == null || vehicleData.Upgrades == null || vehicleData.Upgrades.Count == 0)
             {
-                Log.Error("BuyCar: vehicle {0} ({1}) has no upgrade definitions.", vehicleData.Name, buyCarPacket.CarType);
+                Log.Error("BuyCar: vehicle CarType={0} has no valid upgrade definitions.", buyCarPacket.CarType);
                 packet.Sender.SendError("Failed to purchase the car.");
                 return;
             }
 
-            int vehicleGrade;
-            if (!int.TryParse(vehicleData.Grade, out vehicleGrade))
+            // Vehicles.xml stores the dealership grade as a zero-based grade index:
+            // 0 = V1, 1 = V2, ... 8 = V9. The vehicle instance sent to/persisted for
+            // the player uses the real grade number V1..V9, therefore +1 exactly once.
+            int gradeIndex;
+            if (!int.TryParse(vehicleData.Grade, NumberStyles.Integer, CultureInfo.InvariantCulture, out gradeIndex))
             {
-                Log.Error("BuyCar: invalid grade '{0}' for vehicle {1}.", vehicleData.Grade, vehicleData.Name);
+                Log.Error("BuyCar: invalid grade index '{0}' for vehicle {1}.", vehicleData.Grade, vehicleData.Name);
                 packet.Sender.SendError("Failed to purchase the car.");
                 return;
             }
 
-            var upgradeIndex = Math.Max(0, Math.Min(vehicleData.Upgrades.Count - 1, vehicleGrade));
-            var vehicleUpgrade = vehicleData.Upgrades[upgradeIndex];
-
-            if (!int.TryParse(vehicleUpgrade.Price, out price))
+            gradeIndex = Math.Max(0, Math.Min(vehicleData.Upgrades.Count - 1, gradeIndex));
+            var realGrade = gradeIndex + 1;
+            var vehicleUpgrade = vehicleData.Upgrades[gradeIndex];
+            if (vehicleUpgrade == null)
             {
-                Log.Error("BuyCar: invalid price '{0}' for vehicle {1}.", vehicleUpgrade.Price, vehicleData.Name);
+                Log.Error("BuyCar: missing V{0} upgrade definition for vehicle {1}.", realGrade, vehicleData.Name);
+                packet.Sender.SendError("Failed to purchase the car.");
+                return;
+            }
+
+            int price;
+            if (!int.TryParse(vehicleUpgrade.Price, NumberStyles.Integer, CultureInfo.InvariantCulture, out price))
+            {
+                Log.Error("BuyCar: invalid V{0} price '{1}' for vehicle {2}.", realGrade, vehicleUpgrade.Price, vehicleData.Name);
                 packet.Sender.SendError("Failed to purchase the car.");
                 return;
             }
@@ -83,7 +89,7 @@ namespace GameServer.Network.Handlers.Dealership
             {
                 CarType = buyCarPacket.CarType,
                 BaseColor = 0,
-                Grade = (uint)Math.Max(0, vehicleGrade),
+                Grade = checked((uint)realGrade),
                 SlotType = 0,
                 AuctionCnt = 0,
                 Mitron = 100.0f,
@@ -125,9 +131,11 @@ namespace GameServer.Network.Handlers.Dealership
                 return;
             }
 
+            // VehicleCatalog runtime order and the category=car key order are parallel client
+            // tables. Example confirmed from the supplied catalogs:
+            // runtimeIndex 0 Hyundai Click -> first car key -> Kicker key.
             InventoryItem vehicleKey = null;
-            var coupon = (vehicleUpgrade.Coupon ?? string.Empty).Trim();
-            var keyTableIndex = FindVehicleKeyTableIndex(buyCarPacket.CarType, vehicleData.Name, coupon);
+            var keyTableIndex = FindVehicleKeyTableIndex(vehicleRuntimeIndex);
             if (keyTableIndex >= 0)
             {
                 var inventoryIndex = FindNextInventoryIndex(character);
@@ -153,12 +161,12 @@ namespace GameServer.Network.Handlers.Dealership
                     character.InventoryItems.Add(vehicleKey);
                     var keyDefinition = ServerMain.Items[keyTableIndex];
                     Log.Info(
-                        "BuyCar key granted: CID={0} CarId={1} CarType={2} Vehicle={3} Coupon={4} InvenIdx={5} TableIndex={6} ItemId={7} Name={8}",
+                        "BuyCar key granted: CID={0} CarId={1} VehicleRuntimeIndex={2} CarType={3} Vehicle={4} InvenIdx={5} TableIndex={6} ItemId={7} Name={8}",
                         character.Id,
                         newVehicle.CarId,
+                        vehicleRuntimeIndex,
                         newVehicle.CarType,
                         vehicleData.Name,
-                        coupon,
                         vehicleKey.InventoryIndex,
                         keyTableIndex,
                         keyDefinition.Id,
@@ -166,18 +174,16 @@ namespace GameServer.Network.Handlers.Dealership
                 }
                 else
                 {
-                    Log.Error("BuyCar: vehicle created but key item could not be persisted for CarId={0} Vehicle={1} Coupon={2}.",
-                        newVehicle.CarId, vehicleData.Name, coupon);
+                    Log.Error("BuyCar: vehicle created but ordered key could not be persisted for CarId={0} Vehicle={1} RuntimeIndex={2}.",
+                        newVehicle.CarId, vehicleData.Name, vehicleRuntimeIndex);
                     vehicleKey = null;
                 }
             }
             else
             {
-                var expectedHexId = "pc_" + buyCarPacket.CarType.ToString("x5", CultureInfo.InvariantCulture);
-                var expectedDecimalId = "pc_" + buyCarPacket.CarType.ToString("D5", CultureInfo.InvariantCulture);
                 Log.Warning(
-                    "BuyCar: no matching key item found. CarType={0} Vehicle='{1}' Coupon='{2}' FallbackHex={3} FallbackDecimal={4} NameFallback='{1} key'.",
-                    buyCarPacket.CarType, vehicleData.Name, coupon, expectedHexId, expectedDecimalId);
+                    "BuyCar: no ordered category=car key found for VehicleRuntimeIndex={0} CarType={1} Vehicle='{2}'.",
+                    vehicleRuntimeIndex, buyCarPacket.CarType, vehicleData.Name);
             }
 
             var carInfo = new XiStrCarInfo
@@ -212,155 +218,73 @@ namespace GameServer.Network.Handlers.Dealership
                 Price = price
             }.CreatePacket());
 
-            // Always send the authoritative inventory snapshot after a purchase. This keeps
-            // the client in sync even when no key mapping exists and makes a granted key
-            // immediately visible without waiting for a separate inventory request.
             packet.Sender.Send(new ItemListAnswer
             {
                 InventoryItems = character.InventoryItems.OrderBy(i => i.InventoryIndex).ToArray()
             }.CreatePacket());
 
             Log.Info(
-                "BuyCar complete: CID={0} CarId={1} CarType={2} Vehicle={3} CurrentCarID={4} GarageCount={5} Price={6} MitoRemaining={7} KeyGranted={8} Coupon={9}",
+                "BuyCar complete: CID={0} CarId={1} RuntimeIndex={2} CarType={3} Vehicle={4} GradeIndex={5} Grade=V{6} CurrentCarID={7} GarageCount={8} Price={9} MitoRemaining={10} KeyGranted={11}",
                 character.Id,
                 newVehicle.CarId,
+                vehicleRuntimeIndex,
                 newVehicle.CarType,
                 vehicleData.Name,
+                gradeIndex,
+                realGrade,
                 character.ActiveVehicleId,
                 character.GarageVehicles.Count,
                 price,
                 character.MitoMoney,
-                vehicleKey != null,
-                coupon);
+                vehicleKey != null);
         }
 
-        private static int FindVehicleKeyTableIndex(uint carType, string vehicleName, string coupon)
+        private static int FindVehicleRuntimeIndex(uint carType)
         {
-            if (ServerMain.Items == null)
+            if (ServerMain.Vehicles == null)
                 return -1;
 
-            // VehicleList already carries the intended coupon/key relation on each upgrade.
-            // Prefer it over guessing from CarType or the display name.
-            if (!string.IsNullOrWhiteSpace(coupon) && coupon != "0")
+            for (var i = 0; i < ServerMain.Vehicles.Count; i++)
             {
-                var direct = FindByItemIdentity(coupon);
-                if (direct >= 0)
-                    return direct;
-
-                long couponNumber;
-                if (TryParseFlexibleNumber(coupon, out couponNumber) && couponNumber >= 0)
-                {
-                    var numericForms = new[]
-                    {
-                        couponNumber.ToString(CultureInfo.InvariantCulture),
-                        "pc_" + couponNumber.ToString("D5", CultureInfo.InvariantCulture),
-                        "pc_" + couponNumber.ToString("x5", CultureInfo.InvariantCulture)
-                    };
-
-                    foreach (var candidate in numericForms)
-                    {
-                        var found = FindByItemIdentity(candidate);
-                        if (found >= 0)
-                            return found;
-                    }
-
-                    // Some data revisions store the item table index in coupon. Only accept
-                    // it when the pointed definition actually looks like a vehicle key/coupon.
-                    if (couponNumber < ServerMain.Items.Count)
-                    {
-                        var index = (int)couponNumber;
-                        var candidate = ServerMain.Items[index];
-                        if (LooksLikeVehicleKey(candidate))
-                            return index;
-                    }
-
-                    // Finally compare the numeric suffix of pc_* ids in both decimal/hex form.
-                    for (var i = 0; i < ServerMain.Items.Count; i++)
-                    {
-                        var item = ServerMain.Items[i];
-                        if (item == null) continue;
-                        long suffix;
-                        if (TryParsePcSuffix(item.Id, out suffix) && suffix == couponNumber)
-                            return i;
-                    }
-                }
-            }
-
-            var expectedHexId = "pc_" + carType.ToString("x5", CultureInfo.InvariantCulture);
-            var expectedDecimalId = "pc_" + carType.ToString("D5", CultureInfo.InvariantCulture);
-
-            var byCarType = FindByItemIdentity(expectedHexId);
-            if (byCarType >= 0) return byCarType;
-            byCarType = FindByItemIdentity(expectedDecimalId);
-            if (byCarType >= 0) return byCarType;
-
-            if (!string.IsNullOrWhiteSpace(vehicleName))
-            {
-                var expectedName = vehicleName.Trim() + " key";
-                var expectedCouponName = vehicleName.Trim() + " coupon";
-                for (var i = 0; i < ServerMain.Items.Count; i++)
-                {
-                    var item = ServerMain.Items[i];
-                    if (item == null) continue;
-                    var name = (item.Name ?? string.Empty).Trim();
-                    if (string.Equals(name, expectedName, StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(name, expectedCouponName, StringComparison.OrdinalIgnoreCase))
-                        return i;
-                }
-            }
-
-            return -1;
-        }
-
-        private static int FindByItemIdentity(string identity)
-        {
-            if (string.IsNullOrWhiteSpace(identity) || ServerMain.Items == null)
-                return -1;
-
-            var expected = identity.Trim();
-            for (var i = 0; i < ServerMain.Items.Count; i++)
-            {
-                var item = ServerMain.Items[i];
-                if (item == null) continue;
-                if (string.Equals((item.Id ?? string.Empty).Trim(), expected, StringComparison.OrdinalIgnoreCase))
+                var vehicle = ServerMain.Vehicles[i];
+                if (vehicle == null) continue;
+                uint id;
+                if (uint.TryParse(vehicle.UniqueId, NumberStyles.Integer, CultureInfo.InvariantCulture, out id) && id == carType)
                     return i;
             }
+
             return -1;
         }
 
-        private static bool LooksLikeVehicleKey(Shared.Objects.GameDatas.BasicItem item)
+        private static int FindVehicleKeyTableIndex(int vehicleRuntimeIndex)
+        {
+            if (vehicleRuntimeIndex < 0 || ServerMain.Items == null)
+                return -1;
+
+            var keyOrdinal = 0;
+            for (var tableIndex = 0; tableIndex < ServerMain.Items.Count; tableIndex++)
+            {
+                var item = ServerMain.Items[tableIndex];
+                if (!IsVehicleKey(item))
+                    continue;
+
+                if (keyOrdinal == vehicleRuntimeIndex)
+                    return tableIndex;
+
+                keyOrdinal++;
+            }
+
+            return -1;
+        }
+
+        private static bool IsVehicleKey(Shared.Objects.GameDatas.BasicItem item)
         {
             if (item == null) return false;
-            var id = (item.Id ?? string.Empty).Trim();
-            var name = (item.Name ?? string.Empty).Trim();
-            return id.StartsWith("pc_", StringComparison.OrdinalIgnoreCase) ||
-                   name.EndsWith(" key", StringComparison.OrdinalIgnoreCase) ||
-                   name.IndexOf("coupon", StringComparison.OrdinalIgnoreCase) >= 0;
-        }
-
-        private static bool TryParseFlexibleNumber(string value, out long number)
-        {
-            number = 0;
-            if (string.IsNullOrWhiteSpace(value)) return false;
-            var text = value.Trim();
-            if (text.StartsWith("pc_", StringComparison.OrdinalIgnoreCase))
-                text = text.Substring(3);
-            if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
-                return long.TryParse(text.Substring(2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out number);
-            if (long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out number))
-                return true;
-            return long.TryParse(text, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out number);
-        }
-
-        private static bool TryParsePcSuffix(string itemId, out long number)
-        {
-            number = 0;
-            if (string.IsNullOrWhiteSpace(itemId) || !itemId.StartsWith("pc_", StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals((item.Category ?? string.Empty).Trim(), "car", StringComparison.OrdinalIgnoreCase))
                 return false;
-            var suffix = itemId.Substring(3).Trim();
-            if (long.TryParse(suffix, NumberStyles.Integer, CultureInfo.InvariantCulture, out number))
-                return true;
-            return long.TryParse(suffix, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out number);
+
+            var name = (item.Name ?? string.Empty).Trim();
+            return name.EndsWith("key", StringComparison.OrdinalIgnoreCase);
         }
 
         private static uint FindNextInventoryIndex(Character character)
