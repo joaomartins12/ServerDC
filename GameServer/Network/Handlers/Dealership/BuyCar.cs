@@ -15,7 +15,15 @@ namespace GameServer.Network.Handlers.Dealership
 {
     public class BuyCar
     {
-        private const int UseItemProtocolBase = 0x580;
+        // Client inventory TableIndex is a global index across ItemClient.tdf followed by
+        // UseItemClient.tdf. The current client Data archive contains 1217 ItemClient rows,
+        // so a UseItem at zero-based row N is sent as TableIndex = 1217 + N.
+        // Example proof from the current client:
+        //   pc_0000c Kicker    UseItem row   7 -> TableIndex 1224
+        //   pc_0068s Nevera    UseItem row  77 -> TableIndex 1294
+        //   pc_0070s Metro     UseItem row  79 -> TableIndex 1296
+        //   pc_0264s MITEA ST  UseItem row 199 -> TableIndex 1416
+        private const int ClientItemTableRowCount = 1217;
 
         [Packet(Packets.CmdBuyCar)]
         public static void Handle(Packet packet)
@@ -277,17 +285,18 @@ namespace GameServer.Network.Handlers.Dealership
 
                 keyCatalogIndex = i;
                 keyUseItemIndex = i - firstUseItemCatalogIndex;
-                keyProtocolTableIndex = checked(UseItemProtocolBase + keyUseItemIndex + 1);
+                keyProtocolTableIndex = checked(ClientItemTableRowCount + keyUseItemIndex);
                 keyData = useItem;
 
                 Log.Info(
-                    "Vehicle key exact ItemId lookup: CarType={0} ConfiguredKeyItemId={1} ResolvedName='{2}' Category='{3}' CatalogTableIndex={4} UseItemIndex={5} LegacyProtocolTableIndex={6}",
+                    "Vehicle key exact ItemId lookup: CarType={0} ConfiguredKeyItemId={1} ResolvedName='{2}' Category='{3}' CatalogTableIndex={4} UseItemIndex={5} ClientItemRows={6} ProtocolTableIndex={7}",
                     vehicle.CarType,
                     configuredKeyItemId,
                     useItem.Name,
                     useItem.Category,
                     keyCatalogIndex,
                     keyUseItemIndex,
+                    ClientItemTableRowCount,
                     keyProtocolTableIndex);
                 break;
             }
