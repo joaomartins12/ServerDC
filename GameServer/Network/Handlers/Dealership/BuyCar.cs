@@ -7,6 +7,7 @@ using Shared.Models;
 using Shared.Network;
 using Shared.Network.GameServer;
 using Shared.Objects;
+using Shared.Objects.GameDatas;
 using Shared.Util;
 
 namespace GameServer.Network.Handlers.Dealership
@@ -131,12 +132,10 @@ namespace GameServer.Network.Handlers.Dealership
                 return;
             }
 
-            // VehicleCatalog runtime order and the category=car key order are parallel client
-            // tables. Example confirmed from the supplied catalogs:
-            // runtimeIndex 0 Hyundai Click -> first car key -> Kicker key.
             InventoryItem vehicleKey = null;
-            var keyTableIndex = FindVehicleKeyTableIndex(vehicleRuntimeIndex);
-            if (keyTableIndex >= 0)
+            int keyCatalogIndex;
+            int keyProtocolIndex;
+            if (TryFindVehicleKey(buyCarPacket.CarType, vehicleRuntimeIndex, out keyCatalogIndex, out keyProtocolIndex))
             {
                 var inventoryIndex = FindNextInventoryIndex(character);
                 vehicleKey = new InventoryItem
@@ -151,7 +150,12 @@ namespace GameServer.Network.Handlers.Dealership
                     Upgrade = 0,
                     UpgradePoint = 0,
                     Durability = 1.0f,
-                    TableIndex = keyTableIndex,
+
+                    // IMPORTANT: keys live in UseItems.xml. XiStrMyItem.TableIdx for a key is
+                    // the index inside UseItems, NOT the index inside our merged ServerMain.Items
+                    // list. Writing the merged index (804/805/...) makes the client display an
+                    // unrelated option part such as Super Converting Tuning Booster.
+                    TableIndex = keyProtocolIndex,
                     InventoryIndex = inventoryIndex,
                     Random = 0
                 };
@@ -159,22 +163,23 @@ namespace GameServer.Network.Handlers.Dealership
                 if (ItemModel.Create(GameServer.Instance.Database.Connection, vehicleKey))
                 {
                     character.InventoryItems.Add(vehicleKey);
-                    var keyDefinition = ServerMain.Items[keyTableIndex];
+                    var keyDefinition = ServerMain.Items[keyCatalogIndex];
                     Log.Info(
-                        "BuyCar key granted: CID={0} CarId={1} VehicleRuntimeIndex={2} CarType={3} Vehicle={4} InvenIdx={5} TableIndex={6} ItemId={7} Name={8}",
+                        "BuyCar key granted: CID={0} CarId={1} VehicleRuntimeIndex={2} CarType={3} Vehicle={4} InvenIdx={5} ProtocolTableIndex={6} CatalogIndex={7} ItemId={8} Name={9}",
                         character.Id,
                         newVehicle.CarId,
                         vehicleRuntimeIndex,
                         newVehicle.CarType,
                         vehicleData.Name,
                         vehicleKey.InventoryIndex,
-                        keyTableIndex,
+                        keyProtocolIndex,
+                        keyCatalogIndex,
                         keyDefinition.Id,
                         keyDefinition.Name);
                 }
                 else
                 {
-                    Log.Error("BuyCar: vehicle created but ordered key could not be persisted for CarId={0} Vehicle={1} RuntimeIndex={2}.",
+                    Log.Error("BuyCar: vehicle created but key could not be persisted for CarId={0} Vehicle={1} RuntimeIndex={2}.",
                         newVehicle.CarId, vehicleData.Name, vehicleRuntimeIndex);
                     vehicleKey = null;
                 }
@@ -182,8 +187,8 @@ namespace GameServer.Network.Handlers.Dealership
             else
             {
                 Log.Warning(
-                    "BuyCar: no ordered category=car key found for VehicleRuntimeIndex={0} CarType={1} Vehicle='{2}'.",
-                    vehicleRuntimeIndex, buyCarPacket.CarType, vehicleData.Name);
+                    "BuyCar: no category=car key found for CarType={0} VehicleRuntimeIndex={1} Vehicle='{2}'.",
+                    buyCarPacket.CarType, vehicleRuntimeIndex, vehicleData.Name);
             }
 
             var carInfo = new XiStrCarInfo
@@ -256,28 +261,74 @@ namespace GameServer.Network.Handlers.Dealership
             return -1;
         }
 
-        private static int FindVehicleKeyTableIndex(int vehicleRuntimeIndex)
+        private static bool TryFindVehicleKey(uint carType, int vehicleRuntimeIndex, out int catalogIndex, out int protocolIndex)
         {
-            if (vehicleRuntimeIndex < 0 || ServerMain.Items == null)
-                return -1;
+            catalogIndex = -1;
+            protocolIndex = -1;
+            if (ServerMain.Items == null)
+                return false;
 
-            var keyOrdinal = 0;
-            for (var tableIndex = 0; tableIndex < ServerMain.Items.Count; tableIndex++)
+            var firstUseItemIndex = FindFirstUseItemCatalogIndex();
+            if (firstUseItemIndex < 0)
+                return false;
+
+            // The original UseItems.xml key rows contain the associated CarType in maxstack.
+            // Examples from the supplied data: Kicker key -> 1, Condol key -> 28.
+            // The database/exported MaxStack is intentionally normalized to 1 for keys, but
+            // the runtime XML object still gives us the original relation needed here.
+            for (var i = firstUseItemIndex; i < ServerMain.Items.Count; i++)
             {
-                var item = ServerMain.Items[tableIndex];
-                if (!IsVehicleKey(item))
+                var useItem = ServerMain.Items[i] as UseItemTable.UseItem;
+                if (!IsVehicleKey(useItem))
+                    continue;
+
+                uint mappedCarType;
+                if (uint.TryParse(useItem.MaxStack, NumberStyles.Integer, CultureInfo.InvariantCulture, out mappedCarType) &&
+                    mappedCarType == carType)
+                {
+                    catalogIndex = i;
+                    protocolIndex = i - firstUseItemIndex;
+                    return true;
+                }
+            }
+
+            // Fallback for revisions where maxstack no longer carries the CarType relation:
+            // vehicle runtime order and key order are parallel in the supplied catalogs.
+            var keyOrdinal = 0;
+            for (var i = firstUseItemIndex; i < ServerMain.Items.Count; i++)
+            {
+                var useItem = ServerMain.Items[i] as UseItemTable.UseItem;
+                if (!IsVehicleKey(useItem))
                     continue;
 
                 if (keyOrdinal == vehicleRuntimeIndex)
-                    return tableIndex;
+                {
+                    catalogIndex = i;
+                    protocolIndex = i - firstUseItemIndex;
+                    return true;
+                }
 
                 keyOrdinal++;
+            }
+
+            return false;
+        }
+
+        private static int FindFirstUseItemCatalogIndex()
+        {
+            if (ServerMain.Items == null)
+                return -1;
+
+            for (var i = 0; i < ServerMain.Items.Count; i++)
+            {
+                if (ServerMain.Items[i] is UseItemTable.UseItem)
+                    return i;
             }
 
             return -1;
         }
 
-        private static bool IsVehicleKey(Shared.Objects.GameDatas.BasicItem item)
+        private static bool IsVehicleKey(BasicItem item)
         {
             if (item == null) return false;
             if (!string.Equals((item.Category ?? string.Empty).Trim(), "car", StringComparison.OrdinalIgnoreCase))
