@@ -36,6 +36,13 @@ namespace GameServer.Network.Handlers
                 return;
             }
 
+            // Refresh persistent driver-profile values even for a live session. This makes
+            // User Information authoritative for mileage and battle records and also gives
+            // us the currently equipped license/title for the license handlers.
+            var currentLicenseId = CharacterProgressModel.LoadPersistentStats(
+                GameServer.Instance.Database.Connection,
+                character);
+
             if (character.InventoryItems == null || character.InventoryItems.Count == 0)
                 ItemModel.RetrieveAll(GameServer.Instance.Database.Connection, ref character);
 
@@ -44,15 +51,16 @@ namespace GameServer.Network.Handlers
             var statisticInfo = BuildStatisticInfo(character);
             var serial = user == null ? (ushort)0 : user.VehicleSerial;
 
-            // Do not force RoomNotifyChange (467) from User Information. The packet
-            // controls the car rendered in the world and its Body value does not use
-            // Character.ActiveCar.CarType directly. Sending it here caused a temporary
-            // tank model. The client naturally follows 660 with PlayerInfoReq (801),
-            // so let that normal flow request the remote XiPlayerInfo instead.
             Log.Debug(
-                "GameCharInfo profile context: target={0} Serial={1} CarType={2}; waiting for native 801 flow",
+                "GameCharInfo profile: target={0} Serial={1} License={2} Mileage={3:0.##} PvP={4}W/{5}L Team={6}W/{7}L CarType={8}",
                 character.Name,
                 serial,
+                currentLicenseId,
+                character.TotalDistance,
+                character.PvpWinCount,
+                character.PvpCount >= character.PvpWinCount ? character.PvpCount - character.PvpWinCount : 0,
+                character.TeamPvpWinCount,
+                character.TeamPvpCount >= character.TeamPvpWinCount ? character.TeamPvpCount - character.TeamPvpWinCount : 0,
                 character.ActiveCar == null ? 0u : character.ActiveCar.CarType);
 
             var ack = new GameCharInfoAnswer
