@@ -32,24 +32,21 @@ namespace GameServer.Network.Handlers.Join
                 return;
             }
 
+            // 801 is a player-info lookup. Do not send RoomNotifyChange (467) here:
+            // that packet mutates the vehicle rendered in the world and uses a different
+            // car-body namespace than Character.ActiveCar.CarType. The previous attempt
+            // caused the requested player's car to become a tank briefly.
             var playerInfo = PlayerVisualSnapshotBuilder.BuildPlayerInfo(serial, character);
             packet.Sender.Send(new PlayerInfoOldAnswer
             {
                 PlayerInfo = playerInfo
             }.CreatePacket());
 
-            // Keep the client's player-info and car/visual caches synchronized.
-            // The original game uses both player information and visual notifications
-            // when it needs to represent another driver's car.
-            if (character.ActiveCar != null)
-                packet.Sender.Send(PlayerVisualSnapshotBuilder.BuildRoomNotifyChange(serial, character).CreatePacket());
-
             Log.Debug(
-                "PlayerInfoReq: Serial={0} Name={1} CarType={2} -> 802{3}",
+                "PlayerInfoReq: Serial={0} Name={1} CarType={2} -> 802 only",
                 serial,
                 character.Name,
-                character.ActiveCar == null ? 0u : character.ActiveCar.CarType,
-                character.ActiveCar == null ? string.Empty : " + 467");
+                character.ActiveCar == null ? 0u : character.ActiveCar.CarType);
         }
     }
 }
