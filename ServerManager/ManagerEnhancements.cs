@@ -1,9 +1,9 @@
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Reflection;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace ServerManager
@@ -27,6 +27,7 @@ namespace ServerManager
         {
             if (form == null) return;
             LoadSettings();
+            ClientDataImporter.EnsureImportDirectory();
 
             var tabStrip = GetPrivateField<FlowLayoutPanel>(form, "_tabStrip");
             var logContent = GetPrivateField<Panel>(form, "_logContent");
@@ -39,11 +40,6 @@ namespace ServerManager
             var settingsButton = BuildSettingsTabButton();
             tabStrip.Controls.Add(settingsButton);
 
-            // MainForm.SelectTab already performs the complete server-log page switch.
-            // Previously every tab click also forced a second refresh that invalidated the whole
-            // log tree, hid/showed RichTextBoxes, called Update/Refresh repeatedly and queued an
-            // additional BeginInvoke. With large packet logs that work could monopolize the UI
-            // thread for noticeable periods. Keep this handler intentionally lightweight.
             EventHandler serverTabRefresh = delegate
             {
                 settingsPage.Visible = false;
@@ -72,8 +68,6 @@ namespace ServerManager
                 }
                 settingsPage.Visible = true;
                 settingsPage.BringToFront();
-                // Invalidate is enough. Do not synchronously force Update(); the normal WinForms
-                // paint cycle keeps the UI responsive when large logs are being appended.
                 settingsPage.Invalidate(true);
             };
         }
@@ -94,49 +88,158 @@ namespace ServerManager
 
         private static Panel BuildSettingsPage(MainForm form)
         {
-            var page = new Panel { Dock = DockStyle.Fill, BackColor = BackgroundColor, Padding = new Padding(24), AutoScroll = true };
+            var page = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = BackgroundColor,
+                Padding = new Padding(24),
+                AutoScroll = true
+            };
 
             page.Controls.Add(new Label
             {
-                AutoSize = true, Text = "SERVER SETTINGS", ForeColor = Color.White,
-                Font = new Font("Segoe UI Semibold", 16F, FontStyle.Bold), Location = new Point(24, 22)
+                AutoSize = true,
+                Text = "SERVER SETTINGS",
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI Semibold", 16F, FontStyle.Bold),
+                Location = new Point(24, 22)
             });
             page.Controls.Add(new Label
             {
-                AutoSize = true, Text = "Offline catalog imports, logging and administrative database synchronization",
-                ForeColor = MutedColor, Font = new Font("Segoe UI", 9.5F), Location = new Point(27, 56)
+                AutoSize = true,
+                Text = "Global client-data import, logging and administrative synchronization",
+                ForeColor = MutedColor,
+                Font = new Font("Segoe UI", 9.5F),
+                Location = new Point(27, 56)
             });
 
-            var itemStatus = new Label();
-            var itemCard = BuildCatalogCard(
-                "ITEM CATALOG DATABASE",
-                "Import the generated ItemCatalog.json into dbo.item_catalog. The Game Server must be stopped. Existing administrative price/enable overrides are preserved.",
-                "IMPORT ITEMS TO DB", new Point(24, 92), itemStatus);
-            page.Controls.Add(itemCard);
+            var status = new Label
+            {
+                AutoSize = false,
+                ForeColor = MutedColor,
+                Font = new Font("Segoe UI", 9F),
+                Location = new Point(20, 170),
+                Size = new Size(650, 42)
+            };
 
-            var vehicleStatus = new Label();
-            var vehicleCard = BuildCatalogCard(
-                "VEHICLE CATALOG DATABASE",
-                "Import VehicleCatalog.json into dbo.vehicle_catalog and dbo.vehicle_upgrade_catalog, including real base stats and every V1-V9 upgrade definition.",
-                "IMPORT VEHICLES TO DB", new Point(24, 310), vehicleStatus);
-            page.Controls.Add(vehicleCard);
+            var importCard = new Panel
+            {
+                BackColor = PanelColor,
+                Location = new Point(24, 92),
+                Size = new Size(700, 225),
+                Padding = new Padding(20)
+            };
+            importCard.Paint += delegate(object sender, PaintEventArgs e)
+            {
+                using (var pen = new Pen(BorderColor))
+                    e.Graphics.DrawRectangle(pen, 0, 0, importCard.Width - 1, importCard.Height - 1);
+            };
 
-            var logCard = new Panel { BackColor = PanelColor, Location = new Point(24, 528), Size = new Size(700, 130), Padding = new Padding(20) };
+            importCard.Controls.Add(new Label
+            {
+                AutoSize = true,
+                Text = "CLIENT DATA IMPORT",
+                ForeColor = TextColor,
+                Font = new Font("Segoe UI Semibold", 11F, FontStyle.Bold),
+                Location = new Point(20, 18)
+            });
+            importCard.Controls.Add(new Label
+            {
+                AutoSize = false,
+                Text = "Place every client .tdf file inside the Improter folder next to DCServerManager.exe. " +
+                       "The import stores every TDF row and cell losslessly in dbo.client_tdf_* and builds dbo.client_item_lookup for ItemClient/UseItemClient protocol indexes.",
+                ForeColor = MutedColor,
+                Font = new Font("Segoe UI", 9F),
+                Location = new Point(20, 50),
+                Size = new Size(650, 62)
+            });
+
+            var importButton = MakeActionButton("IMPORT ALL CLIENT DATA", new Point(20, 120), 215);
+            var openFolderButton = MakeActionButton("OPEN IMPROTER FOLDER", new Point(245, 120), 205);
+            importCard.Controls.Add(importButton);
+            importCard.Controls.Add(openFolderButton);
+            importCard.Controls.Add(status);
+            page.Controls.Add(importCard);
+
+            openFolderButton.Click += delegate
+            {
+                try
+                {
+                    var folder = ClientDataImporter.EnsureImportDirectory();
+                    Process.Start("explorer.exe", folder);
+                }
+                catch (Exception ex)
+                {
+                    SetStatus(status, "Could not open Improter folder: " + ex.Message, StoppedColor);
+                }
+            };
+
+            importButton.Click += async delegate
+            {
+                if (!CanImportOffline(status)) return;
+
+                var count = ClientDataImporter.CountTdfFiles();
+                if (count == 0)
+                {
+                    SetStatus(status, "No .tdf files found. Put the client files in: " + ClientDataImporter.ImportFolder, WarningColor);
+                    return;
+                }
+
+                importButton.Enabled = false;
+                openFolderButton.Enabled = false;
+                SetStatus(status, "Importing " + count + " TDF files in background...", WarningColor);
+
+                try
+                {
+                    var result = await Task.Run(delegate { return ClientDataImporter.ImportAll(); });
+                    SetStatus(status,
+                        "Imported " + result.Files + " files, " + result.Rows + " rows, " + result.Cells +
+                        " cells. Item lookup rows: " + result.ItemLookupRows + ".",
+                        RunningColor);
+                }
+                catch (Exception ex)
+                {
+                    SetStatus(status, "Import failed: " + ex.Message, StoppedColor);
+                }
+                finally
+                {
+                    importButton.Enabled = true;
+                    openFolderButton.Enabled = true;
+                }
+            };
+
+            UpdateClientImportStatus(status);
+
+            var logCard = new Panel
+            {
+                BackColor = PanelColor,
+                Location = new Point(24, 340),
+                Size = new Size(700, 130),
+                Padding = new Padding(20)
+            };
             logCard.Paint += delegate(object sender, PaintEventArgs e)
             {
-                using (var pen = new Pen(BorderColor)) e.Graphics.DrawRectangle(pen, 0, 0, logCard.Width - 1, logCard.Height - 1);
+                using (var pen = new Pen(BorderColor))
+                    e.Graphics.DrawRectangle(pen, 0, 0, logCard.Width - 1, logCard.Height - 1);
             };
             logCard.Controls.Add(new Label
             {
-                AutoSize = true, Text = "LOG BEHAVIOR", ForeColor = TextColor,
-                Font = new Font("Segoe UI Semibold", 11F, FontStyle.Bold), Location = new Point(20, 18)
+                AutoSize = true,
+                Text = "LOG BEHAVIOR",
+                ForeColor = TextColor,
+                Font = new Font("Segoe UI Semibold", 11F, FontStyle.Bold),
+                Location = new Point(20, 18)
             });
             logCard.Controls.Add(new Label
             {
                 AutoSize = false,
                 Text = "Clear the visible log panel for a server whenever that server starts. Structured packet/session files under Logs\\ are never deleted by this option.",
-                ForeColor = MutedColor, Font = new Font("Segoe UI", 9F), Location = new Point(20, 48), Size = new Size(650, 38)
+                ForeColor = MutedColor,
+                Font = new Font("Segoe UI", 9F),
+                Location = new Point(20, 48),
+                Size = new Size(650, 38)
             });
+
             var clearLogs = new CheckBox
             {
                 AutoSize = true,
@@ -156,107 +259,37 @@ namespace ServerManager
             logCard.Controls.Add(clearLogs);
             page.Controls.Add(logCard);
 
-            var itemButton = FindButton(itemCard);
-            itemButton.Click += delegate
-            {
-                if (!CanImportOffline(itemStatus)) return;
-                if (!ItemCatalogImporter.CatalogExists())
-                {
-                    SetStatus(itemStatus, "ItemCatalog.json not found. Start Game Server once to generate it, then STOP it and import.", StoppedColor);
-                    return;
-                }
-                try
-                {
-                    SetStatus(itemStatus, "Importing ItemCatalog.json...", WarningColor);
-                    Application.DoEvents();
-                    var result = ItemCatalogImporter.Import();
-                    SetStatus(itemStatus, "Imported " + result.Count + " item definitions successfully.", RunningColor);
-                }
-                catch (Exception ex)
-                {
-                    SetStatus(itemStatus, "Import failed: " + ex.Message, StoppedColor);
-                }
-            };
-
-            var vehicleButton = FindButton(vehicleCard);
-            vehicleButton.Click += delegate
-            {
-                if (!CanImportOffline(vehicleStatus)) return;
-                if (!VehicleCatalogImporter.CatalogExists())
-                {
-                    SetStatus(vehicleStatus, "VehicleCatalog.json not found. Start Game Server once to generate it, then STOP it and import.", StoppedColor);
-                    return;
-                }
-                try
-                {
-                    SetStatus(vehicleStatus, "Importing VehicleCatalog.json...", WarningColor);
-                    Application.DoEvents();
-                    var result = VehicleCatalogImporter.Import();
-                    SetStatus(vehicleStatus, "Imported " + result.Vehicles + " vehicles and " + result.Upgrades + " upgrade rows.", RunningColor);
-                }
-                catch (Exception ex)
-                {
-                    SetStatus(vehicleStatus, "Import failed: " + ex.Message, StoppedColor);
-                }
-            };
-
             page.Controls.Add(new Label
             {
                 AutoSize = false,
-                Text = "Catalog workflow: START Game Server once to regenerate JSON catalogs → STOP Game Server → import from Settings. Imports are blocked while GameServer.exe is running.",
-                ForeColor = WarningColor, Font = new Font("Segoe UI", 9F), Location = new Point(24, 680), Size = new Size(850, 45)
+                Text = "The client-data import is a full snapshot: every run replaces the previous dbo.client_tdf_* snapshot with exactly the TDF files currently present in Improter. GameServer.exe must be stopped while importing.",
+                ForeColor = WarningColor,
+                Font = new Font("Segoe UI", 9F),
+                Location = new Point(24, 495),
+                Size = new Size(850, 45)
             });
 
-            UpdateCatalogStatus(itemStatus, ItemCatalogImporter.CatalogExists(), "ItemCatalog.json");
-            UpdateCatalogStatus(vehicleStatus, VehicleCatalogImporter.CatalogExists(), "VehicleCatalog.json");
             return page;
         }
 
-        private static Panel BuildCatalogCard(string title, string description, string buttonText, Point location, Label status)
+        private static Button MakeActionButton(string text, Point location, int width)
         {
-            var card = new Panel { BackColor = PanelColor, Location = location, Size = new Size(700, 195), Padding = new Padding(20) };
-            card.Paint += delegate(object sender, PaintEventArgs e)
-            {
-                using (var pen = new Pen(BorderColor)) e.Graphics.DrawRectangle(pen, 0, 0, card.Width - 1, card.Height - 1);
-            };
-            card.Controls.Add(new Label
-            {
-                AutoSize = true, Text = title, ForeColor = TextColor,
-                Font = new Font("Segoe UI Semibold", 11F, FontStyle.Bold), Location = new Point(20, 18)
-            });
-            card.Controls.Add(new Label
-            {
-                AutoSize = false, Text = description, ForeColor = MutedColor,
-                Font = new Font("Segoe UI", 9F), Location = new Point(20, 50), Size = new Size(650, 52)
-            });
             var button = new Button
             {
-                Text = buttonText, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(24, 46, 34),
-                ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold),
-                Location = new Point(20, 112), Size = new Size(195, 38), Cursor = Cursors.Hand,
+                Text = text,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(24, 46, 34),
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold),
+                Location = location,
+                Size = new Size(width, 38),
+                Cursor = Cursors.Hand,
                 UseVisualStyleBackColor = false
             };
             button.FlatAppearance.BorderColor = Color.FromArgb(58, 93, 72);
             button.FlatAppearance.BorderSize = 1;
             button.FlatAppearance.MouseOverBackColor = Color.FromArgb(31, 59, 43);
-            card.Controls.Add(button);
-
-            status.AutoSize = true;
-            status.ForeColor = MutedColor;
-            status.Font = new Font("Segoe UI", 9F);
-            status.Location = new Point(20, 162);
-            card.Controls.Add(status);
-            return card;
-        }
-
-        private static Button FindButton(Control root)
-        {
-            foreach (Control control in root.Controls)
-            {
-                var button = control as Button;
-                if (button != null) return button;
-            }
-            return null;
+            return button;
         }
 
         private static bool CanImportOffline(Label status)
@@ -267,21 +300,34 @@ namespace ServerManager
                 processes = Process.GetProcessesByName("GameServer");
                 if (processes.Length > 0)
                 {
-                    SetStatus(status, "Stop Game Server before importing. Offline import is blocked while GameServer.exe is running.", StoppedColor);
+                    SetStatus(status,
+                        "Stop Game Server before importing client data. Import is blocked while GameServer.exe is running.",
+                        StoppedColor);
                     return false;
                 }
                 return true;
             }
             finally
             {
-                if (processes != null) foreach (var process in processes) process.Dispose();
+                if (processes != null)
+                    foreach (var process in processes) process.Dispose();
             }
         }
 
-        private static void UpdateCatalogStatus(Label status, bool exists, string name)
+        private static void UpdateClientImportStatus(Label status)
         {
-            if (exists) SetStatus(status, name + " found. Stop Game Server before importing.", RunningColor);
-            else SetStatus(status, name + " not found. Start Game Server once to generate it.", WarningColor);
+            try
+            {
+                var count = ClientDataImporter.CountTdfFiles();
+                if (count > 0)
+                    SetStatus(status, count + " TDF files ready in " + ClientDataImporter.ImportFolder, RunningColor);
+                else
+                    SetStatus(status, "Improter folder ready. Copy the client .tdf files into: " + ClientDataImporter.ImportFolder, WarningColor);
+            }
+            catch (Exception ex)
+            {
+                SetStatus(status, "Importer folder error: " + ex.Message, StoppedColor);
+            }
         }
 
         private static void SetStatus(Label label, string text, Color color)
@@ -303,7 +349,8 @@ namespace ServerManager
                     if (parts[0].Trim().Equals("ClearVisibleLogsOnServerStart", StringComparison.OrdinalIgnoreCase))
                     {
                         bool value;
-                        if (bool.TryParse(parts[1].Trim(), out value)) ClearVisibleLogsOnServerStart = value;
+                        if (bool.TryParse(parts[1].Trim(), out value))
+                            ClearVisibleLogsOnServerStart = value;
                     }
                 }
             }
