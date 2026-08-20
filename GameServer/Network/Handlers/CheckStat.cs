@@ -38,10 +38,15 @@ namespace GameServer.Network.Handlers
             }
 
             var equipped = EquippedItemStatResolver.Resolve(character, activeCar);
-            var totalSpeed = stats.Speed + equipped.Speed;
-            var totalCrash = stats.Crash + equipped.Crash;
-            var totalAccel = stats.Accel + equipped.Accel;
-            var totalBoost = stats.Boost + equipped.Boost;
+
+            // Character level is a permanent contribution to every effective vehicle stat.
+            // The vehicle/catalog value remains the base block and equipped parts remain the
+            // equipment block; level is applied exactly once when calculating the totals.
+            var levelBonus = (int)character.Level;
+            var totalSpeed = stats.Speed + equipped.Speed + levelBonus;
+            var totalCrash = stats.Crash + equipped.Crash + levelBonus;
+            var totalAccel = stats.Accel + equipped.Accel + levelBonus;
+            var totalBoost = stats.Boost + equipped.Boost + levelBonus;
 
             var ack = new CheckStatAnswer
             {
@@ -73,8 +78,9 @@ namespace GameServer.Network.Handlers
             };
 
             Log.Info(
-                "StatUpdate: CID={0} CarDbId={1} VehicleId={2} Name={3} Grade=V{4} Source={5} Base[S={6},C={7},A={8},B={9}] Equip[S={10},C={11},A={12},B={13}] Total[S={14},C={15},A={16},B={17}] Performance[S={18},C={19},A={20},B={21}] Mitron[Capacity={22},Efficiency={23}]",
+                "StatUpdate: CID={0} Level={1} CarDbId={2} VehicleId={3} Name={4} Grade=V{5} Source={6} Base[S={7},C={8},A={9},B={10}] Equip[S={11},C={12},A={13},B={14}] LevelBonus={15} Total[S={16},C={17},A={18},B={19}] Performance[S={20},C={21},A={22},B={23}] Mitron[Capacity={24},Efficiency={25}]",
                 character.Id,
+                character.Level,
                 activeCar.CarId,
                 stats.VehicleId,
                 string.IsNullOrWhiteSpace(stats.VehicleName) ? "UNKNOWN" : stats.VehicleName,
@@ -88,6 +94,7 @@ namespace GameServer.Network.Handlers
                 equipped.Crash,
                 equipped.Accel,
                 equipped.Boost,
+                levelBonus,
                 totalSpeed,
                 totalCrash,
                 totalAccel,
