@@ -72,16 +72,33 @@ namespace AreaServer.Network.Handlers
         [Packet(Packets.CmdMoveVehicle)]
         public static void Handle(Packet packet)
         {
-            var vehicleSerial = packet.Reader.ReadUInt16();
+            if (packet.Sender == null || packet.Sender.User == null)
+                return;
+
+            var packetSerial = packet.Reader.ReadUInt16();
+            var vehicleSerial = packet.Sender.User.VehicleSerial;
+
+            // The authenticated AreaServer session is authoritative. Never let a malformed
+            // or stale client payload update another driver's cached serial.
+            if (vehicleSerial == 0)
+                return;
+
+            if (packetSerial != vehicleSerial)
+                WritePresenceLog("SERIAL_MISMATCH", packetSerial, vehicleSerial, -1, 0);
+
             var stream = packet.Reader.BaseStream;
             var remaining = (int)Math.Max(0, stream.Length - stream.Position);
             var movement = packet.Reader.ReadBytes(remaining);
 
-            int areaId = -1;
+            int areaId;
             lock (Sync)
             {
                 LastMovement[vehicleSerial] = movement;
-                SerialArea.TryGetValue(vehicleSerial, out areaId);
+                if (!SerialArea.TryGetValue(vehicleSerial, out areaId))
+                {
+                    WritePresenceLog("NO_AREA", vehicleSerial, 0, -1, movement.Length);
+                    return;
+                }
             }
 
             foreach (var client in AreaServer.Instance.Server.GetClients())
@@ -101,8 +118,10 @@ namespace AreaServer.Network.Handlers
                 WritePresenceLog("LIVE", vehicleSerial, targetSerial, areaId, movement.Length);
             }
 
-            if (areaId >= 0)
-                ReplayExisting(packet.Sender, vehicleSerial, areaId);
+            // Do NOT ReplayExisting here. Replay is only for EnterArea/re-entry.
+            // Replaying cached positions on every live movement caused each client to
+            // receive a fresh packet followed by stale movement from the other driver,
+            // doubling traffic and producing visible rubber-banding/desync.
         }
 
         private static void SendMovement(Client client, ushort serial, byte[] movement)
