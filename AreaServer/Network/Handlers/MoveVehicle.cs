@@ -37,8 +37,9 @@ namespace AreaServer.Network.Handlers
                         continue;
                 }
 
-                SendMovement(client, pair.Key, pair.Value);
-                WritePresenceLog("REPLAY", pair.Key, ownSerial, areaId, pair.Value.Length);
+                // 541 is required by this client to discover/create a remote vehicle.
+                SendMovement(client, pair.Key, pair.Value, false);
+                WritePresenceLog("REPLAY_DISCOVERY", pair.Key, ownSerial, areaId, pair.Value.Length);
             }
         }
 
@@ -64,8 +65,10 @@ namespace AreaServer.Network.Handlers
                         continue;
                 }
 
-                SendMovement(client, serial, movement);
-                WritePresenceLog("ANNOUNCE", serial, targetSerial, areaId, movement.Length);
+                // The entering vehicle may not exist yet in the remote client's entity table,
+                // so announce it with the discovery packet id (541).
+                SendMovement(client, serial, movement, false);
+                WritePresenceLog("ANNOUNCE_DISCOVERY", serial, targetSerial, areaId, movement.Length);
             }
         }
 
@@ -114,19 +117,19 @@ namespace AreaServer.Network.Handlers
                         continue;
                 }
 
-                SendMovement(client, vehicleSerial, movement);
-                WritePresenceLog("LIVE", vehicleSerial, targetSerial, areaId, movement.Length);
+                // 542 is the real server -> client movement ACK. Once the entity has been
+                // created by 541 during EnterArea/announce, all live movement should use
+                // the ACK id so interpolation/presence state is refreshed correctly.
+                SendMovement(client, vehicleSerial, movement, true);
+                WritePresenceLog("LIVE_ACK", vehicleSerial, targetSerial, areaId, movement.Length);
             }
 
             // Do NOT ReplayExisting here. Replay is only for EnterArea/re-entry.
-            // Replaying cached positions on every live movement caused each client to
-            // receive a fresh packet followed by stale movement from the other driver,
-            // doubling traffic and producing visible rubber-banding/desync.
         }
 
-        private static void SendMovement(Client client, ushort serial, byte[] movement)
+        private static void SendMovement(Client client, ushort serial, byte[] movement, bool liveAck)
         {
-            var move = new Packet(Packets.CmdMoveVehicle);
+            var move = new Packet(liveAck ? Packets.MoveVehicleAck : Packets.CmdMoveVehicle);
             move.Writer.Write(serial);
             move.Writer.Write(movement ?? new byte[0]);
             client.Send(move);
