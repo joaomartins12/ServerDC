@@ -205,8 +205,6 @@ namespace GameServer.Network.Handlers
             }
 
             var rawMessage = message ?? string.Empty;
-            var recipientDisplayMessage = "(" + senderName + "): " + rawMessage;
-            var senderDisplayMessage = "(" + targetDisplayName + "): " + rawMessage;
 
             Packet recipientPacket;
             Packet senderEchoPacket;
@@ -215,48 +213,44 @@ namespace GameServer.Network.Handlers
             if (mode == "149")
             {
                 recipientPacket = new Packet(Packets.CmdPrivateChatMsg);
-                recipientPacket.Writer.WriteUnicodeStatic("Whisper From", 21, true);
-                recipientPacket.Writer.WriteUnicode(recipientDisplayMessage);
+                recipientPacket.Writer.WriteUnicodeStatic(senderName, 21, true);
+                recipientPacket.Writer.WriteUnicode(rawMessage);
 
                 senderEchoPacket = new Packet(Packets.CmdPrivateChatMsg);
-                senderEchoPacket.Writer.WriteUnicodeStatic("Whisper To", 21, true);
-                senderEchoPacket.Writer.WriteUnicode(senderDisplayMessage);
+                senderEchoPacket.Writer.WriteUnicodeStatic(targetDisplayName, 21, true);
+                senderEchoPacket.Writer.WriteUnicode(rawMessage);
                 stage = "OUT149";
             }
             else
             {
-                // The newest packet captures prove that normal All/server chat and whisper
-                // both use ChatMsgAck (147); the first fixed Unicode field is the only
-                // protocol discriminator. Retest the native "whisper" type now that the
-                // CmdWhisper parser and sender echo are both corrected.
                 const string visualType = "whisper";
 
                 recipientPacket = new ChatMessageAnswer
                 {
                     MessageType = visualType,
-                    SenderCharacterName = "Whisper From",
-                    Message = recipientDisplayMessage
+                    SenderCharacterName = senderName,
+                    Message = rawMessage
                 }.CreatePacket();
 
                 senderEchoPacket = new ChatMessageAnswer
                 {
                     MessageType = visualType,
-                    SenderCharacterName = "Whisper To",
-                    Message = senderDisplayMessage
+                    SenderCharacterName = targetDisplayName,
+                    Message = rawMessage
                 }.CreatePacket();
-                stage = "OUT147_WHISPER";
+                stage = "OUT147_WHISPER_NATIVE_NAME";
             }
 
             WriteWhisperResearch(stage, packet.Sender.User.VehicleSerial,
                 target.User.VehicleSerial, senderCharacter.Name,
                 target.User.ActiveCharacter.Name, message, recipientPacket,
-                "mode=" + mode + " visual=whisper direction=recipient");
+                "mode=" + mode + " visual=whisper direction=recipient senderField=" + senderName);
             target.Send(recipientPacket);
 
             WriteWhisperResearch(stage + "_ECHO", packet.Sender.User.VehicleSerial,
                 packet.Sender.User.VehicleSerial, target.User.ActiveCharacter.Name,
                 senderCharacter.Name, message, senderEchoPacket,
-                "mode=" + mode + " visual=whisper direction=sender");
+                "mode=" + mode + " visual=whisper direction=sender senderField=" + targetDisplayName);
             packet.Sender.Send(senderEchoPacket);
 
             senderCharacter.LastMessageFrom = target.User.ActiveCharacter.Name;
