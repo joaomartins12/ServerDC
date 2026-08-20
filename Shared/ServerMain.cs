@@ -33,8 +33,6 @@ namespace Shared
             {
                 if (Directory.Exists("system"))
                 {
-                    // From this point all server and packet logs are kept below /Logs
-                    // in the actual server root, independent of where the executable started.
                     Log.InitializeStructuredLogging();
                     return;
                 }
@@ -76,12 +74,62 @@ namespace Shared
             {
                 db.Init(conf.Database.Host, conf.Database.Port, conf.Database.User, conf.Database.Pass,
                     conf.Database.Db);
+                NormalizeDboSchema(db);
             }
             catch (Exception ex)
             {
                 Log.Error("Unable to open database connection. ({0})", ex.Message);
                 ConsoleUtil.Exit(1);
             }
+        }
+
+        /// <summary>
+        /// SQL Server always stores tables inside a schema. dbo is the canonical schema
+        /// for this server. This migration repairs legacy/custom-schema tables by moving
+        /// them to dbo when no dbo table with the same name already exists.
+        /// </summary>
+        private static void NormalizeDboSchema(BaseDatabase db)
+        {
+            const string sql = @"
+IF SCHEMA_ID(N'dbo') IS NULL
+    EXEC(N'CREATE SCHEMA dbo AUTHORIZATION db_owner');
+
+DECLARE @TableName SYSNAME;
+DECLARE @SchemaName SYSNAME;
+DECLARE @Sql NVARCHAR(MAX);
+
+DECLARE schema_cursor CURSOR LOCAL FAST_FORWARD FOR
+SELECT t.name, s.name
+FROM sys.tables AS t
+INNER JOIN sys.schemas AS s ON s.schema_id = t.schema_id
+WHERE s.name <> N'dbo'
+  AND t.name IN
+  (
+      N'users', N'characters', N'vehicles', N'items', N'friends', N'quests',
+      N'servers', N'shop', N'teams', N'updates',
+      N'item_catalog', N'vehicle_catalog', N'vehicle_upgrade_catalog'
+  )
+  AND OBJECT_ID(N'dbo.' + QUOTENAME(t.name), N'U') IS NULL;
+
+OPEN schema_cursor;
+FETCH NEXT FROM schema_cursor INTO @TableName, @SchemaName;
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    SET @Sql = N'ALTER SCHEMA dbo TRANSFER '
+             + QUOTENAME(@SchemaName) + N'.' + QUOTENAME(@TableName) + N';';
+    EXEC sys.sp_executesql @Sql;
+    FETCH NEXT FROM schema_cursor INTO @TableName, @SchemaName;
+END
+
+CLOSE schema_cursor;
+DEALLOCATE schema_cursor;";
+
+            using (var connection = db.Connection)
+            using (var command = new Shared.Models.MySqlCommand(sql, connection))
+                command.ExecuteNonQuery();
+
+            Log.Debug("Database schema normalization complete (dbo).");
         }
     }
 }
