@@ -1,4 +1,4 @@
-﻿using Shared.Network;
+using Shared.Network;
 using Shared.Network.AreaServer;
 
 namespace AreaServer.Network.Handlers
@@ -8,9 +8,12 @@ namespace AreaServer.Network.Handlers
         [Packet(Packets.CmdAreaStatus)]
         public static void Handle(Packet packet)
         {
-            packet.Sender.Send(new AreaStatusAnswerPacket()
+            // The original server reports the current member count for all 100 areas.
+            // Returning an all-zero array makes the client believe populated areas are
+            // empty and can invalidate remote-player presence asynchronously.
+            packet.Sender.Send(new AreaStatusAnswerPacket
             {
-                UserCount = new uint[100],
+                UserCount = MoveVehicle.GetAreaUserCounts()
             }.CreatePacket());
         }
     }
