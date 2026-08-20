@@ -3,7 +3,6 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using Shared.Network;
-using Shared.Network.GameServer;
 using Shared.Objects;
 using Shared.Util;
 
@@ -98,10 +97,6 @@ namespace GameServer.Network.Handlers
                 var end = stream.Length;
                 if (end - original < 4) return false;
 
-                // Current client puts metadata between the target and message. The final
-                // field is encoded as: UInt16 byteLength + UTF-16LE bytes, including the
-                // terminating wchar. Find the prefix whose declared length lands exactly
-                // on the end of the packet instead of guessing metadata offsets.
                 for (var pos = original; pos + 4 <= end; pos += 2)
                 {
                     stream.Position = pos;
@@ -151,12 +146,8 @@ namespace GameServer.Network.Handlers
 
             if (target == null)
             {
-                packet.Sender.Send(new ChatMessageAnswer
-                {
-                    MessageType = "private",
-                    SenderCharacterName = "SYSTEM",
-                    Message = targetName + " is offline."
-                }.CreatePacket());
+                // Keep the already-working offline feedback on the sender only.
+                packet.Sender.SendError(targetName + " is offline.");
                 return;
             }
 
@@ -164,21 +155,19 @@ namespace GameServer.Network.Handlers
             if (packet.Sender.User.GmFlag)
                 senderName = "GM " + senderName;
 
-            var ack = new ChatMessageAnswer
-            {
-                MessageType = "private",
-                SenderCharacterName = senderName,
-                Message = message ?? string.Empty
-            }.CreatePacket();
-
-            target.Send(ack);
-            if (target != packet.Sender)
-                packet.Sender.Send(ack);
+            // Whisper/private chat has its own protocol path. ChatMsgAck (147) is the
+            // public/room/channel chat format and the client renders it as normal chat.
+            // The client already echoes an outgoing whisper locally, so only deliver the
+            // dedicated private packet to the recipient.
+            var privatePacket = new Packet(Packets.CmdPrivateChatMsg);
+            privatePacket.Writer.WriteUnicodeStatic(senderName, 21, true);
+            privatePacket.Writer.WriteUnicode(message ?? string.Empty);
+            target.Send(privatePacket);
 
             senderCharacter.LastMessageFrom = target.User.ActiveCharacter.Name;
             target.User.ActiveCharacter.LastMessageFrom = senderCharacter.Name;
 
-            Log.Debug("(private) <{0}> -> <{1}> {2}", senderCharacter.Name,
+            Log.Debug("Whisper delivered: <{0}> -> <{1}> {2}", senderCharacter.Name,
                 target.User.ActiveCharacter.Name, message);
         }
     }
