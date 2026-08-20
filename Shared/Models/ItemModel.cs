@@ -58,6 +58,12 @@ namespace Shared.Models
             if (item == null || item.CharacterId == 0 || item.StackNum == 0 || item.TableIndex < 0)
                 return false;
 
+            // InventoryItems is a compact List<InventoryItem>, but InventoryIndex is a persistent
+            // slot number. After an item/key is removed, List.Count is no longer a safe slot id:
+            // another existing row can already own that number. Always allocate the first slot
+            // that is actually free in the database before inserting a new inventory item.
+            item.InventoryIndex = FindFirstFreeInventoryIndex(dbconn, item.CharacterId);
+
             using (var cmd = new InsertCommand("INSERT INTO `items` {0}", dbconn))
             {
                 var insertCommand = cmd;
@@ -67,6 +73,29 @@ namespace Shared.Models
                     item.DbId = checked((int)cmd.LastId);
                 return result == 1;
             }
+        }
+
+        private static uint FindFirstFreeInventoryIndex(MySqlConnection dbconn, ulong characterId)
+        {
+            var expected = 0u;
+            using (var command = new MySqlCommand(
+                "SELECT InventoryIndex FROM items WHERE CharacterId=@cid ORDER BY InventoryIndex ASC", dbconn))
+            {
+                command.Parameters.AddWithValue("@cid", characterId);
+                using (DbDataReader reader = command.ExecuteReader())
+                {
+                    while (reader.Read())
+                    {
+                        var current = Convert.ToUInt32(reader[0]);
+                        if (current < expected)
+                            continue;
+                        if (current > expected)
+                            break;
+                        expected++;
+                    }
+                }
+            }
+            return expected;
         }
 
         public static bool Remove(MySqlConnection dbconn, ulong charId, int slot)
