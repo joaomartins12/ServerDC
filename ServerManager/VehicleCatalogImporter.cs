@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Data;
 using System.Data.SqlClient;
 using System.IO;
 using System.Web.Script.Serialization;
@@ -24,7 +25,7 @@ namespace ServerManager
 
         private sealed class CatalogVehicle
         {
-            public int runtimeIndex { get; set; }
+            public int? runtimeIndex { get; set; }
             public int? vehicleId { get; set; }
             public string name { get; set; }
             public string type { get; set; }
@@ -42,7 +43,7 @@ namespace ServerManager
 
         private sealed class CatalogUpgrade
         {
-            public int gradeIndex { get; set; }
+            public int? gradeIndex { get; set; }
             public string gradeName { get; set; }
             public string coupon { get; set; }
             public int? accel { get; set; }
@@ -53,8 +54,8 @@ namespace ServerManager
             public int? sell { get; set; }
             public int? closeSell { get; set; }
             public int? upgradeMito { get; set; }
-            public int? efficiency { get; set; }
-            public int? capacity { get; set; }
+            public decimal? efficiency { get; set; }
+            public decimal? capacity { get; set; }
             public int? requiredLevel { get; set; }
         }
 
@@ -83,8 +84,8 @@ namespace ServerManager
                 ApplicationName = "DriftCity Server Manager"
             }.ConnectionString;
 
-            var vehicleCount = 0;
             var upgradeCount = 0;
+            var vehicleCount = 0;
             using (var connection = new SqlConnection(connectionString))
             {
                 connection.Open();
@@ -95,20 +96,19 @@ namespace ServerManager
                     {
                         foreach (var vehicle in catalog.vehicles)
                         {
-                            // VehicleId is the stable key used by the game. A catalog row without
-                            // it cannot safely be persisted, so ignore that malformed source row.
-                            if (vehicle == null || !vehicle.vehicleId.HasValue)
+                            if (!vehicle.vehicleId.HasValue)
                                 continue;
 
-                            var vehicleId = vehicle.vehicleId.Value;
-                            UpsertVehicle(connection, tx, vehicleId, vehicle);
+                            UpsertVehicle(connection, tx, vehicle);
                             vehicleCount++;
 
                             if (vehicle.upgrades == null) continue;
                             foreach (var upgrade in vehicle.upgrades)
                             {
-                                if (upgrade == null) continue;
-                                UpsertUpgrade(connection, tx, vehicleId, upgrade);
+                                if (upgrade == null || !upgrade.gradeIndex.HasValue)
+                                    continue;
+
+                                UpsertUpgrade(connection, tx, vehicle.vehicleId.Value, upgrade);
                                 upgradeCount++;
                             }
                         }
@@ -133,7 +133,7 @@ BEGIN
     CREATE TABLE dbo.vehicle_catalog
     (
         VehicleId INT NOT NULL CONSTRAINT PK_vehicle_catalog PRIMARY KEY,
-        RuntimeIndex INT NOT NULL,
+        RuntimeIndex INT NULL,
         Name NVARCHAR(255) NULL,
         Type VARCHAR(64) NULL,
         TypeString VARCHAR(128) NULL,
@@ -151,7 +151,7 @@ BEGIN
         SourceUpdatedAt DATETIME2 NOT NULL CONSTRAINT DF_vehicle_catalog_SourceUpdatedAt DEFAULT(SYSUTCDATETIME()),
         AdminUpdatedAt DATETIME2 NULL
     );
-    CREATE UNIQUE INDEX UX_vehicle_catalog_RuntimeIndex ON dbo.vehicle_catalog(RuntimeIndex);
+    CREATE UNIQUE INDEX UX_vehicle_catalog_RuntimeIndex ON dbo.vehicle_catalog(RuntimeIndex) WHERE RuntimeIndex IS NOT NULL;
     CREATE INDEX IX_vehicle_catalog_Name ON dbo.vehicle_catalog(Name);
     CREATE INDEX IX_vehicle_catalog_TypeString ON dbo.vehicle_catalog(TypeString);
 END;
@@ -172,8 +172,8 @@ BEGIN
         SourceSell INT NULL,
         CloseSell INT NULL,
         UpgradeMito INT NULL,
-        Efficiency INT NULL,
-        Capacity INT NULL,
+        Efficiency DECIMAL(10,3) NULL,
+        Capacity DECIMAL(10,3) NULL,
         RequiredLevel INT NULL,
         ServerPrice INT NULL,
         ServerSell INT NULL,
@@ -182,11 +182,29 @@ BEGIN
         CONSTRAINT PK_vehicle_upgrade_catalog PRIMARY KEY(VehicleId, GradeIndex),
         CONSTRAINT FK_vehicle_upgrade_catalog_vehicle FOREIGN KEY(VehicleId) REFERENCES dbo.vehicle_catalog(VehicleId)
     );
+END
+ELSE
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID(N'dbo.vehicle_upgrade_catalog')
+          AND name = N'Efficiency'
+          AND system_type_id = TYPE_ID(N'int')
+    )
+        ALTER TABLE dbo.vehicle_upgrade_catalog ALTER COLUMN Efficiency DECIMAL(10,3) NULL;
+
+    IF EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID(N'dbo.vehicle_upgrade_catalog')
+          AND name = N'Capacity'
+          AND system_type_id = TYPE_ID(N'int')
+    )
+        ALTER TABLE dbo.vehicle_upgrade_catalog ALTER COLUMN Capacity DECIMAL(10,3) NULL;
 END;";
             using (var cmd = new SqlCommand(sql, connection)) cmd.ExecuteNonQuery();
         }
 
-        private static void UpsertVehicle(SqlConnection connection, SqlTransaction tx, int vehicleId, CatalogVehicle v)
+        private static void UpsertVehicle(SqlConnection connection, SqlTransaction tx, CatalogVehicle v)
         {
             const string sql = @"
 MERGE dbo.vehicle_catalog AS target
@@ -200,8 +218,8 @@ VALUES(@VehicleId,@RuntimeIndex,@Name,@Type,@TypeString,@Sellable,@Grade,@BaseAc
 @BaseBoost,@RequiredLevel,@Level,1,SYSUTCDATETIME());";
             using (var cmd = new SqlCommand(sql, connection, tx))
             {
-                cmd.Parameters.AddWithValue("@VehicleId", vehicleId);
-                cmd.Parameters.AddWithValue("@RuntimeIndex", v.runtimeIndex);
+                cmd.Parameters.AddWithValue("@VehicleId", v.vehicleId.Value);
+                cmd.Parameters.AddWithValue("@RuntimeIndex", Db(v.runtimeIndex));
                 cmd.Parameters.AddWithValue("@Name", Db(v.name));
                 cmd.Parameters.AddWithValue("@Type", Db(v.type));
                 cmd.Parameters.AddWithValue("@TypeString", Db(v.typeString));
@@ -233,8 +251,8 @@ VALUES(@VehicleId,@GradeIndex,@GradeName,@Coupon,@Accel,@Speed,@Crash,@Boost,@So
             using (var cmd = new SqlCommand(sql, connection, tx))
             {
                 cmd.Parameters.AddWithValue("@VehicleId", vehicleId);
-                cmd.Parameters.AddWithValue("@GradeIndex", u.gradeIndex);
-                cmd.Parameters.AddWithValue("@GradeName", Db(string.IsNullOrWhiteSpace(u.gradeName) ? "V" + (u.gradeIndex + 1) : u.gradeName));
+                cmd.Parameters.AddWithValue("@GradeIndex", u.gradeIndex.Value);
+                cmd.Parameters.AddWithValue("@GradeName", Db(u.gradeName ?? ("V" + (u.gradeIndex.Value + 1))));
                 cmd.Parameters.AddWithValue("@Coupon", Db(u.coupon));
                 cmd.Parameters.AddWithValue("@Accel", Db(u.accel));
                 cmd.Parameters.AddWithValue("@Speed", Db(u.speed));
@@ -244,11 +262,19 @@ VALUES(@VehicleId,@GradeIndex,@GradeName,@Coupon,@Accel,@Speed,@Crash,@Boost,@So
                 cmd.Parameters.AddWithValue("@SourceSell", Db(u.sell));
                 cmd.Parameters.AddWithValue("@CloseSell", Db(u.closeSell));
                 cmd.Parameters.AddWithValue("@UpgradeMito", Db(u.upgradeMito));
-                cmd.Parameters.AddWithValue("@Efficiency", Db(u.efficiency));
-                cmd.Parameters.AddWithValue("@Capacity", Db(u.capacity));
+                AddDecimal(cmd, "@Efficiency", u.efficiency);
+                AddDecimal(cmd, "@Capacity", u.capacity);
                 cmd.Parameters.AddWithValue("@RequiredLevel", Db(u.requiredLevel));
                 cmd.ExecuteNonQuery();
             }
+        }
+
+        private static void AddDecimal(SqlCommand cmd, string name, decimal? value)
+        {
+            var parameter = cmd.Parameters.Add(name, SqlDbType.Decimal);
+            parameter.Precision = 10;
+            parameter.Scale = 3;
+            parameter.Value = value.HasValue ? (object)value.Value : DBNull.Value;
         }
 
         private static object Db(object value) => value ?? DBNull.Value;
