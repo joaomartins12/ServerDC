@@ -19,7 +19,6 @@ namespace ServerManager
             public bool ClearedBeforeStart;
         }
 
-        // Keep timers alive for the lifetime of the manager form.
         private static readonly List<Timer> Timers = new List<Timer>();
 
         public static void Attach(MainForm form)
@@ -66,8 +65,26 @@ namespace ServerManager
                 };
             }
 
-            // Also watch actual process transitions. This covers START ALL and any future
-            // launch path that does not originate from an individual server button.
+            // START ALL must also clear before any child process can emit its first line.
+            var startAll = FindButton(form, "START ALL");
+            if (startAll != null)
+            {
+                startAll.MouseDown += delegate(object sender, MouseEventArgs e)
+                {
+                    if (e.Button != MouseButtons.Left) return;
+                    if (!ManagerEnhancements.ClearVisibleLogsOnServerStart) return;
+
+                    foreach (var state in tracked)
+                    {
+                        // Do not erase a server that was already running before START ALL.
+                        if (IsRunning(state.Entry, state.ProcessField)) continue;
+                        Clear(state.LogBox);
+                        state.ClearedBeforeStart = true;
+                    }
+                };
+            }
+
+            // Actual STOPPED -> RUNNING transition watcher covers any future launch path.
             var timer = new Timer { Interval = 50 };
             timer.Tick += delegate
             {
@@ -76,11 +93,8 @@ namespace ServerManager
                     var running = IsRunning(state.Entry, state.ProcessField);
                     if (!state.WasRunning && running)
                     {
-                        if (ManagerEnhancements.ClearVisibleLogsOnServerStart)
-                        {
-                            if (!state.ClearedBeforeStart)
-                                Clear(state.LogBox);
-                        }
+                        if (ManagerEnhancements.ClearVisibleLogsOnServerStart && !state.ClearedBeforeStart)
+                            Clear(state.LogBox);
                         state.ClearedBeforeStart = false;
                     }
                     else if (state.WasRunning && !running)
@@ -100,6 +114,20 @@ namespace ServerManager
                 Timers.Remove(timer);
                 timer.Dispose();
             };
+        }
+
+        private static Button FindButton(Control root, string text)
+        {
+            foreach (Control child in root.Controls)
+            {
+                var button = child as Button;
+                if (button != null && string.Equals(button.Text, text, StringComparison.OrdinalIgnoreCase))
+                    return button;
+
+                var nested = FindButton(child, text);
+                if (nested != null) return nested;
+            }
+            return null;
         }
 
         private static bool IsRunning(object entry, FieldInfo processField)
