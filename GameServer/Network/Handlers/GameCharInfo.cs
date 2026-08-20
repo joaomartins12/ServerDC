@@ -49,10 +49,10 @@ namespace GameServer.Network.Handlers
             var statisticInfo = BuildStatisticInfo(character);
             var serial = user == null ? (ushort)0 : user.VehicleSerial;
 
-            // The User Information window does not request PlayerInfoReq (801) in this
-            // client build. Seed the same remote-player cache explicitly before packet 661.
-            // Packet 802 describes the player and packet 467 supplies the car/visual context
-            // the renderer normally receives from room/world visual updates.
+            // This v0.77 client does not issue PlayerInfoReq (801) when the User
+            // Information window is opened. Seed the remote visual cache explicitly
+            // before packet 661: 802 identifies the player, 467 supplies the car model,
+            // color and visual state.
             if (serial != 0 && character.ActiveCar != null)
             {
                 var playerInfo = PlayerVisualSnapshotBuilder.BuildPlayerInfo(serial, character);
@@ -148,6 +148,83 @@ namespace GameServer.Network.Handlers
             info.TotalAccel = resolved.Accel + equipped.Accel + levelBonus;
             info.TotalBoost = resolved.Boost + equipped.Boost + levelBonus;
             return info;
+        }
+    }
+}
+
+namespace GameServer.Network.Handlers.Join
+{
+    /// <summary>
+    /// Initializes the sticker subsystem. Sticker persistence is not implemented yet,
+    /// so return a valid empty list instead of dropping packet 1350.
+    /// </summary>
+    public class MyStickerList
+    {
+        [Packet((ushort)1350)]
+        public static void Handle(Packet packet)
+        {
+            var ack = new Packet((ushort)1351);
+            ack.Writer.Write(0);
+            packet.Sender.Send(ack);
+
+            var character = packet.Sender.User?.ActiveCharacter;
+            Log.Debug(
+                "MyStickerListAck: CID={0} Name={1} Count=0",
+                character == null ? 0UL : character.Id,
+                character == null ? "UNKNOWN" : character.Name);
+        }
+    }
+}
+
+namespace GameServer.Util
+{
+    /// <summary>
+    /// Single source of truth for the visual snapshot of another driver.
+    /// </summary>
+    public static class PlayerVisualSnapshotBuilder
+    {
+        public static XiPlayerInfo BuildPlayerInfo(ushort serial, Character character)
+        {
+            return new XiPlayerInfo(serial, character)
+            {
+                Age = 0,
+                VisualItem = new XiVisualItem { PlateString = string.Empty },
+                UseTime = 0.0f
+            };
+        }
+
+        public static RoomNotifyChangeAnswer BuildRoomNotifyChange(ushort serial, Character character)
+        {
+            return new RoomNotifyChangeAnswer
+            {
+                Serial = serial,
+                Age = 0,
+                CarAttr = BuildCarAttr(character == null ? null : character.ActiveCar),
+                PlayerInfo = BuildPlayerInfo(serial, character)
+            };
+        }
+
+        public static XiCarAttr BuildCarAttr(Vehicle vehicle)
+        {
+            var result = new XiCarAttr();
+            if (vehicle == null)
+                return result;
+
+            // XiCarAttr native layout: ushort Sort, ushort Body, byte Color[4].
+            // Sort 0 is a normal player vehicle; Body is the client vehicle model.
+            const ushort playerCarSort = 0;
+            var body = unchecked((ushort)vehicle.CarType);
+            var color = vehicle.Color != 0 ? vehicle.Color : vehicle.BaseColor;
+            var packed = (ulong)playerCarSort |
+                         ((ulong)body << 16) |
+                         ((ulong)color << 32);
+
+            result.___u0.__s0.Sort = playerCarSort;
+            result.___u0.__s0.Body = body;
+            result.___u0.__s1.lvalSortBody = unchecked((int)(uint)packed);
+            result.___u0.__s1.lvalColor = unchecked((int)color);
+            result.___u0.llval = unchecked((long)packed);
+            return result;
         }
     }
 }
