@@ -192,6 +192,9 @@ namespace GameServer.Network.Handlers
             var senderName = senderCharacter.Name;
             if (packet.Sender.User.GmFlag) senderName = "GM " + senderName;
 
+            var targetDisplayName = target.User.ActiveCharacter.Name;
+            if (target.User.GmFlag) targetDisplayName = "GM " + targetDisplayName;
+
             var mode = DeliveryMode;
             if (mode == "off")
             {
@@ -201,21 +204,37 @@ namespace GameServer.Network.Handlers
                 return;
             }
 
-            Packet outgoing;
+            Packet recipientPacket;
+            Packet senderEchoPacket;
             string stage;
+
             if (mode == "149")
             {
-                outgoing = new Packet(Packets.CmdPrivateChatMsg);
-                outgoing.Writer.WriteUnicodeStatic(senderName, 21, true);
-                outgoing.Writer.WriteUnicode(message ?? string.Empty);
+                recipientPacket = new Packet(Packets.CmdPrivateChatMsg);
+                recipientPacket.Writer.WriteUnicodeStatic(senderName, 21, true);
+                recipientPacket.Writer.WriteUnicode(message ?? string.Empty);
+
+                senderEchoPacket = new Packet(Packets.CmdPrivateChatMsg);
+                senderEchoPacket.Writer.WriteUnicodeStatic(targetDisplayName, 21, true);
+                senderEchoPacket.Writer.WriteUnicode(message ?? string.Empty);
                 stage = "OUT149";
             }
             else
             {
-                outgoing = new ChatMessageAnswer
+                recipientPacket = new ChatMessageAnswer
                 {
                     MessageType = mode,
                     SenderCharacterName = senderName,
+                    Message = message ?? string.Empty
+                }.CreatePacket();
+
+                // The sender must receive its own whisper too. For the local echo the
+                // player field is the conversation partner, not the sender itself;
+                // this matches how the client groups/displays private messages.
+                senderEchoPacket = new ChatMessageAnswer
+                {
+                    MessageType = mode,
+                    SenderCharacterName = targetDisplayName,
                     Message = message ?? string.Empty
                 }.CreatePacket();
                 stage = "OUT147_" + mode.ToUpperInvariant();
@@ -223,8 +242,13 @@ namespace GameServer.Network.Handlers
 
             WriteWhisperResearch(stage, packet.Sender.User.VehicleSerial,
                 target.User.VehicleSerial, senderCharacter.Name,
-                target.User.ActiveCharacter.Name, message, outgoing, "mode=" + mode);
-            target.Send(outgoing);
+                target.User.ActiveCharacter.Name, message, recipientPacket, "mode=" + mode + " direction=recipient");
+            target.Send(recipientPacket);
+
+            WriteWhisperResearch(stage + "_ECHO", packet.Sender.User.VehicleSerial,
+                packet.Sender.User.VehicleSerial, target.User.ActiveCharacter.Name,
+                senderCharacter.Name, message, senderEchoPacket, "mode=" + mode + " direction=sender");
+            packet.Sender.Send(senderEchoPacket);
 
             senderCharacter.LastMessageFrom = target.User.ActiveCharacter.Name;
             target.User.ActiveCharacter.LastMessageFrom = senderCharacter.Name;
