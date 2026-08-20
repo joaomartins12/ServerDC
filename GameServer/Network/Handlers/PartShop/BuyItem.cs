@@ -1,4 +1,5 @@
 ﻿using System;
+using MySql.Data.MySqlClient;
 using Shared;
 using Shared.Models;
 using Shared.Network;
@@ -35,15 +36,17 @@ namespace GameServer.Network.Handlers
             }
 
             Log.Info(
-                "BuyItem resolve: ProtocolTableIndex={0} -> CatalogIndex={1} Source={2} ItemId={3} Name={4}",
+                "BuyItem resolve: ProtocolTableIndex={0} -> CatalogIndex={1} Source={2} ItemId={3} Name={4} BuyValue={5} SellValue={6}",
                 protocolTableIndex,
                 catalogIndex,
                 isUseItem ? "UseItem" : "Item",
                 itemData.Id,
-                itemData.Name);
+                itemData.Name,
+                itemData.BuyValue,
+                itemData.SellValue);
 
-            int price;
-            if (!int.TryParse(itemData.BuyValue, out price) || itemData.BuyValue == "n/a")
+            int unitPrice;
+            if (itemData.BuyValue == "n/a" || !int.TryParse(itemData.BuyValue, out unitPrice))
             {
                 packet.Sender.SendDebugError($"No price ({itemData.BuyValue}) for item {itemData.Name}");
 #if !DEBUG
@@ -52,7 +55,7 @@ namespace GameServer.Network.Handlers
                 return;
             }
 
-            price = price * (int)buyItemPacket.Quantity;
+            var price = checked(unitPrice * (int)buyItemPacket.Quantity);
 
             var character = packet.Sender.User.ActiveCharacter;
             if (character.MitoMoney < price)
@@ -78,14 +81,17 @@ namespace GameServer.Network.Handlers
 
             var requiresPersist = false;
 
-            if (isUseItem && inventoryItem.TableIndex != protocolTableIndex)
+            // Inventory packets must keep the client's TableIndex, not the server XML runtime index.
+            // This matters for normal Items too: current ItemClient.tdf ordering no longer exactly
+            // matches Items.xml after the first entries.
+            if (inventoryItem.TableIndex != protocolTableIndex)
             {
                 var oldIndex = inventoryItem.TableIndex;
                 inventoryItem.TableIndex = protocolTableIndex;
                 requiresPersist = true;
 
                 Log.Info(
-                    "UseItem protocol index resolved: DbId={0} InvenIdx={1} CatalogIndex={2} OldTableIndex={3} ProtocolTableIndex={4} ItemId={5} Name={6}",
+                    "Client item index persisted: DbId={0} InvenIdx={1} CatalogIndex={2} OldTableIndex={3} ProtocolTableIndex={4} ItemId={5} Name={6}",
                     inventoryItem.DbId,
                     inventoryItem.InventoryIndex,
                     catalogIndex,
@@ -167,8 +173,8 @@ namespace GameServer.Network.Handlers
 
             var firstUseItemCatalogIndex = FindFirstUseItemCatalogIndex();
 
-            // UseItems namespace: 0x580 + (zeroBasedUseItemIndex + 1).
-            // Minimum valid UseItem protocol index is therefore 0x581.
+            // UseItems shop packets use their historical 0x580 namespace. Keep this path first,
+            // because client_item_lookup stores the global inventory index instead.
             if (firstUseItemCatalogIndex >= 0 && protocolTableIndex > UseItemProtocolBase)
             {
                 var useItemIndex = protocolTableIndex - UseItemProtocolBase - 1;
@@ -185,16 +191,75 @@ namespace GameServer.Network.Handlers
                 }
             }
 
-            // Normal Items.xml namespace uses the table index directly.
+            // Normal ItemClient.tdf indexes must be translated through the imported client table.
+            // ItemClient ordering differs from Items.xml, which previously made Small correct only
+            // by coincidence while Intro/Bfemil/Chorus resolved another server item and price.
+            string itemId;
+            if (TryGetClientItemId(protocolTableIndex, out itemId))
+            {
+                for (var i = 0; i < ServerMain.Items.Count; i++)
+                {
+                    if (!(ServerMain.Items[i] is ItemTable.Item))
+                        continue;
+                    if (!string.Equals(ServerMain.Items[i].Id, itemId, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    catalogIndex = i;
+                    itemData = ServerMain.Items[i];
+                    return true;
+                }
+
+                Log.Warning(
+                    "BuyItem client lookup resolved TableIndex={0} to ItemId={1}, but that ItemId was not found in Items.xml.",
+                    protocolTableIndex,
+                    itemId);
+            }
+
+            // Compatibility fallback for installations that have not imported ItemClient.tdf yet.
             if (protocolTableIndex < ServerMain.Items.Count &&
-                !(ServerMain.Items[protocolTableIndex] is UseItemTable.UseItem))
+                ServerMain.Items[protocolTableIndex] is ItemTable.Item)
             {
                 catalogIndex = protocolTableIndex;
                 itemData = ServerMain.Items[catalogIndex];
+                Log.Warning(
+                    "BuyItem using legacy direct index fallback for ClientTableIndex={0} ItemId={1}. Import ItemClient.tdf for authoritative mapping.",
+                    protocolTableIndex,
+                    itemData.Id);
                 return true;
             }
 
             return false;
+        }
+
+        private static bool TryGetClientItemId(int clientTableIndex, out string itemId)
+        {
+            itemId = null;
+
+            try
+            {
+                using (var cmd = new MySqlCommand(@"
+IF OBJECT_ID(N'dbo.client_item_lookup', N'U') IS NOT NULL
+BEGIN
+    SELECT TOP (1) ItemId
+    FROM dbo.client_item_lookup
+    WHERE ClientTableIndex=@tableIndex
+      AND (SourceFile LIKE '%ItemClient.tdf' OR SourceTable=N'client_Item');
+END", GameServer.Instance.Database.Connection))
+                {
+                    cmd.Parameters.AddWithValue("@tableIndex", clientTableIndex);
+                    var value = cmd.ExecuteScalar();
+                    if (value == null || value == DBNull.Value)
+                        return false;
+
+                    itemId = Convert.ToString(value).Trim();
+                    return !string.IsNullOrWhiteSpace(itemId);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Warning("BuyItem client item lookup failed for TableIndex={0}: {1}", clientTableIndex, ex.Message);
+                return false;
+            }
         }
 
         private static int FindFirstUseItemCatalogIndex()
