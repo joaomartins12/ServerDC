@@ -15,6 +15,10 @@ namespace GameServer.Network.Handlers.Dealership
 {
     public class BuyCar
     {
+        // Confirmed from a real client purchase of Mittron Fuel (5L):
+        // protocol TableIndex = 0x580 + (zero-based UseItems.xml index + 1).
+        private const int UseItemProtocolBase = 0x580;
+
         [Packet(Packets.CmdBuyCar)]
         public static void Handle(Packet packet)
         {
@@ -130,14 +134,49 @@ namespace GameServer.Network.Handlers.Dealership
                 return;
             }
 
-            // Key creation is deliberately disabled while the client TableIndex relation is
-            // under research. Earlier guesses produced unrelated Items.xml entries in the UI.
-            // We now log the raw UseItems candidates and generate VehicleKeyResearch.csv at
-            // server startup; once the mapping is confirmed we can grant the exact key safely.
+            // The vehicle-to-key relation is encoded in UseItems.xml: for category=car keys,
+            // the original maxstack field matches the vehicle CarType. The client does not use
+            // the merged Items+UseItems index for these entries; UseItems have their own protocol
+            // namespace, confirmed by the Mittron Fuel purchase capture.
             VehicleKeyResearchExporter.LogCandidates(buyCarPacket.CarType, vehicleData.Name);
-            Log.Warning(
-                "BuyCar key grant skipped (research mode): CarId={0} CarType={1} Vehicle='{2}'. See Logs\\Catalogs\\VehicleKeyResearch.csv.",
-                newVehicle.CarId, newVehicle.CarType, vehicleData.Name);
+
+            InventoryItem grantedKey;
+            BasicItem keyData;
+            int keyCatalogIndex;
+            int keyUseItemIndex;
+            int keyProtocolTableIndex;
+            var keyGranted = TryGrantVehicleKey(
+                character,
+                newVehicle,
+                out grantedKey,
+                out keyData,
+                out keyCatalogIndex,
+                out keyUseItemIndex,
+                out keyProtocolTableIndex);
+
+            if (keyGranted)
+            {
+                Log.Info(
+                    "BuyCar key granted: CID={0} CarId={1} CarType={2} Vehicle='{3}' CatalogIndex={4} UseItemIndex={5} ProtocolTableIndex={6} ItemId={7} Name='{8}' InvenIdx={9}",
+                    character.Id,
+                    newVehicle.CarId,
+                    newVehicle.CarType,
+                    vehicleData.Name,
+                    keyCatalogIndex,
+                    keyUseItemIndex,
+                    keyProtocolTableIndex,
+                    keyData.Id,
+                    keyData.Name,
+                    grantedKey.InventoryIndex);
+            }
+            else
+            {
+                Log.Warning(
+                    "BuyCar key not granted: CarId={0} CarType={1} Vehicle='{2}'. No matching category=car key with original maxstack={1} was found or persistence failed.",
+                    newVehicle.CarId,
+                    newVehicle.CarType,
+                    vehicleData.Name);
+            }
 
             var carInfo = new XiStrCarInfo
             {
@@ -171,13 +210,13 @@ namespace GameServer.Network.Handlers.Dealership
                 Price = price
             }.CreatePacket());
 
-            packet.Sender.Send(new ItemListAnswer
-            {
-                InventoryItems = character.InventoryItems.OrderBy(i => i.InventoryIndex).ToArray()
-            }.CreatePacket());
+            // GiveItem queues an ItemMod. Flush it only after its TableIndex has been converted
+            // to the confirmed UseItem protocol namespace so the client sees the correct key.
+            if (keyGranted)
+                character.FlushItemModBuffer(packet.Sender);
 
             Log.Info(
-                "BuyCar complete: CID={0} CarId={1} RuntimeIndex={2} CarType={3} Vehicle={4} GradeIndex={5} Grade=V{6} CurrentCarID={7} GarageCount={8} Price={9} MitoRemaining={10} KeyGranted=false KeyResearch=true",
+                "BuyCar complete: CID={0} CarId={1} RuntimeIndex={2} CarType={3} Vehicle={4} GradeIndex={5} Grade=V{6} CurrentCarID={7} GarageCount={8} Price={9} MitoRemaining={10} KeyGranted={11}",
                 character.Id,
                 newVehicle.CarId,
                 vehicleRuntimeIndex,
@@ -188,7 +227,101 @@ namespace GameServer.Network.Handlers.Dealership
                 character.ActiveVehicleId,
                 character.GarageVehicles.Count,
                 price,
-                character.MitoMoney);
+                character.MitoMoney,
+                keyGranted);
+        }
+
+        private static bool TryGrantVehicleKey(
+            Character character,
+            Vehicle vehicle,
+            out InventoryItem grantedKey,
+            out BasicItem keyData,
+            out int keyCatalogIndex,
+            out int keyUseItemIndex,
+            out int keyProtocolTableIndex)
+        {
+            grantedKey = null;
+            keyData = null;
+            keyCatalogIndex = -1;
+            keyUseItemIndex = -1;
+            keyProtocolTableIndex = -1;
+
+            if (character == null || vehicle == null || ServerMain.Items == null)
+                return false;
+
+            var firstUseItemCatalogIndex = FindFirstUseItemCatalogIndex();
+            if (firstUseItemCatalogIndex < 0)
+                return false;
+
+            for (var i = firstUseItemCatalogIndex; i < ServerMain.Items.Count; i++)
+            {
+                var useItem = ServerMain.Items[i] as UseItemTable.UseItem;
+                if (useItem == null)
+                    continue;
+
+                if (!string.Equals(useItem.Category, "car", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (string.IsNullOrWhiteSpace(useItem.Name) ||
+                    !useItem.Name.EndsWith("key", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                uint mappedCarType;
+                if (!uint.TryParse(useItem.MaxStack, NumberStyles.Integer, CultureInfo.InvariantCulture, out mappedCarType) ||
+                    mappedCarType != vehicle.CarType)
+                    continue;
+
+                keyCatalogIndex = i;
+                keyUseItemIndex = i - firstUseItemCatalogIndex;
+                keyProtocolTableIndex = checked(UseItemProtocolBase + keyUseItemIndex + 1);
+                keyData = useItem;
+                break;
+            }
+
+            if (keyCatalogIndex < 0 || keyData == null)
+                return false;
+
+            grantedKey = character.GiveItem(
+                GameServer.Instance.Database.Connection,
+                keyCatalogIndex,
+                1);
+            if (grantedKey == null)
+                return false;
+
+            // GiveItem initially stores the merged server catalog index. Replace it with the
+            // TableIndex namespace understood by the client before any ItemMod/ItemList is sent.
+            grantedKey.TableIndex = keyProtocolTableIndex;
+            grantedKey.CarId = vehicle.CarId;
+            grantedKey.StackNum = 1;
+            grantedKey.State = 0;
+            grantedKey.Slot = 0;
+            grantedKey.Belonging = 0;
+
+            if (!ItemModel.Update(GameServer.Instance.Database.Connection, grantedKey))
+            {
+                Log.Error(
+                    "BuyCar key persistence update failed: DbId={0} CarId={1} ProtocolTableIndex={2}.",
+                    grantedKey.DbId,
+                    vehicle.CarId,
+                    keyProtocolTableIndex);
+                return false;
+            }
+
+            return true;
+        }
+
+        private static int FindFirstUseItemCatalogIndex()
+        {
+            if (ServerMain.Items == null)
+                return -1;
+
+            for (var i = 0; i < ServerMain.Items.Count; i++)
+            {
+                if (ServerMain.Items[i] is UseItemTable.UseItem)
+                    return i;
+            }
+
+            return -1;
         }
 
         private static int FindVehicleRuntimeIndex(uint carType)
