@@ -23,6 +23,12 @@ namespace GameServer.Network.Handlers.Join
                 return;
             }
 
+            // CharacterModel predates the profile/license persistence columns. Load the
+            // extended driver record before the character is serialized to the client.
+            var currentLicenseId = CharacterProgressModel.LoadPersistentStats(
+                GameServer.Instance.Database.Connection,
+                character);
+
             var user = AccountModel.Retrieve(GameServer.Instance.Database.Connection, character.Uid);
             AccountModel.SetActiveCharacter(GameServer.Instance.Database.Connection, user, character.Id);
 
@@ -33,10 +39,6 @@ namespace GameServer.Network.Handlers.Join
                 GameServer.Instance.Database.Connection,
                 user.Id);
 
-            // Load the complete runtime state before the client receives its first StatUpdate.
-            // Previously the initial packet was a zero-filled research packet that exposed
-            // placeholder values such as 1000/9001/9002/9003 in the F2 profile until the
-            // inventory was opened and the state happened to be refreshed.
             var vehicles = VehicleModel.Retrieve(GameServer.Instance.Database.Connection, character.Id);
             character.GarageVehicles.Clear();
             character.GarageVehicles.AddRange(vehicles);
@@ -49,6 +51,16 @@ namespace GameServer.Network.Handlers.Join
 
             if (packet.Sender.User.Permission >= UserPermission.Administrator)
                 character.PartyType = 65;
+
+            Log.Debug(
+                "LoadCharThread profile: CID={0} License={1} Mileage={2:0.##} PvP={3}/{4} TeamPvP={5}/{6}",
+                character.Id,
+                currentLicenseId,
+                character.TotalDistance,
+                character.PvpWinCount,
+                character.PvpCount,
+                character.TeamPvpWinCount,
+                character.TeamPvpCount);
 
             var ack = new LoadCharThreadAnswer
             {
@@ -130,9 +142,6 @@ namespace GameServer.Network.Handlers.Join
                 MitronEfficiency = stats.MitronEfficiency
             };
 
-            // Keep the initial packet identical to CmdCheckStat, including any active
-            // protocol research configuration, so the client never starts with a stale
-            // or structurally different stat layout.
             VehiclePerformanceProbe.Apply(statAck);
 
             QuietLog.Write(
