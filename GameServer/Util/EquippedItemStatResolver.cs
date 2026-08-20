@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using Shared;
+using Shared.Models;
 using Shared.Objects;
 using Shared.Objects.GameDatas;
 using Shared.Util;
@@ -18,20 +19,42 @@ namespace GameServer.Util
 
     internal static class EquippedItemStatResolver
     {
+        private static readonly object CacheLock = new object();
+        private static Dictionary<int, ItemTable.Item> _clientTableIndexToDefinition;
+
         public static EquippedItemStats Resolve(Character character, Vehicle vehicle)
         {
             var result = new EquippedItemStats();
             if (character == null || vehicle == null || character.InventoryItems == null || ServerMain.Items == null)
                 return result;
 
+            EnsureClientItemCache();
+
             foreach (var inventoryItem in character.InventoryItems)
             {
                 if (inventoryItem == null || inventoryItem.State != 1 || inventoryItem.CarId != vehicle.CarId)
                     continue;
-                if (inventoryItem.TableIndex < 0 || inventoryItem.TableIndex >= ServerMain.Items.Count)
-                    continue;
 
-                var definition = ServerMain.Items[inventoryItem.TableIndex] as ItemTable.Item;
+                ItemTable.Item definition;
+                if (_clientTableIndexToDefinition == null ||
+                    !_clientTableIndexToDefinition.TryGetValue(inventoryItem.TableIndex, out definition) ||
+                    definition == null)
+                {
+                    // Compatibility fallback for installations that have not imported the client
+                    // TDF data yet. This is only reliable when server XML ordering equals ItemClient.
+                    definition = inventoryItem.TableIndex >= 0 && inventoryItem.TableIndex < ServerMain.Items.Count
+                        ? ServerMain.Items[inventoryItem.TableIndex] as ItemTable.Item
+                        : null;
+
+                    if (definition != null)
+                    {
+                        Log.Warning(
+                            "Equipped part fallback mapping used: ClientTableIndex={0} -> ServerItemId={1}. Import ItemClient.tdf to dbo.client_item_lookup for authoritative mapping.",
+                            inventoryItem.TableIndex,
+                            definition.Id);
+                    }
+                }
+
                 if (definition == null)
                     continue;
 
@@ -39,9 +62,8 @@ namespace GameServer.Util
                 if (!int.TryParse(definition.BasePoints, NumberStyles.Integer, CultureInfo.InvariantCulture, out basePoints))
                     basePoints = 0;
 
-                // UpgradePoint is already persisted per inventory instance and represents the
-                // extra stat points gained by upgrading the part. BasePoints is the item's
-                // native contribution from Items.xml.
+                // UpgradePoint is an explicit per-instance upgrade bonus. A normal shop part with
+                // UpgradePoint=0 contributes exactly the BasePoints shown by that item's client data.
                 var points = basePoints + Math.Max(0, inventoryItem.UpgradePoint);
                 var category = (definition.Category ?? string.Empty).Trim().ToLowerInvariant();
 
@@ -65,7 +87,7 @@ namespace GameServer.Util
                 }
 
                 Log.Debug(
-                    "Equipped part stats: InvenIdx={0} TableIndex={1} Id={2} Name={3} Category={4} BasePoints={5} UpgradePoint={6} Applied={7}",
+                    "Equipped part stats: InvenIdx={0} ClientTableIndex={1} ResolvedItemId={2} Name={3} Category={4} BasePoints={5} UpgradePoint={6} Applied={7}",
                     inventoryItem.InventoryIndex,
                     inventoryItem.TableIndex,
                     definition.Id,
@@ -77,6 +99,58 @@ namespace GameServer.Util
             }
 
             return result;
+        }
+
+        private static void EnsureClientItemCache()
+        {
+            if (_clientTableIndexToDefinition != null)
+                return;
+
+            lock (CacheLock)
+            {
+                if (_clientTableIndexToDefinition != null)
+                    return;
+
+                var map = new Dictionary<int, ItemTable.Item>();
+                try
+                {
+                    var itemById = new Dictionary<string, ItemTable.Item>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var basicItem in ServerMain.Items)
+                    {
+                        var part = basicItem as ItemTable.Item;
+                        if (part == null || string.IsNullOrWhiteSpace(part.Id))
+                            continue;
+                        itemById[part.Id] = part;
+                    }
+
+                    using (var cmd = new MySqlCommand(@"
+IF OBJECT_ID(N'dbo.client_item_lookup', N'U') IS NOT NULL
+BEGIN
+    SELECT ClientTableIndex, ItemId
+    FROM dbo.client_item_lookup
+    WHERE ItemId IS NOT NULL;
+END", GameServer.Instance.Database.Connection))
+                    using (var reader = cmd.ExecuteReader())
+                    {
+                        while (reader.Read())
+                        {
+                            var clientTableIndex = Convert.ToInt32(reader[0], CultureInfo.InvariantCulture);
+                            var itemId = Convert.ToString(reader[1], CultureInfo.InvariantCulture);
+                            ItemTable.Item definition;
+                            if (!string.IsNullOrWhiteSpace(itemId) && itemById.TryGetValue(itemId, out definition))
+                                map[clientTableIndex] = definition;
+                        }
+                    }
+
+                    Log.Info("Client item stat mapping loaded: {0} ItemClient indexes resolved to server item definitions.", map.Count);
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning("Client item stat mapping unavailable: {0}", ex.Message);
+                }
+
+                _clientTableIndexToDefinition = map;
+            }
         }
     }
 }
