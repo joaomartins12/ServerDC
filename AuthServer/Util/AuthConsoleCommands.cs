@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Text;
 using Shared;
 using Shared.Models;
 using Shared.Objects;
@@ -15,9 +14,13 @@ namespace AuthServer.Util
         {
             Add("shutdown", "<seconds>", "Orders all servers to shut down", HandleShutDown);
 
-            // Account commands
-            Add("register", "Interactive account registration", HandleRegister);
+            // Account commands. Both slash and non-slash forms are supported so the
+            // ServerManager command box can present familiar /command syntax.
+            Add("register", "<username> <password>", "Creates an account", HandleRegister);
+            Add("/register", "<username> <password>", "Creates an account", HandleRegister);
             Add("create", "<username> <password>", "Creates an account with the specified password",
+                HandleAccountCreate);
+            Add("/create", "<username> <password>", "Creates an account with the specified password",
                 HandleAccountCreate);
             Add("passwd", "<username> <password>", "Changes password of account", HandlePasswd);
             Add("ban", "<username> (days)", "Bans the account", HandleBanAccount);
@@ -27,119 +30,10 @@ namespace AuthServer.Util
 
         private static CommandResult HandleRegister(string command, IList<string> args)
         {
-            Console.WriteLine();
-            Console.WriteLine("========================================");
-            Console.WriteLine("       Drift City - Register Account");
-            Console.WriteLine("========================================");
-
-            Console.Write("Login ID: ");
-            var accountName = (Console.ReadLine() ?? string.Empty).Trim();
-
-            if (string.IsNullOrWhiteSpace(accountName))
-            {
-                Log.Error("Login ID cannot be empty.");
-                return CommandResult.Fail;
-            }
-
-            if (accountName.Length > 32)
-            {
-                Log.Error("Login ID is too long. Maximum length is 32 characters.");
-                return CommandResult.Fail;
-            }
-
-            if (AccountModel.AccountExists(AuthServer.Instance.Database.Connection, accountName))
-            {
-                Log.Error("Account '{0}' already exists.", accountName);
-                return CommandResult.Fail;
-            }
-
-            Console.Write("Password: ");
-            var password = ReadPassword();
-
-            if (string.IsNullOrEmpty(password))
-            {
-                Log.Error("Password cannot be empty.");
-                return CommandResult.Fail;
-            }
-
-            if (password.Length > 64)
-            {
-                Log.Error("Password is too long. Maximum length is 64 characters.");
-                return CommandResult.Fail;
-            }
-
-            Console.Write("Confirm password: ");
-            var confirmPassword = ReadPassword();
-
-            if (!string.Equals(password, confirmPassword, StringComparison.Ordinal))
-            {
-                Log.Error("Passwords do not match. Account was not created.");
-                return CommandResult.Fail;
-            }
-
-            try
-            {
-                var userId = AccountModel.CreateAccount(
-                    AuthServer.Instance.Database.Connection,
-                    "127.0.0.1",
-                    accountName,
-                    password);
-
-                if (userId <= 0)
-                {
-                    Log.Error("Failed to create account '{0}'.", accountName);
-                    return CommandResult.Fail;
-                }
-
-                Console.WriteLine();
-                Log.Info("Account created successfully!");
-                Log.Info("  UID      : {0}", userId);
-                Log.Info("  Login ID : {0}", accountName);
-                Log.Info("You can now use this account to log in to Drift City.");
-                Console.WriteLine();
-
-                return CommandResult.Okay;
-            }
-            catch (Exception ex)
-            {
-                Log.Error("Failed to create account '{0}': {1}", accountName, ex.Message);
-                return CommandResult.Fail;
-            }
-        }
-
-        private static string ReadPassword()
-        {
-            var password = new StringBuilder();
-
-            while (true)
-            {
-                var key = Console.ReadKey(true);
-
-                if (key.Key == ConsoleKey.Enter)
-                {
-                    Console.WriteLine();
-                    break;
-                }
-
-                if (key.Key == ConsoleKey.Backspace)
-                {
-                    if (password.Length > 0)
-                    {
-                        password.Length--;
-                        Console.Write("\b \b");
-                    }
-
-                    continue;
-                }
-
-                if (char.IsControl(key.KeyChar))
-                    continue;
-
-                password.Append(key.KeyChar);
-                Console.Write('*');
-            }
-
-            return password.ToString();
+            // AuthServer is normally launched by DCServerManager with redirected stdin.
+            // Console.ReadKey() cannot be used in that mode, so registration is entirely
+            // argument-based: /register <username> <password>.
+            return CreateAccountFromArgs(args);
         }
 
         private static CommandResult HandleSetPerm(string command, IList<string> args)
@@ -147,7 +41,6 @@ namespace AuthServer.Util
             if(args.Count < 3)
                 return CommandResult.InvalidArgument;
             var accountName = args[1];
-            var strPerm = args[2];
 
             var user = AccountModel.Retrieve(AuthServer.Instance.Database.Connection, accountName);
             if (user == null)
@@ -252,11 +145,43 @@ namespace AuthServer.Util
 
         private static CommandResult HandleAccountCreate(string command, IList<string> args)
         {
-            if (args.Count < 3)
-                return CommandResult.InvalidArgument;
+            return CreateAccountFromArgs(args);
+        }
 
-            var accountName = args[1];
-            var password = args[2];
+        private static CommandResult CreateAccountFromArgs(IList<string> args)
+        {
+            if (args.Count < 3)
+            {
+                Log.Error("Usage: /register <username> <password>");
+                return CommandResult.InvalidArgument;
+            }
+
+            var accountName = (args[1] ?? string.Empty).Trim();
+            var password = args[2] ?? string.Empty;
+
+            if (string.IsNullOrWhiteSpace(accountName))
+            {
+                Log.Error("Login ID cannot be empty.");
+                return CommandResult.Fail;
+            }
+
+            if (accountName.Length > 32)
+            {
+                Log.Error("Login ID is too long. Maximum length is 32 characters.");
+                return CommandResult.Fail;
+            }
+
+            if (string.IsNullOrEmpty(password))
+            {
+                Log.Error("Password cannot be empty.");
+                return CommandResult.Fail;
+            }
+
+            if (password.Length > 64)
+            {
+                Log.Error("Password is too long. Maximum length is 64 characters.");
+                return CommandResult.Fail;
+            }
 
             if (AccountModel.AccountExists(AuthServer.Instance.Database.Connection, accountName))
             {
@@ -264,20 +189,28 @@ namespace AuthServer.Util
                 return CommandResult.Fail;
             }
 
-            var userId = AccountModel.CreateAccount(
-                AuthServer.Instance.Database.Connection,
-                "127.0.0.1",
-                accountName,
-                password);
-
-            if (userId <= 0)
+            try
             {
-                Log.Error("Failed to create account '{0}'.", accountName);
+                var userId = AccountModel.CreateAccount(
+                    AuthServer.Instance.Database.Connection,
+                    "127.0.0.1",
+                    accountName,
+                    password);
+
+                if (userId <= 0)
+                {
+                    Log.Error("Failed to create account '{0}'.", accountName);
+                    return CommandResult.Fail;
+                }
+
+                Log.Info("Account '{0}' created successfully with UID {1}.", accountName, userId);
+                return CommandResult.Okay;
+            }
+            catch (Exception ex)
+            {
+                Log.Error("Failed to create account '{0}': {1}", accountName, ex.Message);
                 return CommandResult.Fail;
             }
-
-            Log.Info("Account '{0}' created successfully with UID {1}.", accountName, userId);
-            return CommandResult.Okay;
         }
 
         private static CommandResult HandleShutDown(string command, IList<string> args)
@@ -285,7 +218,6 @@ namespace AuthServer.Util
             if (args.Count < 2)
                 return CommandResult.InvalidArgument;
 
-            // Get time
             int time;
             if (!int.TryParse(args[1], out time))
                 return CommandResult.InvalidArgument;
