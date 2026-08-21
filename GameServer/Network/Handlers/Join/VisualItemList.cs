@@ -1,4 +1,5 @@
-﻿using GameServer.Util;
+﻿using System.Collections.Generic;
+using GameServer.Util;
 using Shared.Network;
 using Shared.Network.GameServer;
 using Shared.Objects;
@@ -47,13 +48,13 @@ namespace GameServer.Network.Handlers.Join
             Log.Debug("VisualItemListAck: CID={0} Count={1}", character.Id, answer.Items.Count);
             packet.Sender.Send(answer.CreatePacket());
 
-            // Retail keeps inventory state (1201) and the rendered local vehicle on
-            // separate paths. Loading the visual list alone populates the inventory but
-            // does not force the already-created car object to rebuild. This is why a
-            // saved paint/tint only became visible after toggling a body kit. Once 1201
-            // has populated the client's VS inventory, immediately refresh the active
-            // XiStrCarInfo through packet 1061.
+            // 1201 fills the VS inventory. 1061 then writes the active XiStrCarInfo
+            // (including persisted paint) into the local car. Finally replay the active
+            // car's VS rows through retail 1202 so its visual refresh callback runs AFTER
+            // the new color has already been stored. This mirrors the effect observed in
+            // the retail client when toggling an aero item after changing paint/tint.
             SendInitialLocalVisualRefresh(packet, user, character);
+            SendPostCarInfoVisualRefresh(packet, character, answer.Items);
         }
 
         private static void SendInitialLocalVisualRefresh(Packet packet, User user, Character character)
@@ -62,10 +63,6 @@ namespace GameServer.Network.Handlers.Join
                 character.ActiveCar == null || user.VehicleSerial == 0)
                 return;
 
-            // Resolve the equipped paint before serializing XiStrCarInfo so reload/login
-            // starts with the same persisted color that subsequent runtime visual updates
-            // use. VisualState=1 is the retail dirty/active state used here deliberately to
-            // make the client invalidate and rebuild the local render object after 1201.
             PlayerVisualSnapshotBuilder.ApplyActivePaint(character);
 
             var vehicle = character.ActiveCar;
@@ -98,6 +95,37 @@ namespace GameServer.Network.Handlers.Join
             Log.Debug(
                 "Initial visual refresh: CID={0} Serial={1} CarId={2} Color={3} VisualState=1 -> 1201+1061",
                 character.Id, user.VehicleSerial, vehicle.CarId, vehicle.Color);
+        }
+
+        private static void SendPostCarInfoVisualRefresh(Packet packet, Character character,
+            IEnumerable<InventoryVisualItem> inventory)
+        {
+            if (packet == null || packet.Sender == null || character == null || character.ActiveCar == null)
+                return;
+
+            var activeCarId = character.ActiveCar.CarId;
+            var rows = new List<InventoryVisualItem>();
+            foreach (var item in inventory)
+            {
+                if (item != null && item.CarId == activeCarId)
+                    rows.Add(item);
+            }
+
+            if (rows.Count == 0)
+                return;
+
+            var delta = new Packet((ushort)1202);
+            delta.Writer.Write(rows.Count);
+            foreach (var item in rows)
+            {
+                delta.Writer.Write(item);
+                delta.Writer.Write(0); // add/update
+            }
+            packet.Sender.Send(delta);
+
+            Log.Debug(
+                "Initial visual post-refresh: CID={0} CarId={1} Count={2} -> 1061+1202",
+                character.Id, activeCarId, rows.Count);
         }
     }
 }
