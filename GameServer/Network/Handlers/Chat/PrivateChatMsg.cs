@@ -128,17 +128,18 @@ namespace GameServer.Network.Handlers
                 return;
             }
 
-            // DriftCity retail uses 1=From and 2=To for PrivateChatMsgAck.
-            // Direction 0 is a different/default presentation path and produces bad
-            // click-target metadata (the client selects "Private" instead of the player).
+            // Packet 150 keeps the local player in Name and the remote/clickable player
+            // in Player. The client renders/click-targets the Player field. Sending these
+            // reversed made the recipient see/click their own name (Port/Portuga) and the
+            // input fell back to *Private/*Priv instead of targeting the remote player.
             var recipientPacket = CreatePrivateChatAck(
-                senderCharacter.Name,
                 target.User.ActiveCharacter.Name,
+                senderCharacter.Name,
                 PrivateDirectionFrom,
                 message);
             var senderEchoPacket = CreatePrivateChatAck(
-                target.User.ActiveCharacter.Name,
                 senderCharacter.Name,
+                target.User.ActiveCharacter.Name,
                 PrivateDirectionTo,
                 message);
 
@@ -149,7 +150,7 @@ namespace GameServer.Network.Handlers
 
             WriteWhisperResearch("OUT150", packet.Sender.User.VehicleSerial, target.User.VehicleSerial,
                 senderCharacter.Name, target.User.ActiveCharacter.Name, message, recipientPacket,
-                "native PrivateChatMsgAck direction=1 From recipient / 2 To sender; len=characters; message=NUL-terminated");
+                "native PrivateChatMsgAck Name=local Player=remote direction=1 From / 2 To; len=characters; message=NUL-terminated");
             Log.Debug("Whisper: {0} -> {1}: {2}", senderCharacter.Name, target.User.ActiveCharacter.Name, message);
         }
 
@@ -162,10 +163,6 @@ namespace GameServer.Network.Handlers
             ack.Writer.WriteUnicodeStatic(name ?? string.Empty, 10);
             ack.Writer.WriteUnicodeStatic(player ?? string.Empty, 20);
             ack.Writer.Write(direction);
-
-            // DriftCity.exe sub_524F30 reads Message at +0x44 as a NUL-terminated
-            // UTF-16 string, while Len at +0x42 is the character count used in its
-            // expected packet-size calculation. Keep Len=text.Length and include NUL.
             ack.Writer.Write((ushort)text.Length);
             ack.Writer.Write(encoded);
             return ack;
