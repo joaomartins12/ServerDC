@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Threading;
 using GameServer.Util;
 using Shared.Models;
 using Shared.Network;
@@ -13,7 +12,6 @@ namespace GameServer.Network.Handlers.Join
     {
         private const ushort LicenseInfoRes = 806;
         private const int RookieLicenseId = 7000;
-        private const int IdentityRefreshSeconds = 20;
 
         private sealed class LiveAreaState
         {
@@ -25,11 +23,6 @@ namespace GameServer.Network.Handlers.Join
         private static readonly object PresenceSync = new object();
         private static readonly Dictionary<ushort, LiveAreaState> LiveAreas =
             new Dictionary<ushort, LiveAreaState>();
-        private static readonly Timer IdentityRefreshTimer = new Timer(
-            RefreshVisiblePlayers,
-            null,
-            TimeSpan.FromSeconds(IdentityRefreshSeconds),
-            TimeSpan.FromSeconds(IdentityRefreshSeconds));
 
         [Packet(Packets.CmdJoinArea)]
         public static void Handle(Packet packet)
@@ -50,9 +43,6 @@ namespace GameServer.Network.Handlers.Join
 
             lock (PresenceSync)
             {
-                // A logout/relogin allocates a new VehicleSerial. Never keep an older
-                // LiveArea entry for the same character, otherwise the heartbeat can
-                // revive stale identities after the player has already left.
                 var stale = new List<ushort>();
                 foreach (var pair in LiveAreas)
                 {
@@ -60,6 +50,7 @@ namespace GameServer.Network.Handlers.Join
                         string.Equals(pair.Value.Name, character.Name, StringComparison.OrdinalIgnoreCase))
                         stale.Add(pair.Key);
                 }
+
                 foreach (var staleSerial in stale)
                 {
                     LiveAreas.Remove(staleSerial);
@@ -78,6 +69,11 @@ namespace GameServer.Network.Handlers.Join
             Log.Debug("LiveArea: JOIN Name={0} Serial={1} AreaId={2} License={3}",
                 character.Name, serial, joinAreaPacket.AreaId, license);
 
+            // Identity packets are discovery/state packets, not movement heartbeats.
+            // Re-sending 802 periodically makes v0.77a rebuild/reposition the remote
+            // car, causing visible blinking and teleport-like movement. Send 802/806
+            // only when the player actually joins/rejoins an area; packet 541 remains
+            // the sole continuous movement stream.
             SyncVisiblePlayers(packet.Sender, joinAreaPacket.AreaId, "join");
             global::GameServer.Network.Handlers.Social.FriendList.PushLiveUpdate(character.Name);
         }
@@ -149,39 +145,6 @@ namespace GameServer.Network.Handlers.Join
                     continue;
 
                 SendIdentityPair(joiningClient, joiningState, other, otherState, reason);
-            }
-        }
-
-        private static void RefreshVisiblePlayers(object ignored)
-        {
-            try
-            {
-                var clients = new List<Client>();
-                foreach (var client in GameServer.Instance.Server.GetClients())
-                {
-                    if (IsCurrentSerialOwner(client) && client.User.ActiveCharacter != null)
-                        clients.Add(client);
-                }
-
-                for (var i = 0; i < clients.Count; i++)
-                {
-                    LiveAreaState aState;
-                    if (!TryGetState(clients[i].User.VehicleSerial, out aState)) continue;
-
-                    for (var j = i + 1; j < clients.Count; j++)
-                    {
-                        LiveAreaState bState;
-                        if (!TryGetState(clients[j].User.VehicleSerial, out bState) ||
-                            bState.AreaId != aState.AreaId)
-                            continue;
-
-                        SendIdentityPair(clients[i], aState, clients[j], bState, "heartbeat");
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Log.Warning("LiveArea identity heartbeat failed: {0}", ex.Message);
             }
         }
 
