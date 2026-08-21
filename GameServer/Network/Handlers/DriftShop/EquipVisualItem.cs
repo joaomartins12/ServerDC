@@ -13,6 +13,39 @@ namespace GameServer.Network.Handlers
 {
     public static class EquipVisualItem
     {
+        private static readonly object UnequipGuardSync = new object();
+        private static readonly Dictionary<string, DateTime> UnequipGuardUntil = new Dictionary<string, DateTime>();
+        private static readonly TimeSpan UnequipGuardWindow = TimeSpan.FromSeconds(2);
+
+        private static string UnequipGuardKey(ulong characterId, uint inventoryIndex)
+        {
+            return characterId.ToString(CultureInfo.InvariantCulture) + ":" + inventoryIndex.ToString(CultureInfo.InvariantCulture);
+        }
+
+        private static void MarkUnequipped(ulong characterId, uint inventoryIndex)
+        {
+            lock (UnequipGuardSync)
+                UnequipGuardUntil[UnequipGuardKey(characterId, inventoryIndex)] = DateTime.UtcNow.Add(UnequipGuardWindow);
+        }
+
+        private static bool IsSuppressedAutomaticReequip(ulong characterId, uint inventoryIndex, int previousIndex)
+        {
+            if (previousIndex != -1) return false;
+
+            lock (UnequipGuardSync)
+            {
+                var key = UnequipGuardKey(characterId, inventoryIndex);
+                DateTime until;
+                if (!UnequipGuardUntil.TryGetValue(key, out until)) return false;
+                if (DateTime.UtcNow >= until)
+                {
+                    UnequipGuardUntil.Remove(key);
+                    return false;
+                }
+                return true;
+            }
+        }
+
         [Packet(Packets.CmdEquipVisualItem)]
         public static void Equip(Packet packet)
         {
@@ -22,6 +55,20 @@ namespace GameServer.Network.Handlers
             var inventoryIndex = packet.Reader.ReadUInt32();
             var previousIndex = packet.Reader.ReadInt32();
             var requestedCarId = packet.Reader.ReadUInt32();
+
+            // v0.77a can emit a stale 1205 immediately after an acknowledged 1207/1208
+            // when its local preview/inventory state is rebuilt. The captured sequence is
+            // unequip -> inventory refresh -> 1205(same inventory, previous=-1) in <1 sec.
+            // Treat that packet as stale and push the DB-authoritative visual snapshot back.
+            if (IsSuppressedAutomaticReequip(character.Id, inventoryIndex, previousIndex))
+            {
+                Log.Warning(
+                    "Visual stale auto-reequip suppressed: CID={0} InvenIdx={1} Previous={2} RequestedCarId={3}",
+                    character.Id, inventoryIndex, previousIndex, requestedCarId);
+                global::GameServer.Network.Handlers.Join.VisualItemList.SendCurrent(packet);
+                VisualShopWorldSync.Sync(packet.Sender.User);
+                return;
+            }
 
             VisualShopProtocolSync.VisualRow row;
             uint targetCarId;
@@ -93,7 +140,10 @@ WHERE CharacterId=@cid AND InventoryIndex=@inven;", conn))
             ack.Writer.Write(targetCarId);
             packet.Sender.Send(ack);
 
-            VisualShopProtocolSync.SendCategory(packet, character.Id, targetCarId, row.CategoryIndex);
+            // Rebuild the VS client model from persisted state instead of replaying every
+            // row in this category. This clears stale preview state and only 1202-replays
+            // rows that are genuinely ItemState=1.
+            global::GameServer.Network.Handlers.Join.VisualItemList.SendCurrent(packet);
             VisualShopWorldSync.Sync(packet.Sender.User);
             CheckStat.Handle(packet);
 
@@ -137,6 +187,8 @@ WHERE CharacterId=@cid AND InventoryIndex=@inven;", conn))
                 }
             }
 
+            row.Item.ItemState = 0;
+            MarkUnequipped(character.Id, inventoryIndex);
             PlayerVisualSnapshotBuilder.ApplyActivePaint(character);
 
             var ack = new Packet((ushort)1208);
@@ -144,7 +196,9 @@ WHERE CharacterId=@cid AND InventoryIndex=@inven;", conn))
             ack.Writer.Write(row.CarId);
             packet.Sender.Send(ack);
 
-            VisualShopProtocolSync.SendCategory(packet, character.Id, row.CarId, row.CategoryIndex);
+            // The full 1201 snapshot is authoritative. It also resets any uncommitted
+            // Visual Shop preview and its active-only 1202 replay cannot resurrect this row.
+            global::GameServer.Network.Handlers.Join.VisualItemList.SendCurrent(packet);
             VisualShopWorldSync.Sync(packet.Sender.User);
             CheckStat.Handle(packet);
 
@@ -194,6 +248,7 @@ WHERE CharacterId=@cid AND InventoryIndex=@inven;", conn))
             packet.Sender.Send(ack);
 
             VisualShopProtocolSync.SendDelete(packet, row.Item);
+            global::GameServer.Network.Handlers.Join.VisualItemList.SendCurrent(packet);
             if (row.Item.ItemState != 0)
                 VisualShopWorldSync.Sync(packet.Sender.User);
             CheckStat.Handle(packet);
@@ -270,10 +325,9 @@ ORDER BY InventoryIndex;", conn))
         }
 
         /// <summary>
-        /// Replays every visual-inventory row associated with one car. This is used
-        /// immediately after 1061 has installed a new XiStrCarInfo (notably paint color).
-        /// The retail 1202 callback then invalidates/reapplies visual materials against
-        /// the already-updated car state instead of refreshing against the old color.
+        /// Replays only currently equipped rows after XiStrCarInfo has been installed.
+        /// 1202 is a live visual callback; replaying ItemState=0 rows made the retail
+        /// client reapply stale previews and explicitly unequipped cosmetics.
         /// </summary>
         public static void SendCar(Client recipient, ulong characterId, uint carId)
         {
@@ -284,7 +338,7 @@ ORDER BY InventoryIndex;", conn))
             using (var cmd = new MySqlCommand(@"
 SELECT CarId,ItemState,ShopId,InventoryIndex,Data,Period,UpdateTime,CreateTime,CategoryIndex
 FROM dbo.visual_items
-WHERE CharacterId=@cid AND CarId=@carId
+WHERE CharacterId=@cid AND CarId=@carId AND ItemState=1
 ORDER BY InventoryIndex;", conn))
             {
                 cmd.Parameters.AddWithValue("@cid", characterId);
@@ -296,8 +350,12 @@ ORDER BY InventoryIndex;", conn))
                 }
             }
 
-            if (items.Count == 0) return;
-            Send(recipient, items, ModAddOrUpdate, "post-carinfo car=" + carId);
+            if (items.Count == 0)
+            {
+                Log.Debug("VSItemModList 1202: equipped replay empty post-carinfo car={0}", carId);
+                return;
+            }
+            Send(recipient, items, ModAddOrUpdate, "equipped-only post-carinfo car=" + carId);
         }
 
         public static void SendDelete(Packet packet, InventoryVisualItem item)
@@ -459,7 +517,8 @@ ORDER BY CASE WHEN Category=@category THEN 0 ELSE 1 END,
 
             var ownerSent = false;
             var ownerWorldRefresh = false;
-            var remoteSent = 0;
+            var remotePlayerInfo = 0;
+            var remoteWorld = 0;
             int sourceArea;
             var sourceInArea = global::GameServer.Network.Handlers.Join.JoinArea.TryGetLiveArea(
                 character.Name, out sourceArea);
@@ -471,14 +530,8 @@ ORDER BY CASE WHEN Category=@category THEN 0 ELSE 1 END,
 
                 if (ReferenceEquals(client.User, sourceUser))
                 {
-                    // 1061 is local-only in the retail client: it validates the local
-                    // vehicle serial and installs the full XiStrCarInfo, including Color2.
                     client.Send(BuildLocalVisualUpdate(sourceUser).CreatePacket());
                     VisualShopProtocolSync.SendCar(client, character.Id, character.ActiveCar.CarId);
-
-                    // 467 then targets the world vehicle by serial and forces the 3D object
-                    // to consume XiCarAttr + XiPlayerInfo. This is what makes the freshly
-                    // installed paint/tint state visible without relogging.
                     client.Send(PlayerVisualSnapshotBuilder.BuildRoomNotifyChange(
                         sourceUser.VehicleSerial, character).CreatePacket());
                     ownerSent = true;
@@ -494,17 +547,26 @@ ORDER BY CASE WHEN Category=@category THEN 0 ELSE 1 END,
                         client.User.ActiveCharacter.Name, out remoteArea) || remoteArea != sourceArea)
                     continue;
 
-                // Retail remote path: packet 467 resolves the already-spawned vehicle by
-                // serial and carries both XiCarAttr (paint) and XiPlayerInfo (visual slots).
+                // Remote appearance has two distinct caches in v0.77a. 809 refreshes the
+                // XiPlayerInfo/XiVisualItem collection (body kit, aero, wheels, decal, neon),
+                // while 467 carries the world car attributes including paint/tint. Send both.
+                client.Send(new PlayerInfoOldAnswer
+                {
+                    PacketId = PlayerInfoOldAnswer.PlayerInfoLivePacketId,
+                    PlayerInfo = PlayerVisualSnapshotBuilder.BuildPlayerInfo(
+                        sourceUser.VehicleSerial, character)
+                }.CreatePacket());
+                remotePlayerInfo++;
+
                 client.Send(PlayerVisualSnapshotBuilder.BuildRoomNotifyChange(
                     sourceUser.VehicleSerial, character).CreatePacket());
-                remoteSent++;
+                remoteWorld++;
             }
 
             Log.Debug(
-                "Visual retail sync: CID={0} Serial={1} Owner1061={2} Owner467={3} Remote467={4} Area={5}",
+                "Visual authoritative sync: CID={0} Serial={1} Owner1061={2} Owner467={3} Remote809={4} Remote467={5} Area={6}",
                 character.Id, sourceUser.VehicleSerial, ownerSent, ownerWorldRefresh,
-                remoteSent, sourceInArea ? sourceArea : -1);
+                remotePlayerInfo, remoteWorld, sourceInArea ? sourceArea : -1);
         }
 
         public static void Broadcast(User sourceUser)
@@ -516,6 +578,7 @@ ORDER BY CASE WHEN Category=@category THEN 0 ELSE 1 END,
         {
             var character = user.ActiveCharacter;
             var vehicle = character.ActiveCar;
+            var effectiveColor = vehicle.Color != 0 ? vehicle.Color : vehicle.BaseColor;
             return new VisualUpdateAnswer
             {
                 Serial = user.VehicleSerial,
@@ -526,13 +589,13 @@ ORDER BY CASE WHEN Category=@category THEN 0 ELSE 1 END,
                 {
                     CarID = vehicle.CarId,
                     CarType = vehicle.CarType,
-                    BaseColor = vehicle.BaseColor,
+                    BaseColor = effectiveColor,
                     Grade = vehicle.Grade,
                     SlotType = vehicle.SlotType,
                     AuctionCnt = vehicle.AuctionCnt,
                     Mitron = vehicle.Mitron,
                     Kmh = vehicle.Kmh,
-                    Color = vehicle.Color,
+                    Color = effectiveColor,
                     Color2 = vehicle.Color2,
                     MitronCapacity = vehicle.MitronCapacity,
                     MitronEfficiency = vehicle.MitronEfficiency,

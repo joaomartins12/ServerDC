@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using GameServer.Util;
 using Shared.Network;
 using Shared.Network.GameServer;
@@ -45,14 +45,12 @@ namespace GameServer.Network.Handlers.Join
                 }
             }
 
-            Log.Debug("VisualItemListAck: CID={0} Count={1}", character.Id, answer.Items.Count);
+            Log.Debug("VisualItemListAck authoritative: CID={0} Count={1}", character.Id, answer.Items.Count);
             packet.Sender.Send(answer.CreatePacket());
 
-            // 1201 fills the VS inventory. 1061 then writes the active XiStrCarInfo
-            // (including persisted paint) into the local car. Finally replay the active
-            // car's VS rows through retail 1202 so its visual refresh callback runs AFTER
-            // the new color has already been stored. This mirrors the effect observed in
-            // the retail client when toggling an aero item after changing paint/tint.
+            // 1201 is the authoritative inventory state. Reset the car-info snapshot from
+            // persisted/equipped data and then replay ONLY ItemState=1 rows. Replaying every
+            // owned row caused v0.77a to restore preview/unequipped cosmetics locally.
             SendInitialLocalVisualRefresh(packet, user, character);
             SendPostCarInfoVisualRefresh(packet, character, answer.Items);
         }
@@ -76,13 +74,13 @@ namespace GameServer.Network.Handlers.Join
                 {
                     CarID = vehicle.CarId,
                     CarType = vehicle.CarType,
-                    BaseColor = vehicle.BaseColor,
+                    BaseColor = vehicle.Color != 0 ? vehicle.Color : vehicle.BaseColor,
                     Grade = vehicle.Grade,
                     SlotType = vehicle.SlotType,
                     AuctionCnt = vehicle.AuctionCnt,
                     Mitron = vehicle.Mitron,
                     Kmh = vehicle.Kmh,
-                    Color = vehicle.Color,
+                    Color = vehicle.Color != 0 ? vehicle.Color : vehicle.BaseColor,
                     Color2 = vehicle.Color2,
                     MitronCapacity = vehicle.MitronCapacity,
                     MitronEfficiency = vehicle.MitronEfficiency,
@@ -93,8 +91,9 @@ namespace GameServer.Network.Handlers.Join
 
             packet.Sender.Send(refresh.CreatePacket());
             Log.Debug(
-                "Initial visual refresh: CID={0} Serial={1} CarId={2} Color={3} VisualState=1 -> 1201+1061",
-                character.Id, user.VehicleSerial, vehicle.CarId, vehicle.Color);
+                "Initial visual refresh authoritative: CID={0} Serial={1} CarId={2} Color={3} -> 1201+1061",
+                character.Id, user.VehicleSerial, vehicle.CarId,
+                vehicle.Color != 0 ? vehicle.Color : vehicle.BaseColor);
         }
 
         private static void SendPostCarInfoVisualRefresh(Packet packet, Character character,
@@ -107,24 +106,32 @@ namespace GameServer.Network.Handlers.Join
             var rows = new List<InventoryVisualItem>();
             foreach (var item in inventory)
             {
-                if (item != null && item.CarId == activeCarId)
+                // IMPORTANT: 1202 is a live visual callback, not merely an inventory dump.
+                // Only equipped rows are allowed to participate in this replay. ItemState=0
+                // rows stay visible in 1201 inventory but must never be reapplied to the car.
+                if (item != null && item.CarId == activeCarId && item.ItemState == 1)
                     rows.Add(item);
             }
 
             if (rows.Count == 0)
+            {
+                Log.Debug(
+                    "Initial visual post-refresh: CID={0} CarId={1} EquippedCount=0 (no 1202 replay)",
+                    character.Id, activeCarId);
                 return;
+            }
 
             var delta = new Packet((ushort)1202);
             delta.Writer.Write(rows.Count);
             foreach (var item in rows)
             {
                 delta.Writer.Write(item);
-                delta.Writer.Write(0); // add/update
+                delta.Writer.Write(0); // add/update active equipped row
             }
             packet.Sender.Send(delta);
 
             Log.Debug(
-                "Initial visual post-refresh: CID={0} CarId={1} Count={2} -> 1061+1202",
+                "Initial visual post-refresh: CID={0} CarId={1} EquippedCount={2} -> 1061+1202",
                 character.Id, activeCarId, rows.Count);
         }
     }
