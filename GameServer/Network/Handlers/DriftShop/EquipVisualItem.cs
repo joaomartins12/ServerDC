@@ -458,8 +458,11 @@ ORDER BY CASE WHEN Category=@category THEN 0 ELSE 1 END,
             PlayerVisualSnapshotBuilder.ApplyActivePaint(character);
 
             var ownerSent = false;
-            var ownerPostRefresh = false;
+            var ownerWorldRefresh = false;
             var remoteSent = 0;
+            int sourceArea;
+            var sourceInArea = global::GameServer.Network.Handlers.Join.JoinArea.TryGetLiveArea(
+                character.Name, out sourceArea);
 
             foreach (var client in global::GameServer.GameServer.Instance.Server.GetClients())
             {
@@ -468,31 +471,40 @@ ORDER BY CASE WHEN Category=@category THEN 0 ELSE 1 END,
 
                 if (ReferenceEquals(client.User, sourceUser))
                 {
-                    // 1061 writes the new XiStrCarInfo/Color. A second 1202 pass is
-                    // intentionally AFTER it: 1202 executes the client's visual material
-                    // callbacks, so paint/tint are reapplied against the new car state.
+                    // 1061 is local-only in the retail client: it validates the local
+                    // vehicle serial and installs the full XiStrCarInfo, including Color2.
                     client.Send(BuildLocalVisualUpdate(sourceUser).CreatePacket());
                     VisualShopProtocolSync.SendCar(client, character.Id, character.ActiveCar.CarId);
+
+                    // 467 then targets the world vehicle by serial and forces the 3D object
+                    // to consume XiCarAttr + XiPlayerInfo. This is what makes the freshly
+                    // installed paint/tint state visible without relogging.
+                    client.Send(PlayerVisualSnapshotBuilder.BuildRoomNotifyChange(
+                        sourceUser.VehicleSerial, character).CreatePacket());
                     ownerSent = true;
-                    ownerPostRefresh = true;
+                    ownerWorldRefresh = true;
                     continue;
                 }
 
-                // PlayerInfoRes 809 updates the retail player-info collection used by
-                // free-roam. Initial remote creation is ordered separately by AreaServer
-                // so the identity/visual snapshot exists before the first 541 replay.
-                client.Send(new PlayerInfoOldAnswer
-                {
-                    PacketId = PlayerInfoOldAnswer.PlayerInfoLivePacketId,
-                    PlayerInfo = PlayerVisualSnapshotBuilder.BuildPlayerInfo(
-                        sourceUser.VehicleSerial, character)
-                }.CreatePacket());
+                if (!sourceInArea || client.User.ActiveCharacter == null)
+                    continue;
+
+                int remoteArea;
+                if (!global::GameServer.Network.Handlers.Join.JoinArea.TryGetLiveArea(
+                        client.User.ActiveCharacter.Name, out remoteArea) || remoteArea != sourceArea)
+                    continue;
+
+                // Retail remote path: packet 467 resolves the already-spawned vehicle by
+                // serial and carries both XiCarAttr (paint) and XiPlayerInfo (visual slots).
+                client.Send(PlayerVisualSnapshotBuilder.BuildRoomNotifyChange(
+                    sourceUser.VehicleSerial, character).CreatePacket());
                 remoteSent++;
             }
 
             Log.Debug(
-                "Visual retail sync: CID={0} Serial={1} Owner1061={2} OwnerPost1202={3} Remote809={4}",
-                character.Id, sourceUser.VehicleSerial, ownerSent, ownerPostRefresh, remoteSent);
+                "Visual retail sync: CID={0} Serial={1} Owner1061={2} Owner467={3} Remote467={4} Area={5}",
+                character.Id, sourceUser.VehicleSerial, ownerSent, ownerWorldRefresh,
+                remoteSent, sourceInArea ? sourceArea : -1);
         }
 
         public static void Broadcast(User sourceUser)
