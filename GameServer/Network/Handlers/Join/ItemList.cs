@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Globalization;
 using System.Linq;
 using GameServer.Util;
@@ -17,17 +17,18 @@ namespace GameServer.Network.Handlers.Join
         private const int UseItemProtocolBase = 0x580;
 
         [Packet(Packets.CmdItemList)]
-        [Packet((ushort)1156)] // CmdInventoryRequest observed after equip/unequip and purchases.
+        [Packet((ushort)1156)]
         public static void Handle(Packet packet)
         {
-            var character = packet.Sender.User.ActiveCharacter;
+            var character = packet.Sender.User == null ? null : packet.Sender.User.ActiveCharacter;
             if (character == null)
             {
                 Log.Warning("ItemList requested without an active character. Endpoint={0}", packet.Sender.EndPoint);
                 return;
             }
 
-            if (packet.Id == 1156)
+            var inventoryRefresh = packet.Id == 1156;
+            if (inventoryRefresh)
                 Log.Debug("CmdInventoryRequest refresh: CID={0} Name={1}", character.Id, character.Name);
 
             using (var connection = GameServer.Instance.Database.Connection)
@@ -64,10 +65,6 @@ namespace GameServer.Network.Handlers.Join
                         out expectedKeyProtocolIndex,
                         out oldKeyIdProtocolIndex))
                     {
-                        // Repair both experimental encodings used by previous builds:
-                        // 1) direct combined ItemCatalog index (e.g. Nevera 874)
-                        // 2) 0x580 + numeric part of pc_XXXX + 1
-                        // The real client-facing UseItem namespace is based on XML ordinal.
                         var shouldMigrate = inventoryItem.TableIndex == expectedKeyCatalogIndex ||
                                             inventoryItem.TableIndex == oldKeyIdProtocolIndex;
 
@@ -96,8 +93,6 @@ namespace GameServer.Network.Handlers.Join
                         }
                     }
 
-                    // All UseItems share the protocol namespace confirmed by real client purchases:
-                    // 0x580 + (zero-based UseItems.xml ordinal + 1).
                     if (definition == null && firstUseItemIndex >= 0 && inventoryItem.TableIndex > UseItemProtocolBase)
                     {
                         var useItemIndex = inventoryItem.TableIndex - UseItemProtocolBase - 1;
@@ -112,7 +107,6 @@ namespace GameServer.Network.Handlers.Join
                         }
                     }
 
-                    // Items.xml uses its normal direct table index.
                     if (definition == null && ServerMain.Items != null &&
                         inventoryItem.TableIndex >= 0 && inventoryItem.TableIndex < ServerMain.Items.Count &&
                         !(ServerMain.Items[inventoryItem.TableIndex] is UseItemTable.UseItem))
@@ -191,6 +185,16 @@ namespace GameServer.Network.Handlers.Join
                 var ack = new ItemListAnswer { InventoryItems = items.ToArray() };
                 packet.Sender.Send(ack.CreatePacket());
             }
+
+            // The client issues 1156 when the normal Inventory is opened after leaving
+            // Drift Shop. A shop preview is local-only and is not persisted, therefore
+            // this is the correct boundary at which to replace that transient preview
+            // with the server's authoritative visual inventory and active car colours.
+            if (inventoryRefresh)
+            {
+                VisualItemList.SendCurrent(packet);
+                Log.Debug("CmdInventoryRequest visual restore: CID={0} -> 401+1201+1061", character.Id);
+            }
         }
 
         private static bool TryResolveVehicleKeyForInventory(
@@ -226,7 +230,6 @@ namespace GameServer.Network.Handlers.Join
                 if (useItem == null || !IsVehicleKey(useItem))
                     continue;
 
-                // Original UseItems.xml maxstack is the CarType relation for vehicle keys.
                 uint mappedCarType;
                 if (!uint.TryParse(useItem.MaxStack, NumberStyles.Integer, CultureInfo.InvariantCulture, out mappedCarType) ||
                     mappedCarType != linkedVehicle.CarType)
