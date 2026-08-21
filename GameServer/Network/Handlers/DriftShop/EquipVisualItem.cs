@@ -5,6 +5,7 @@ using System.Text.RegularExpressions;
 using GameServer.Util;
 using Shared.Models;
 using Shared.Network;
+using Shared.Network.GameServer;
 using Shared.Objects;
 using Shared.Util;
 
@@ -70,12 +71,8 @@ WHERE CharacterId=@cid AND InventoryIndex=@inven;", conn))
             ack.Writer.Write(row.CarId);
             packet.Sender.Send(ack);
 
-            // Retail v0.77 does not refresh the whole 1201 list here. It sends 1202
-            // (Cmd_VSItemModList): count + 124-byte records. Sending every row from the
-            // affected category updates both the newly-equipped row and the row that was
-            // implicitly unequipped.
             VisualShopProtocolSync.SendCategory(packet, character.Id, row.CarId, row.CategoryIndex);
-            VisualShopWorldSync.Broadcast(packet.Sender.User);
+            VisualShopWorldSync.Sync(packet.Sender.User);
             CheckStat.Handle(packet);
 
             Log.Info(
@@ -95,8 +92,6 @@ WHERE CharacterId=@cid AND InventoryIndex=@inven;", conn))
             VisualShopProtocolSync.VisualRow row;
             using (var conn = global::GameServer.GameServer.Instance.Database.Connection)
             {
-                // Some v0.77 visual categories send CarId=0 in CmdUnEquipVisualItem.
-                // InventoryIndex is the authoritative key; resolve the real car from SQL.
                 row = VisualShopProtocolSync.LoadByInventory(conn, character.Id, inventoryIndex);
                 if (row == null)
                 {
@@ -126,7 +121,7 @@ WHERE CharacterId=@cid AND InventoryIndex=@inven;", conn))
             packet.Sender.Send(ack);
 
             VisualShopProtocolSync.SendCategory(packet, character.Id, row.CarId, row.CategoryIndex);
-            VisualShopWorldSync.Broadcast(packet.Sender.User);
+            VisualShopWorldSync.Sync(packet.Sender.User);
             CheckStat.Handle(packet);
 
             Log.Info(
@@ -172,11 +167,9 @@ WHERE CharacterId=@cid AND InventoryIndex=@inven;", conn))
             ack.Writer.Write(inventoryIndex);
             packet.Sender.Send(ack);
 
-            // ModType 2 is the deletion discriminator proven from DriftCity.exe's
-            // Cmd_VSItemModList handler.
             VisualShopProtocolSync.SendDelete(packet, row.Item);
             if (row.Item.ItemState != 0)
-                VisualShopWorldSync.Broadcast(packet.Sender.User);
+                VisualShopWorldSync.Sync(packet.Sender.User);
             CheckStat.Handle(packet);
 
             Log.Info("Visual item dropped: CID={0} ShopId={1} CarId={2} InvenIdx={3} Equipped={4}",
@@ -226,10 +219,7 @@ WHERE CharacterId=@cid AND InventoryIndex=@inven;", conn))
 
         public static void SendCategory(Packet packet, ulong characterId, uint carId, int categoryIndex)
         {
-            if (categoryIndex <= 0)
-            {
-                return;
-            }
+            if (categoryIndex <= 0) return;
 
             var items = new List<InventoryVisualItem>();
             using (var conn = global::GameServer.GameServer.Instance.Database.Connection)
@@ -250,15 +240,13 @@ ORDER BY InventoryIndex;", conn))
             }
 
             if (items.Count == 0) return;
-            Send(packet, items, ModAddOrUpdate,
-                "car=" + carId + " category=" + categoryIndex);
+            Send(packet, items, ModAddOrUpdate, "car=" + carId + " category=" + categoryIndex);
         }
 
         public static void SendDelete(Packet packet, InventoryVisualItem item)
         {
             if (item == null) return;
-            Send(packet, new[] { item }, ModDelete,
-                "delete inventory=" + item.InvenIdx);
+            Send(packet, new[] { item }, ModDelete, "delete inventory=" + item.InvenIdx);
         }
 
         private static void Send(Packet requestPacket, IEnumerable<InventoryVisualItem> items, int modType, string context)
@@ -270,8 +258,6 @@ ORDER BY InventoryIndex;", conn))
             ack.Writer.Write(list.Count);
             foreach (var item in list)
             {
-                // DriftCity.exe Cmd_VSItemModList uses an exact 0x7C (124-byte) stride:
-                // the normal 120-byte XiStrMyVSItem followed by a 32-bit mod type.
                 ack.Writer.Write(item);
                 ack.Writer.Write(modType);
             }
@@ -338,8 +324,6 @@ WHERE ShopId=@shopId;", conn))
 
             var normalized = (itemCode ?? string.Empty).ToLowerInvariant();
             var isPaint = normalized.Contains("paint");
-            // The malformed i_g_paint_S15 retail row has UseMito=0 even though the UI
-            // sells it for Mito. Do not let that bad source flag prevent recovery.
             if (!useMito && !isPaint) return false;
             if (!isPaint) return false;
 
@@ -384,11 +368,8 @@ ORDER BY CASE WHEN Category=@category THEN 0 ELSE 1 END,
 
             if (price <= 0 && tier.Equals("S15", StringComparison.OrdinalIgnoreCase) && period == 1)
                 price = 30000;
-
             if (price <= 0) return false;
 
-            // Explicitly repair the malformed retail UseMito flag and replace zero/NULL
-            // Server overrides. Source columns remain untouched for forensic comparison.
             var updateSql = string.Format(CultureInfo.InvariantCulture,
                 "UPDATE dbo.visual_item_catalog SET UseMito=1, {0}=@price, UpdatedUtc=SYSUTCDATETIME() WHERE ShopId=@shopId;",
                 serverColumn);
@@ -407,29 +388,81 @@ ORDER BY CASE WHEN Category=@category THEN 0 ELSE 1 END,
 
     internal static class VisualShopWorldSync
     {
-        public static void Broadcast(User sourceUser)
+        public static void Sync(User sourceUser)
         {
             if (sourceUser == null || sourceUser.ActiveCharacter == null ||
+                sourceUser.ActiveCharacter.ActiveCar == null ||
                 global::GameServer.GameServer.Instance.Server == null)
                 return;
 
-            var sent = 0;
+            var character = sourceUser.ActiveCharacter;
+            var ownerSent = false;
+            var remoteSent = 0;
+
             foreach (var client in global::GameServer.GameServer.Instance.Server.GetClients())
             {
                 if (client == null || client.User == null)
                     continue;
 
-                // Build from SQL for every recipient so local and remote players receive
-                // the exact same equipped visual snapshot (XiCarAttr + XiPlayerInfo).
-                var visual = PlayerVisualSnapshotBuilder.BuildRoomNotifyChange(
-                    sourceUser.VehicleSerial,
-                    sourceUser.ActiveCharacter);
-                client.Send(visual.CreatePacket());
-                sent++;
+                if (ReferenceEquals(client.User, sourceUser))
+                {
+                    // DriftCity.exe Cmd_VisualUpdate (1061 / handler 0x529FD0) explicitly
+                    // accepts only the local player's own Serial. It updates XiStrCarInfo,
+                    // refreshes the selected vehicle and runs the local model/UI rebuild.
+                    client.Send(BuildLocalVisualUpdate(sourceUser).CreatePacket());
+                    ownerSent = true;
+                    continue;
+                }
+
+                // DriftCity.exe Cmd_RoomNotifyChange (467 / handler 0x5402E0) resolves
+                // the remote vehicle by Serial, copies XiCarAttr + XiPlayerInfo and asks
+                // the world object to apply/rebuild that remote visual snapshot.
+                var remote = PlayerVisualSnapshotBuilder.BuildRoomNotifyChange(
+                    sourceUser.VehicleSerial, character);
+                client.Send(remote.CreatePacket());
+                remoteSent++;
             }
 
-            Log.Debug("Visual world sync: CID={0} Serial={1} Recipients={2}",
-                sourceUser.ActiveCharacter.Id, sourceUser.VehicleSerial, sent);
+            Log.Debug("Visual retail sync: CID={0} Serial={1} Owner1061={2} Remote467={3}",
+                character.Id, sourceUser.VehicleSerial, ownerSent, remoteSent);
+        }
+
+        // Backward-compatible name for any older call sites.
+        public static void Broadcast(User sourceUser)
+        {
+            Sync(sourceUser);
+        }
+
+        private static VisualUpdateAnswer BuildLocalVisualUpdate(User user)
+        {
+            var character = user.ActiveCharacter;
+            var vehicle = character.ActiveCar;
+            var attr = PlayerVisualSnapshotBuilder.BuildCarAttr(character);
+            var color = unchecked((uint)attr.___u0.__s1.lvalColor);
+
+            return new VisualUpdateAnswer
+            {
+                Serial = user.VehicleSerial,
+                Age = 0,
+                CarId = vehicle.CarId,
+                CarInfo = new XiStrCarInfo
+                {
+                    CarID = vehicle.CarId,
+                    CarType = vehicle.CarType,
+                    BaseColor = vehicle.BaseColor,
+                    Grade = vehicle.Grade,
+                    SlotType = vehicle.SlotType,
+                    AuctionCnt = vehicle.AuctionCnt,
+                    Mitron = vehicle.Mitron,
+                    Kmh = vehicle.Kmh,
+                    Color = color,
+                    Color2 = vehicle.Color2,
+                    MitronCapacity = vehicle.MitronCapacity,
+                    MitronEfficiency = vehicle.MitronEfficiency,
+                    AuctionOn = vehicle.AuctionOn,
+                    SBBOn = vehicle.SBBOn
+                }
+            };
         }
     }
 }
