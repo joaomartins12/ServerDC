@@ -23,43 +23,48 @@ namespace Shared.Network.GameServer
 
         public override int ExpectedSize()
         {
-            var count = PlayerInfos.Length + (PacketId == PlayerInfoLivePacketId ? 2 : 1);
+            var extraInfos = PlayerInfos ?? new XiPlayerInfo[0];
+            var count = extraInfos.Length + (PacketId == PlayerInfoLivePacketId ? 2 : 1);
             return (216 * count) + 6;
         }
 
         public override byte[] GetBytes()
         {
             using (var ms = new MemoryStream())
-            using (var bs = new BinaryWriterExt(ms))
             {
-                // Cmd_PlayerInfoRes (809) iterates every 0xD8-byte record and feeds it
-                // through the live player manager. The manager suppresses an identical
-                // snapshot when its cached XiVisualItem already matches, which is exactly
-                // what happened when a remote vehicle was created by AreaServer packet
-                // 541 after GameServer had already cached its visual state. For live 809
-                // updates send one blank visual state immediately followed by the real
-                // state in the SAME packet. This guarantees a visual delta/rebuild while
-                // preserving identity, serial, character and crew fields.
-                var liveTransition = PacketId == PlayerInfoLivePacketId;
-                bs.Write(PlayerInfos.Length + (liveTransition ? 2 : 1));
-
-                if (liveTransition)
+                using (var bs = new BinaryWriterExt(ms))
                 {
-                    var source = PlayerInfo ?? new XiPlayerInfo();
-                    var reset = new XiPlayerInfo(source.Serial, source.Character)
+                    // Cmd_PlayerInfoRes (809) iterates every 0xD8-byte record and feeds it
+                    // through the live player manager. The manager suppresses an identical
+                    // snapshot when its cached XiVisualItem already matches, which is exactly
+                    // what happened when a remote vehicle was created by AreaServer packet
+                    // 541 after GameServer had already cached its visual state. For live 809
+                    // updates send one blank visual state immediately followed by the real
+                    // state in the SAME packet. This guarantees a visual delta/rebuild while
+                    // preserving identity, serial, character and crew fields.
+                    var extraInfos = PlayerInfos ?? new XiPlayerInfo[0];
+                    var liveTransition = PacketId == PlayerInfoLivePacketId;
+                    bs.Write(extraInfos.Length + (liveTransition ? 2 : 1));
+
+                    if (liveTransition)
                     {
-                        Age = source.Age,
-                        UseTime = source.UseTime,
-                        VisualItem = new XiVisualItem { PlateString = string.Empty }
-                    };
-                    bs.Write(reset);
+                        var source = PlayerInfo ?? new XiPlayerInfo();
+                        var reset = new XiPlayerInfo(source.Serial, source.Character)
+                        {
+                            Age = source.Age,
+                            UseTime = source.UseTime,
+                            VisualItem = new XiVisualItem { PlateString = string.Empty }
+                        };
+                        bs.Write(reset);
+                    }
+
+                    bs.Write(PlayerInfo ?? new XiPlayerInfo());
+                    foreach (var playerInfo in extraInfos)
+                        bs.Write(playerInfo ?? new XiPlayerInfo());
                 }
 
-                bs.Write(PlayerInfo ?? new XiPlayerInfo());
-                foreach (var playerInfo in PlayerInfos)
-                    bs.Write(playerInfo ?? new XiPlayerInfo());
+                return ms.ToArray();
             }
-            return ms.ToArray();
         }
     }
 }
