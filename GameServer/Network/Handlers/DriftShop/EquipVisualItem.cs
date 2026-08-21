@@ -24,6 +24,7 @@ namespace GameServer.Network.Handlers
             var requestedCarId = packet.Reader.ReadUInt32();
 
             VisualShopProtocolSync.VisualRow row;
+            uint targetCarId;
             using (var conn = global::GameServer.GameServer.Instance.Database.Connection)
             {
                 row = VisualShopProtocolSync.LoadByInventory(conn, character.Id, inventoryIndex);
@@ -31,6 +32,19 @@ namespace GameServer.Network.Handlers
                 {
                     packet.Sender.SendError("visual_item_not_found");
                     return;
+                }
+
+                targetCarId = requestedCarId != 0 ? requestedCarId : row.CarId;
+                using (var owns = new MySqlCommand(
+                    "SELECT COUNT(1) FROM dbo.vehicles WHERE CID=@carId AND CharID=@charId;", conn))
+                {
+                    owns.Parameters.AddWithValue("@carId", targetCarId);
+                    owns.Parameters.AddWithValue("@charId", character.Id);
+                    if (Convert.ToInt32(owns.ExecuteScalar(), CultureInfo.InvariantCulture) == 0)
+                    {
+                        packet.Sender.SendError("not_your_car");
+                        return;
+                    }
                 }
 
                 var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
@@ -43,17 +57,21 @@ WHERE CharacterId=@cid AND CarId=@carId AND CategoryIndex=@category AND ItemStat
                     {
                         unequip.Parameters.AddWithValue("@now", now);
                         unequip.Parameters.AddWithValue("@cid", character.Id);
-                        unequip.Parameters.AddWithValue("@carId", row.CarId);
+                        unequip.Parameters.AddWithValue("@carId", targetCarId);
                         unequip.Parameters.AddWithValue("@category", row.CategoryIndex);
                         unequip.ExecuteNonQuery();
                     }
                 }
 
+                // CmdEquipVisualItem's third DWORD is the destination car. Visual items
+                // are garage inventory entries and can be moved to the currently selected
+                // car; keeping the old persisted CarId makes UI preview and world diverge.
                 using (var equip = new MySqlCommand(@"
 UPDATE dbo.visual_items
-SET ItemState=1, UpdateTime=@now
+SET CarId=@carId, ItemState=1, UpdateTime=@now
 WHERE CharacterId=@cid AND InventoryIndex=@inven;", conn))
                 {
+                    equip.Parameters.AddWithValue("@carId", targetCarId);
                     equip.Parameters.AddWithValue("@now", now);
                     equip.Parameters.AddWithValue("@cid", character.Id);
                     equip.Parameters.AddWithValue("@inven", inventoryIndex);
@@ -65,19 +83,24 @@ WHERE CharacterId=@cid AND InventoryIndex=@inven;", conn))
                 }
             }
 
+            var oldCarId = row.CarId;
+            row.CarId = targetCarId;
+            row.Item.CarId = targetCarId;
+            row.Item.ItemState = 1;
+
             var ack = new Packet((ushort)1206);
             ack.Writer.Write(inventoryIndex);
             ack.Writer.Write(previousIndex);
-            ack.Writer.Write(row.CarId);
+            ack.Writer.Write(targetCarId);
             packet.Sender.Send(ack);
 
-            VisualShopProtocolSync.SendCategory(packet, character.Id, row.CarId, row.CategoryIndex);
+            VisualShopProtocolSync.SendCategory(packet, character.Id, targetCarId, row.CategoryIndex);
             VisualShopWorldSync.Sync(packet.Sender.User);
             CheckStat.Handle(packet);
 
             Log.Info(
-                "Visual item equipped: CID={0} RequestedCarId={1} RealCarId={2} Category={3} InvenIdx={4}",
-                character.Id, requestedCarId, row.CarId, row.CategoryIndex, inventoryIndex);
+                "Visual item equipped: CID={0} RequestedCarId={1} OldCarId={2} TargetCarId={3} Category={4} InvenIdx={5}",
+                character.Id, requestedCarId, oldCarId, targetCarId, row.CategoryIndex, inventoryIndex);
         }
 
         [Packet(Packets.CmdUnEquipVisualItem)]
@@ -406,17 +429,11 @@ ORDER BY CASE WHEN Category=@category THEN 0 ELSE 1 END,
 
                 if (ReferenceEquals(client.User, sourceUser))
                 {
-                    // DriftCity.exe Cmd_VisualUpdate (1061 / handler 0x529FD0) explicitly
-                    // accepts only the local player's own Serial. It updates XiStrCarInfo,
-                    // refreshes the selected vehicle and runs the local model/UI rebuild.
                     client.Send(BuildLocalVisualUpdate(sourceUser).CreatePacket());
                     ownerSent = true;
                     continue;
                 }
 
-                // DriftCity.exe Cmd_RoomNotifyChange (467 / handler 0x5402E0) resolves
-                // the remote vehicle by Serial, copies XiCarAttr + XiPlayerInfo and asks
-                // the world object to apply/rebuild that remote visual snapshot.
                 var remote = PlayerVisualSnapshotBuilder.BuildRoomNotifyChange(
                     sourceUser.VehicleSerial, character);
                 client.Send(remote.CreatePacket());
@@ -427,7 +444,6 @@ ORDER BY CASE WHEN Category=@category THEN 0 ELSE 1 END,
                 character.Id, sourceUser.VehicleSerial, ownerSent, remoteSent);
         }
 
-        // Backward-compatible name for any older call sites.
         public static void Broadcast(User sourceUser)
         {
             Sync(sourceUser);
