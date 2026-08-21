@@ -17,9 +17,9 @@ namespace GameServer.Network.Handlers.Join
         /// <summary>
         /// Rebuilds the Visual Shop inventory from persistent server state.
         /// 1201 is the authoritative inventory/equipped snapshot; 1061 restores the
-        /// active car's persisted paint/tint. Do not replay the same rows through 1202:
-        /// 1202 is a modification stream and replaying every equipped item after a shop
-        /// preview makes the client keep transient preview state as if it were committed.
+        /// active car's persisted paint/tint once JoinChannel has assigned this process'
+        /// live serial. A VehicleSerial read from the account row before JoinChannel is
+        /// only the previous session's persisted value and must never target 1061.
         /// </summary>
         public static void SendCurrent(Packet packet)
         {
@@ -31,7 +31,17 @@ namespace GameServer.Network.Handlers.Join
                 return;
             }
 
+            var answer = BuildAnswer(character);
+            Log.Debug("VisualItemListAck authoritative: CID={0} Count={1}", character.Id, answer.Items.Count);
+            packet.Sender.Send(answer.CreatePacket());
+            SendInitialLocalVisualRefresh(packet, user, character);
+        }
+
+        public static VisualItemListAnswer BuildAnswer(Character character)
+        {
             var answer = new VisualItemListAnswer();
+            if (character == null) return answer;
+
             using (var conn = GameServer.Instance.Database.Connection)
             {
                 var rows = VisualShopDatabase.LoadInventory(conn, character.Id);
@@ -50,10 +60,7 @@ namespace GameServer.Network.Handlers.Join
                     });
                 }
             }
-
-            Log.Debug("VisualItemListAck authoritative: CID={0} Count={1}", character.Id, answer.Items.Count);
-            packet.Sender.Send(answer.CreatePacket());
-            SendInitialLocalVisualRefresh(packet, user, character);
+            return answer;
         }
 
         private static void SendInitialLocalVisualRefresh(Packet packet, User user, Character character)
@@ -62,10 +69,34 @@ namespace GameServer.Network.Handlers.Join
                 character.ActiveCar == null || user.VehicleSerial == 0)
                 return;
 
-            PlayerVisualSnapshotBuilder.ApplyActivePaint(character);
+            User liveOwner;
+            if (!DefaultServer.ActiveSerials.TryGetValue(user.VehicleSerial, out liveOwner) ||
+                !ReferenceEquals(liveOwner, user))
+            {
+                Log.Debug(
+                    "Visual inventory refresh deferred: CID={0} PersistedSerial={1} has not been assigned by JoinChannel yet; 1201 sent, 1061 skipped.",
+                    character.Id, user.VehicleSerial);
+                return;
+            }
 
+            SendLocalVisualUpdate(packet.Sender, user, character, "inventory");
+        }
+
+        public static void SendLocalVisualUpdate(Client recipient, User user, Character character, string reason)
+        {
+            if (recipient == null || user == null || character == null || character.ActiveCar == null ||
+                user.VehicleSerial == 0)
+                return;
+
+            User liveOwner;
+            if (!DefaultServer.ActiveSerials.TryGetValue(user.VehicleSerial, out liveOwner) ||
+                !ReferenceEquals(liveOwner, user))
+                return;
+
+            PlayerVisualSnapshotBuilder.ApplyActivePaint(character);
             var vehicle = character.ActiveCar;
-            var refresh = new VisualUpdateAnswer
+            var effectiveColor = vehicle.Color != 0 ? vehicle.Color : vehicle.BaseColor;
+            recipient.Send(new VisualUpdateAnswer
             {
                 Serial = user.VehicleSerial,
                 Age = 0,
@@ -75,25 +106,25 @@ namespace GameServer.Network.Handlers.Join
                 {
                     CarID = vehicle.CarId,
                     CarType = vehicle.CarType,
-                    BaseColor = vehicle.Color != 0 ? vehicle.Color : vehicle.BaseColor,
+                    BaseColor = effectiveColor,
                     Grade = vehicle.Grade,
                     SlotType = vehicle.SlotType,
                     AuctionCnt = vehicle.AuctionCnt,
                     Mitron = vehicle.Mitron,
                     Kmh = vehicle.Kmh,
-                    Color = vehicle.Color != 0 ? vehicle.Color : vehicle.BaseColor,
+                    Color = effectiveColor,
                     Color2 = vehicle.Color2,
                     MitronCapacity = vehicle.MitronCapacity,
                     MitronEfficiency = vehicle.MitronEfficiency,
                     AuctionOn = vehicle.AuctionOn,
                     SBBOn = vehicle.SBBOn
                 }
-            };
+            }.CreatePacket());
 
-            packet.Sender.Send(refresh.CreatePacket());
             Log.Debug(
-                "Visual inventory authoritative refresh: CID={0} Serial={1} CarId={2} Color=0x{3:X6} -> 1201+1061",
-                character.Id, user.VehicleSerial, vehicle.CarId, vehicle.Color);
+                "Local visual update[{0}]: CID={1} Serial={2} CarId={3} Color=0x{4:X6} Color2=0x{5:X8} -> 1061",
+                reason ?? string.Empty, character.Id, user.VehicleSerial, vehicle.CarId,
+                effectiveColor, vehicle.Color2);
         }
     }
 }
