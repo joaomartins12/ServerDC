@@ -5,6 +5,7 @@ using System.Text;
 using Shared.Models;
 using Shared.Network;
 using Shared.Objects;
+using Shared.Util;
 
 namespace AreaServer.Network.Handlers
 {
@@ -72,11 +73,6 @@ namespace AreaServer.Network.Handlers
             MaybeWriteSnapshot(true);
         }
 
-        /// <summary>
-        /// Builds the 100-entry area population table expected by AreaStatusAck.
-        /// Only the User object currently owning a serial in ActiveSerials is counted.
-        /// This prevents obsolete AreaServer TCP sessions from inflating presence.
-        /// </summary>
         public static uint[] GetAreaUserCounts()
         {
             var counts = new uint[100];
@@ -186,11 +182,6 @@ namespace AreaServer.Network.Handlers
             var remaining = (int)Math.Max(0, stream.Length - stream.Position);
             var movement = packet.Reader.ReadBytes(remaining);
 
-            // DriftCity v0.77a constructs remote world cars directly from the XiCarAttr
-            // embedded in packet 541. The retail client leaves Color/Color2 at zero in
-            // its outgoing movement stream, so blindly relaying that stream creates a
-            // default-looking vehicle on every other client. Patch only the XiCarAttr
-            // fields from the server-authoritative vehicle row before caching/relaying.
             PatchAuthoritativeCarAttr(packet.Sender, vehicleSerial, movement);
 
             int areaId;
@@ -236,8 +227,6 @@ namespace AreaServer.Network.Handlers
                 if (!areaSnapshot.TryGetValue(targetSerial, out targetArea) || targetArea != areaId)
                     continue;
 
-                // v0.77 uses packet 541 for discovery and live movement. Exactly one
-                // fresh relay is emitted to every current serial owner in this area.
                 SendMovement(client, vehicleSerial, movement);
                 RecordRelay(vehicleSerial, targetSerial);
                 recipients++;
@@ -252,9 +241,6 @@ namespace AreaServer.Network.Handlers
 
         private static void PatchAuthoritativeCarAttr(Client source, ushort serial, byte[] movement)
         {
-            // movement begins immediately after VehicleSerial because Handle consumed
-            // that WORD already. Layout from the v0.77a client handler:
-            // +00 Age, +02 Sort, +04 Body, +06 Color, +0A Color2, +0E State.
             if (source?.User?.ActiveCharacter == null || movement == null || movement.Length < 18)
                 return;
 
@@ -323,8 +309,6 @@ namespace AreaServer.Network.Handlers
         {
             if (movement == null || movement.Length < 18 || state == null) return;
 
-            // Player-car sort is zero. Preserve State because its live semantics are
-            // movement/client-owned, while Body and both colors are authoritative data.
             movement[2] = 0;
             movement[3] = 0;
             Buffer.BlockCopy(BitConverter.GetBytes(state.Body), 0, movement, 4, 2);
@@ -405,10 +389,6 @@ namespace AreaServer.Network.Handlers
             client.Send(move);
         }
 
-        /// <summary>
-        /// Emits one aggregate snapshot every five seconds instead of one disk write per
-        /// movement frame. This makes disappearance bugs diagnosable without adding sync lag.
-        /// </summary>
         private static void MaybeWriteSnapshot(bool force)
         {
             var now = DateTime.UtcNow;
