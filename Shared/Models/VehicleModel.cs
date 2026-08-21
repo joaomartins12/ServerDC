@@ -9,13 +9,32 @@ namespace Shared.Models
 {
     public class VehicleModel
     {
+        private static readonly object VisualColorSchemaSync = new object();
+        private static bool _visualColorSchemaReady;
+
         private static void EnsureVisualColorSchema(MySqlConnection dbconn)
         {
-            using (var cmd = new MySqlCommand(@"
-IF COL_LENGTH('dbo.vehicles','color2') IS NULL
-    ALTER TABLE dbo.vehicles ADD color2 BIGINT NOT NULL CONSTRAINT DF_vehicles_color2 DEFAULT (0);", dbconn))
+            if (_visualColorSchemaReady) return;
+
+            lock (VisualColorSchemaSync)
             {
-                cmd.ExecuteNonQuery();
+                if (_visualColorSchemaReady) return;
+
+                using (var cmd = new MySqlCommand(@"
+IF COL_LENGTH('dbo.vehicles','color2') IS NULL
+BEGIN
+    BEGIN TRY
+        ALTER TABLE dbo.vehicles ADD color2 BIGINT NOT NULL CONSTRAINT DF_vehicles_color2 DEFAULT (0);
+    END TRY
+    BEGIN CATCH
+        IF COL_LENGTH('dbo.vehicles','color2') IS NULL THROW;
+    END CATCH
+END;", dbconn))
+                {
+                    cmd.ExecuteNonQuery();
+                }
+
+                _visualColorSchemaReady = true;
             }
         }
 
