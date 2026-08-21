@@ -1,4 +1,6 @@
-﻿using Shared.Models;
+﻿using System;
+using System.Threading;
+using Shared.Models;
 using Shared.Network;
 using Shared.Network.AreaServer;
 using Shared.Util;
@@ -7,6 +9,13 @@ namespace AreaServer.Network.Handlers
 {
     public static class EnterArea
     {
+        // GameServer publishes the 802/809 XiPlayerInfo identity/visual snapshot just
+        // after JoinArea. If AreaServer replays a cached 541 immediately, v0.77a creates
+        // the remote vehicle before that visual identity exists and the car remains in
+        // its default appearance. A short one-shot delay preserves the normal movement
+        // stream while allowing the retail player-info manager to be populated first.
+        private const int InitialPresenceReplayDelayMs = 250;
+
         [Packet(Packets.CmdEnterArea)]
         public static void Handle(Packet packet)
         {
@@ -68,11 +77,49 @@ namespace AreaServer.Network.Handlers
                 AreaId = enterAreaPacket.AreaId
             }.CreatePacket());
 
-            // Refresh both directions. The entering client discovers drivers already in
-            // this map, while drivers already present are reminded of this serial when a
-            // cached movement exists (important after Dealership/Garage/Shop transitions).
-            MoveVehicle.ReplayExisting(packet.Sender, enterAreaPacket.VehicleSerial, enterAreaPacket.AreaId);
-            MoveVehicle.AnnounceCurrentToArea(packet.Sender, enterAreaPacket.VehicleSerial, enterAreaPacket.AreaId);
+            QueueInitialPresenceReplay(
+                packet.Sender,
+                enterAreaPacket.VehicleSerial,
+                enterAreaPacket.AreaId);
+        }
+
+        private static void QueueInitialPresenceReplay(Client client, ushort serial, int areaId)
+        {
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                Thread.Sleep(InitialPresenceReplayDelayMs);
+
+                try
+                {
+                    if (client == null || client.User == null || client.User.VehicleSerial != serial)
+                        return;
+
+                    Shared.Objects.User active;
+                    if (!DefaultServer.ActiveSerials.TryGetValue(serial, out active) ||
+                        !ReferenceEquals(active, client.User))
+                        return;
+
+                    // By now the GameServer has normally delivered 802 + 809 + 806 for
+                    // the players in this area. The first relayed 541 can therefore bind
+                    // the world vehicle to an already-populated XiPlayerInfo/XiVisualItem.
+                    MoveVehicle.ReplayExisting(client, serial, areaId);
+                    MoveVehicle.AnnounceCurrentToArea(client, serial, areaId);
+
+                    Log.Debug(
+                        "Area initial presence replay: Serial={0} Area={1} DelayMs={2}",
+                        serial,
+                        areaId,
+                        InitialPresenceReplayDelayMs);
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning(
+                        "Area initial presence replay failed: Serial={0} Area={1} Error={2}",
+                        serial,
+                        areaId,
+                        ex.Message);
+                }
+            });
         }
     }
 }
