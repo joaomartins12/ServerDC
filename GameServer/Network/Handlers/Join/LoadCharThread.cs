@@ -1,4 +1,4 @@
-﻿using GameServer.Util;
+using GameServer.Util;
 using Shared.Models;
 using Shared.Network;
 using Shared.Network.GameServer;
@@ -47,6 +47,12 @@ namespace GameServer.Network.Handlers.Join
             character.InventoryItems.Clear();
             character.InventoryItems.AddRange(inventoryItems);
 
+            // Paint is a visual-item state, but every retail path that renders a car
+            // ultimately consumes XiStrCarInfo.Color. Rehydrate the currently equipped
+            // paint before serializing LoadChar so relogging does not restore the base
+            // vehicle color while the paint remains equipped in visual_items.
+            PlayerVisualSnapshotBuilder.ApplyActivePaint(character);
+
             if (packet.Sender.User.Permission >= UserPermission.Administrator)
                 character.PartyType = 65;
 
@@ -62,14 +68,6 @@ namespace GameServer.Network.Handlers.Join
 
             var ack = new LoadCharThreadAnswer
             {
-                // Retail Cmd_LoadCharAck (124) stores this first DWORD in the game
-                // singleton and the vehicle-performance calculator refuses to run while
-                // it is zero. The old emulator always sent 0 here, leaving Maximum
-                // Speed / Time to reach / Crash Damage / Boost Time at zero even though
-                // StatUpdate contained the correct point totals.
-                //
-                // This server is the first/only local shard, so use the canonical
-                // non-zero server id expected by the retail initialization path.
                 ServerId = 1,
                 ServerStartTime = 0,
                 Character = character,
@@ -81,9 +79,6 @@ namespace GameServer.Network.Handlers.Join
             SendInitialStats(packet, character);
             global::GameServer.Network.Handlers.LicenseProtocol.Bootstrap(packet.Sender, character);
 
-            // Native retail packet 275 drives the "friend connected" popup. Notify only
-            // after the character is fully loaded so recipients can immediately request
-            // or receive the corresponding live friend/location state.
             global::GameServer.Network.Handlers.Social.FriendList.NotifyConnection(character.Name, true);
         }
 
