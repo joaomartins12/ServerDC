@@ -206,6 +206,7 @@ namespace Shared.Network
             }
 #endif
 
+            var sent = false;
             try
             {
                 lock (_sendSync)
@@ -213,11 +214,54 @@ namespace Shared.Network
                     if (!_connected) return;
                     _ns.Write(BitConverter.GetBytes(length), 0, 2);
                     _ns.Write(buffer, 0, bufferLength);
+                    sent = true;
                 }
             }
             catch (Exception ex)
             {
                 KillConnection(ex);
+            }
+
+            // DriftCity v0.77a keeps the logical PlayerInfo snapshot and the spawned
+            // world vehicle render as separate states. Cmd_PlayerInfoRes (809) updates
+            // XiPlayerInfo, but the client handler at the SetVisualItem path (805) is
+            // what marks an already-created remote vehicle dirty. Mode 4 is a 16-byte
+            // command whose +0x04 WORD is the target serial; it sets renderDirty=1 and
+            // resets the pending rebuild state. Follow every successful 809 with that
+            // invalidation so initial discovery and live VShop changes behave identically.
+            if (sent && packet.Id == PlayerInfoOldAnswer.PlayerInfoLivePacketId)
+                SendVisualInvalidateForPlayerInfo(buffer);
+        }
+
+        private void SendVisualInvalidateForPlayerInfo(byte[] playerInfoPacketBuffer)
+        {
+            try
+            {
+                // Packet.Writer buffer layout for 809:
+                // +0x00 packet id (WORD)
+                // +0x02 count (DWORD)
+                // +0x06 XiPlayerInfo[0]
+                // XiPlayerInfo.Serial is after wchar Cname[13] => +26 bytes.
+                const int serialOffset = 2 + 4 + 26;
+                if (playerInfoPacketBuffer == null || playerInfoPacketBuffer.Length < serialOffset + 2)
+                    return;
+
+                var serial = BitConverter.ToUInt16(playerInfoPacketBuffer, serialOffset);
+                if (serial == 0) return;
+
+                var invalidate = new Packet((ushort)805);
+                invalidate.Writer.Write((ushort)0); // packet +0x02
+                invalidate.Writer.Write(serial);    // packet +0x04 target serial
+                invalidate.Writer.Write((ushort)0); // packet +0x06
+                invalidate.Writer.Write(0u);        // packet +0x08
+                invalidate.Writer.Write(4u);        // packet +0x0C mode 4: one vehicle
+                Send(invalidate);
+
+                Log.Debug("PlayerInfo live render invalidate: Serial={0} -> 809+805 mode=4", serial);
+            }
+            catch (Exception ex)
+            {
+                Log.Warning("PlayerInfo live render invalidate failed: {0}", ex.Message);
             }
         }
 
@@ -250,9 +294,6 @@ namespace Shared.Network
         {
             if (!_connected) return;
 
-            // Capture identity before closing the socket. AreaServer connections use
-            // ports 11031/11041; when one disappears, retail clients expect the remote
-            // vehicle to be explicitly removed rather than waiting for a local timeout.
             var departingUser = User;
             var departingSerial = departingUser == null ? (ushort)0 : departingUser.VehicleSerial;
             var departingName = departingUser?.ActiveCharacter?.Name ?? string.Empty;
@@ -298,10 +339,6 @@ namespace Shared.Network
                 }
             }
 
-            // This is intentionally cleared before the object is eventually removed from
-            // DefaultServer's backing list. Every GetClient/GetClients caller already
-            // filters through User/ActiveCharacter, so a dead connection can no longer be
-            // mistaken for a live player during a relogin.
             User = null;
 
             try { _tcp.Close(); }
