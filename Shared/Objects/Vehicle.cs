@@ -56,7 +56,9 @@ namespace Shared.Objects
             CharacterId = Convert.ToUInt64(reader["CharID"]);
             CarType = Convert.ToUInt32(reader["carType"]);
             Color = Convert.ToUInt32(reader["color"]);
-            Color2 = 0;
+            Color2 = HasColumn(reader, "color2") && reader["color2"] != DBNull.Value
+                ? Convert.ToUInt32(reader["color2"])
+                : 0u;
             Grade = Convert.ToUInt32(reader["grade"]);
             Kmh = (float) Convert.ToDouble(reader["kmh"]);
             Mitron = (float) Convert.ToDouble(reader["mitron"]);
@@ -66,6 +68,16 @@ namespace Shared.Objects
             SlotType = Convert.ToUInt32(reader["slotType"]);
         }
 
+        private static bool HasColumn(IDataRecord reader, string columnName)
+        {
+            for (var i = 0; i < reader.FieldCount; i++)
+            {
+                if (string.Equals(reader.GetName(i), columnName, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            return false;
+        }
+        
         public void WriteToDb(ref InsertCommand cmd)
         {
             cmd.Set("auctionCount", AuctionCnt);
@@ -74,13 +86,13 @@ namespace Shared.Objects
             //cmd.Set("CID", vehicle.CarID);
             cmd.Set("carType", CarType);
             cmd.Set("color", Color);
-            //cmd.Set("color2", vehicle.Color2);
+            cmd.Set("color2", Color2);
             cmd.Set("grade", Grade);
             cmd.Set("kmh", Kmh);
             cmd.Set("mitron", Mitron);
             cmd.Set("mitronCapacity", MitronCapacity);
             cmd.Set("mitronEfficiency", MitronEfficiency);
-            //cmd.Set("SSBOn", vehicle.SSBOn);
+            //cmd.Set("SSBOn", vehicle.SBBOn);
             cmd.Set("slotType", SlotType);
             cmd.Execute();
         }
@@ -93,13 +105,13 @@ namespace Shared.Objects
             //cmd.Set("CID", vehicle.CarID);
             cmd.Set("carType", CarType);
             cmd.Set("color", Color);
-            //cmd.Set("color2", vehicle.Color2);
+            cmd.Set("color2", Color2);
             cmd.Set("grade", Grade);
             cmd.Set("kmh", Kmh);
             cmd.Set("mitron", Mitron);
             cmd.Set("mitronCapacity", MitronCapacity);
             cmd.Set("mitronEfficiency", MitronEfficiency);
-            //cmd.Set("SSBOn", vehicle.SSBOn);
+            //cmd.Set("SSBOn", vehicle.SBBOn);
             cmd.Set("slotType", SlotType);
             cmd.Execute();
         }
