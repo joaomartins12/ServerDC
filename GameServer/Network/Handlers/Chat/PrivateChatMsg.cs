@@ -11,6 +11,8 @@ namespace GameServer.Network.Handlers
     public class PrivateChatMsg
     {
         private const ushort PrivateChatMsgAck = 150;
+        private const uint PrivateDirectionFrom = 1;
+        private const uint PrivateDirectionTo = 2;
 
         [Packet(Packets.CmdWhisper)]
         public static void Whisper(Packet packet)
@@ -126,15 +128,18 @@ namespace GameServer.Network.Handlers
                 return;
             }
 
+            // DriftCity retail uses 1=From and 2=To for PrivateChatMsgAck.
+            // Direction 0 is a different/default presentation path and produces bad
+            // click-target metadata (the client selects "Private" instead of the player).
             var recipientPacket = CreatePrivateChatAck(
                 senderCharacter.Name,
                 target.User.ActiveCharacter.Name,
-                0u,
+                PrivateDirectionFrom,
                 message);
             var senderEchoPacket = CreatePrivateChatAck(
                 target.User.ActiveCharacter.Name,
                 senderCharacter.Name,
-                1u,
+                PrivateDirectionTo,
                 message);
 
             target.Send(recipientPacket);
@@ -144,7 +149,7 @@ namespace GameServer.Network.Handlers
 
             WriteWhisperResearch("OUT150", packet.Sender.User.VehicleSerial, target.User.VehicleSerial,
                 senderCharacter.Name, target.User.ActiveCharacter.Name, message, recipientPacket,
-                "native PrivateChatMsgAck direction=0 recipient / 1 sender; len=characters; message=NUL-terminated");
+                "native PrivateChatMsgAck direction=1 From recipient / 2 To sender; len=characters; message=NUL-terminated");
             Log.Debug("Whisper: {0} -> {1}: {2}", senderCharacter.Name, target.User.ActiveCharacter.Name, message);
         }
 
