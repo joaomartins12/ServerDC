@@ -1,4 +1,8 @@
-﻿using Shared.Network;
+﻿using GameServer.Util;
+using Shared.Network;
+using Shared.Network.GameServer;
+using Shared.Objects;
+using Shared.Util;
 
 namespace GameServer.Network.Handlers.Join
 {
@@ -7,12 +11,35 @@ namespace GameServer.Network.Handlers.Join
         [Packet(Packets.CmdVisualItemList)]
         public static void Handle(Packet packet)
         {
-            var ack = new Packet(Packets.VisualItemListAck);
-            ack.Writer.Write(262144); // ListUpdate (262144 = First packet from list queue, 262145 = sequential)
-            //packet.Sender.User.ActiveCharacter.InventoryVisualItems.Count
-            ack.Writer.Write(0); // ItemNum
-            ack.Writer.Write(new byte[120]); // Null VisualItem (120 bytes per XiStrMyVSItem)
-            packet.Sender.Send(ack);
+            var character = packet.Sender.User == null ? null : packet.Sender.User.ActiveCharacter;
+            if (character == null)
+            {
+                packet.Sender.Send(new VisualItemListAnswer().CreatePacket());
+                return;
+            }
+
+            var answer = new VisualItemListAnswer();
+            using (var conn = GameServer.Instance.Database.Connection)
+            {
+                var rows = VisualShopDatabase.LoadInventory(conn, character.Id);
+                foreach (var row in rows)
+                {
+                    answer.Items.Add(new InventoryVisualItem
+                    {
+                        CarId = row.CarId,
+                        ItemState = row.ItemState,
+                        TableIdx = row.ShopId,
+                        InvenIdx = row.InventoryIndex,
+                        PlateName = row.Data ?? string.Empty,
+                        Period = row.Period,
+                        UpdateTime = unchecked((int)row.UpdateTime),
+                        CreateTime = unchecked((int)row.CreateTime)
+                    });
+                }
+            }
+
+            Log.Debug("VisualItemListAck: CID={0} Count={1}", character.Id, answer.Items.Count);
+            packet.Sender.Send(answer.CreatePacket());
         }
     }
 }

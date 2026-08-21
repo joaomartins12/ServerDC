@@ -36,9 +36,6 @@ namespace GameServer.Network.Handlers
                 return;
             }
 
-            // User Information must be built from persistent profile values. This refreshes
-            // mileage, battle records and the currently equipped license/title before the
-            // 661 response is serialized.
             var currentLicenseId = CharacterProgressModel.LoadPersistentStats(
                 GameServer.Instance.Database.Connection,
                 character);
@@ -60,11 +57,6 @@ namespace GameServer.Network.Handlers
             var statisticInfo = BuildStatisticInfo(character);
             var serial = user == null ? (ushort)0 : user.VehicleSerial;
 
-            // Drift City v0.77a checks the first DWORD of GameCharInfoAck field_10
-            // (+0x47D) before creating the profile's 3D vehicle. Old DCNC code always
-            // sent zero here, which made the client deliberately skip the car preview.
-            // For a live player, VehicleSerial is the natural client-side identity. For
-            // an offline profile use a stable non-zero CID-derived context instead.
             uint profileContextId = serial;
             if (profileContextId == 0)
                 profileContextId = (uint)(character.Id & uint.MaxValue);
@@ -103,27 +95,12 @@ namespace GameServer.Network.Handlers
                 {
                     Log.Info(
                         "GameCharInfo source={0}: CID={1} Serial={2} ProfileContext={3} License={4} ActiveVehicleId={5} CarDbId={6} CarType={7} VehicleId={8} Name={9} Grade=V{10} Inventory={11} Source={12} Base[S={13},C={14},A={15},B={16}] Equip[S={17},C={18},A={19},B={20}]",
-                        source,
-                        character.Id,
-                        serial,
-                        profileContextId,
-                        currentLicenseId,
-                        character.ActiveVehicleId,
-                        character.ActiveCar.CarId,
-                        character.ActiveCar.CarType,
-                        resolved.VehicleId,
-                        resolved.VehicleName ?? "UNKNOWN",
-                        resolved.Grade,
+                        source, character.Id, serial, profileContextId, currentLicenseId,
+                        character.ActiveVehicleId, character.ActiveCar.CarId, character.ActiveCar.CarType,
+                        resolved.VehicleId, resolved.VehicleName ?? "UNKNOWN", resolved.Grade,
                         character.InventoryItems == null ? 0 : character.InventoryItems.Count,
-                        resolved.Source ?? "UNKNOWN",
-                        resolved.Speed,
-                        resolved.Crash,
-                        resolved.Accel,
-                        resolved.Boost,
-                        equipped.Speed,
-                        equipped.Crash,
-                        equipped.Accel,
-                        equipped.Boost);
+                        resolved.Source ?? "UNKNOWN", resolved.Speed, resolved.Crash, resolved.Accel, resolved.Boost,
+                        equipped.Speed, equipped.Crash, equipped.Accel, equipped.Boost);
                 }
             }
 
@@ -147,17 +124,14 @@ namespace GameServer.Network.Handlers
             info.BasedCrash = resolved.Crash;
             info.BasedAccel = resolved.Accel;
             info.BasedBoost = resolved.Boost;
-
             info.CharSpeed = levelBonus;
             info.CharCrash = levelBonus;
             info.CharAccel = levelBonus;
             info.CharBoost = levelBonus;
-
             info.EquipSpeed = equipped.Speed;
             info.EquipCrash = equipped.Crash;
             info.EquipAccel = equipped.Accel;
             info.EquipBoost = equipped.Boost;
-
             info.TotalSpeed = resolved.Speed + equipped.Speed + levelBonus;
             info.TotalCrash = resolved.Crash + equipped.Crash + levelBonus;
             info.TotalAccel = resolved.Accel + equipped.Accel + levelBonus;
@@ -196,9 +170,115 @@ namespace GameServer.Util
             return new XiPlayerInfo(serial, character)
             {
                 Age = 0,
-                VisualItem = new XiVisualItem { PlateString = string.Empty },
+                VisualItem = BuildVisualItem(character),
                 UseTime = 0.0f
             };
+        }
+
+        public static RoomNotifyChangeAnswer BuildRoomNotifyChange(ushort serial, Character character)
+        {
+            return new RoomNotifyChangeAnswer
+            {
+                Serial = serial,
+                Age = 0,
+                CarAttr = BuildCarAttr(character == null ? null : character.ActiveCar),
+                PlayerInfo = BuildPlayerInfo(serial, character)
+            };
+        }
+
+        public static XiCarAttr BuildCarAttr(Vehicle vehicle)
+        {
+            var result = new XiCarAttr();
+            if (vehicle == null)
+                return result;
+
+            const ushort playerCarSort = 0;
+            var body = unchecked((ushort)vehicle.CarType);
+            var color = vehicle.Color != 0 ? vehicle.Color : vehicle.BaseColor;
+            var packed = (ulong)playerCarSort |
+                         ((ulong)body << 16) |
+                         ((ulong)color << 32);
+
+            result.___u0.__s0.Sort = playerCarSort;
+            result.___u0.__s0.Body = body;
+            result.___u0.__s1.lvalSortBody = unchecked((int)(uint)packed);
+            result.___u0.__s1.lvalColor = unchecked((int)color);
+            result.___u0.llval = unchecked((long)packed);
+            return result;
+        }
+
+        private static XiVisualItem BuildVisualItem(Character character)
+        {
+            var visual = new XiVisualItem { PlateString = string.Empty };
+            if (character == null || character.ActiveCar == null || GameServer.Instance.Database == null)
+                return visual;
+
+            try
+            {
+                using (var conn = GameServer.Instance.Database.Connection)
+                using (var cmd = new MySqlCommand(@"
+SELECT v.ShopId, v.CategoryIndex, c.Category, v.Data
+FROM dbo.visual_items v
+JOIN dbo.visual_item_catalog c ON c.ShopId=v.ShopId
+WHERE v.CharacterId=@cid AND v.CarId=@carId AND v.ItemState=1
+  AND (v.ExpireTime=0 OR v.ExpireTime>@now)
+ORDER BY v.InventoryIndex;", conn))
+                {
+                    cmd.Parameters.AddWithValue("@cid", character.Id);
+                    cmd.Parameters.AddWithValue("@carId", character.ActiveCar.CarId);
+                    cmd.Parameters.AddWithValue("@now", System.DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+                    using (var r = cmd.ExecuteReader())
+                    {
+                        while (r.Read())
+                        {
+                            var shopId = System.Convert.ToInt32(r[0]);
+                            var categoryIndex = System.Convert.ToInt32(r[1]);
+                            var category = r.IsDBNull(2) ? string.Empty : System.Convert.ToString(r[2]);
+                            var data = r.IsDBNull(3) ? string.Empty : System.Convert.ToString(r[3]);
+                            ApplyVisual(visual, shopId, categoryIndex, category, data);
+                        }
+                    }
+                }
+            }
+            catch (System.Exception ex)
+            {
+                Log.Warning("Visual snapshot lookup failed for CID={0}: {1}", character.Id, ex.Message);
+            }
+
+            return visual;
+        }
+
+        private static void ApplyVisual(XiVisualItem visual, int shopId, int categoryIndex, string category, string data)
+        {
+            var value = unchecked((short)shopId);
+            var normalized = (category ?? string.Empty).Trim().ToLowerInvariant()
+                .Replace("_", string.Empty).Replace("-", string.Empty).Replace(" ", string.Empty);
+
+            if (normalized.Contains("decalcolor") || normalized.Contains("stickercolor"))
+                visual.DecalColor = value;
+            else if (normalized.Contains("neon"))
+                visual.Neon = value;
+            else if (normalized.Contains("plate"))
+            {
+                visual.Plate = value;
+                visual.PlateString = string.IsNullOrEmpty(data) ? string.Empty : data;
+            }
+            else if (normalized.Contains("decal") || normalized.Contains("sticker"))
+                visual.Decal = value;
+            else if (normalized.Contains("bumper"))
+                visual.AeroBumper = value;
+            else if (normalized.Contains("intercooler"))
+                visual.AeroIntercooler = value;
+            else if (normalized.Contains("aero") || normalized.Contains("bodykit") || normalized.Contains("bodyset"))
+                visual.AeroSet = value;
+            else if (normalized.Contains("muffler") || normalized.Contains("flame"))
+                visual.MufflerFlame = value;
+            else if (normalized.Contains("wheel") || normalized.Contains("rim"))
+                visual.Wheel = value;
+            else if (normalized.Contains("spoiler") || normalized.Contains("wing"))
+                visual.Spoiler = value;
+            else
+                Log.Debug("Visual snapshot: unmapped category ShopId={0} CategoryIndex={1} Category={2}", shopId, categoryIndex, category ?? string.Empty);
         }
     }
 }

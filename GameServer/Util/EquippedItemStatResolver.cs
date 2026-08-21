@@ -25,78 +25,104 @@ namespace GameServer.Util
         public static EquippedItemStats Resolve(Character character, Vehicle vehicle)
         {
             var result = new EquippedItemStats();
-            if (character == null || vehicle == null || character.InventoryItems == null || ServerMain.Items == null)
+            if (character == null || vehicle == null)
                 return result;
 
-            EnsureClientItemCache();
-
-            foreach (var inventoryItem in character.InventoryItems)
+            // Normal part-shop equipment.
+            if (character.InventoryItems != null && ServerMain.Items != null)
             {
-                if (inventoryItem == null || inventoryItem.State != 1 || inventoryItem.CarId != vehicle.CarId)
-                    continue;
+                EnsureClientItemCache();
 
-                ItemTable.Item definition;
-                if (_clientTableIndexToDefinition == null ||
-                    !_clientTableIndexToDefinition.TryGetValue(inventoryItem.TableIndex, out definition) ||
-                    definition == null)
+                foreach (var inventoryItem in character.InventoryItems)
                 {
-                    // Compatibility fallback for installations that have not imported the client
-                    // TDF data yet. This is only reliable when server XML ordering equals ItemClient.
-                    definition = inventoryItem.TableIndex >= 0 && inventoryItem.TableIndex < ServerMain.Items.Count
-                        ? ServerMain.Items[inventoryItem.TableIndex] as ItemTable.Item
-                        : null;
+                    if (inventoryItem == null || inventoryItem.State != 1 || inventoryItem.CarId != vehicle.CarId)
+                        continue;
 
-                    if (definition != null)
+                    ItemTable.Item definition;
+                    if (_clientTableIndexToDefinition == null ||
+                        !_clientTableIndexToDefinition.TryGetValue(inventoryItem.TableIndex, out definition) ||
+                        definition == null)
                     {
-                        Log.Warning(
-                            "Equipped part fallback mapping used: ClientTableIndex={0} -> ServerItemId={1}. Import ItemClient.tdf to dbo.client_item_lookup for authoritative mapping.",
-                            inventoryItem.TableIndex,
-                            definition.Id);
+                        definition = inventoryItem.TableIndex >= 0 && inventoryItem.TableIndex < ServerMain.Items.Count
+                            ? ServerMain.Items[inventoryItem.TableIndex] as ItemTable.Item
+                            : null;
+
+                        if (definition != null)
+                        {
+                            Log.Warning(
+                                "Equipped part fallback mapping used: ClientTableIndex={0} -> ServerItemId={1}. Import ItemClient.tdf to dbo.client_item_lookup for authoritative mapping.",
+                                inventoryItem.TableIndex,
+                                definition.Id);
+                        }
+                    }
+
+                    if (definition == null)
+                        continue;
+
+                    int basePoints;
+                    if (!int.TryParse(definition.BasePoints, NumberStyles.Integer, CultureInfo.InvariantCulture, out basePoints))
+                        basePoints = 0;
+
+                    var points = basePoints + Math.Max(0, inventoryItem.UpgradePoint);
+                    var category = (definition.Category ?? string.Empty).Trim().ToLowerInvariant();
+
+                    switch (category)
+                    {
+                        case "speed":
+                            result.Speed += points;
+                            break;
+                        case "crash":
+                        case "durability":
+                            result.Crash += points;
+                            break;
+                        case "accel":
+                        case "acceleration":
+                            result.Accel += points;
+                            break;
+                        case "boost":
+                        case "booster":
+                            result.Boost += points;
+                            break;
+                    }
+
+                    QuietLog.Write(
+                        "PartStats",
+                        "InvenIdx={0} ClientTableIndex={1} ResolvedItemId={2} Name={3} Category={4} BasePoints={5} UpgradePoint={6} Applied={7}",
+                        inventoryItem.InventoryIndex,
+                        inventoryItem.TableIndex,
+                        definition.Id,
+                        definition.Name,
+                        category,
+                        basePoints,
+                        inventoryItem.UpgradePoint,
+                        points);
+                }
+            }
+
+            // Visual-shop items contribute the official Bonus Speed/Accel/Boost/Crash
+            // values imported from VShop (or the ServerBonus* overrides in SQL Server).
+            try
+            {
+                using (var conn = GameServer.Instance.Database.Connection)
+                {
+                    var visual = VisualShopDatabase.LoadEquippedStatBonus(conn, character.Id, vehicle.CarId);
+                    result.Speed += visual.Speed;
+                    result.Crash += visual.Crash;
+                    result.Accel += visual.Accel;
+                    result.Boost += visual.Boost;
+
+                    if (visual.Speed != 0 || visual.Crash != 0 || visual.Accel != 0 || visual.Boost != 0)
+                    {
+                        QuietLog.Write(
+                            "PartStats",
+                            "VisualShop CarId={0} Bonus[S={1},C={2},A={3},B={4}]",
+                            vehicle.CarId, visual.Speed, visual.Crash, visual.Accel, visual.Boost);
                     }
                 }
-
-                if (definition == null)
-                    continue;
-
-                int basePoints;
-                if (!int.TryParse(definition.BasePoints, NumberStyles.Integer, CultureInfo.InvariantCulture, out basePoints))
-                    basePoints = 0;
-
-                // UpgradePoint is an explicit per-instance upgrade bonus. A normal shop part with
-                // UpgradePoint=0 contributes exactly the BasePoints shown by that item's client data.
-                var points = basePoints + Math.Max(0, inventoryItem.UpgradePoint);
-                var category = (definition.Category ?? string.Empty).Trim().ToLowerInvariant();
-
-                switch (category)
-                {
-                    case "speed":
-                        result.Speed += points;
-                        break;
-                    case "crash":
-                    case "durability":
-                        result.Crash += points;
-                        break;
-                    case "accel":
-                    case "acceleration":
-                        result.Accel += points;
-                        break;
-                    case "boost":
-                    case "booster":
-                        result.Boost += points;
-                        break;
-                }
-
-                QuietLog.Write(
-                    "PartStats",
-                    "InvenIdx={0} ClientTableIndex={1} ResolvedItemId={2} Name={3} Category={4} BasePoints={5} UpgradePoint={6} Applied={7}",
-                    inventoryItem.InventoryIndex,
-                    inventoryItem.TableIndex,
-                    definition.Id,
-                    definition.Name,
-                    category,
-                    basePoints,
-                    inventoryItem.UpgradePoint,
-                    points);
+            }
+            catch (Exception ex)
+            {
+                Log.Warning("Visual shop stat bonus lookup failed for CID={0} CarId={1}: {2}", character.Id, vehicle.CarId, ex.Message);
             }
 
             return result;
@@ -124,13 +150,14 @@ namespace GameServer.Util
                         itemById[part.Id] = part;
                     }
 
+                    using (var connection = GameServer.Instance.Database.Connection)
                     using (var cmd = new MySqlCommand(@"
 IF OBJECT_ID(N'dbo.client_item_lookup', N'U') IS NOT NULL
 BEGIN
     SELECT ClientTableIndex, ItemId
     FROM dbo.client_item_lookup
     WHERE ItemId IS NOT NULL;
-END", GameServer.Instance.Database.Connection))
+END", connection))
                     using (var reader = cmd.ExecuteReader())
                     {
                         while (reader.Read())

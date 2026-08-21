@@ -12,7 +12,7 @@ namespace Shared.Objects.GameDatas
         public class VShopItem
         {
             [XmlAttribute("support")] public string Support;
-            
+
             [XmlAttribute("id")] public string UniqueId;
             [XmlAttribute("item")] public string ItemName;
 
@@ -20,7 +20,7 @@ namespace Shared.Objects.GameDatas
             [XmlAttribute("categoryIdx")] public string CategoryIndex;
 
             [XmlAttribute("useMito")] public string UseMito;
-            
+
             [XmlAttribute("mitoPrice")] public string MitoPrice;
             [XmlAttribute("mitoSell")] public string SellMitoPrice;
             [XmlAttribute("mito7dPrice")] public string Mito7dPrice;
@@ -33,9 +33,32 @@ namespace Shared.Objects.GameDatas
             [XmlAttribute("hancoin7dPrice")] public string Hancoin7dPrice;
             [XmlAttribute("hancoin30dPrice")] public string Hancoin30dPrice;
             [XmlAttribute("hancoin90dPrice")] public string Hancoin90dPrice;
-            [XmlAttribute("hancoin3650dPrice")] public string Hancoin365dPrice; // TODO: I fucked the name up...
+            // Keep the historical typo for compatibility with already generated XML files.
+            [XmlAttribute("hancoin3650dPrice")] public string Hancoin365dPrice;
             [XmlAttribute("hancoin0dPrice")] public string Hancoin0dPrice;
+
+            // Original VShop table columns 30, 34/39/44/49/54.
+            [XmlAttribute("useMileage")] public string UseMileage;
+            [XmlAttribute("mileage7dPrice")] public string Mileage7dPrice;
+            [XmlAttribute("mileage30dPrice")] public string Mileage30dPrice;
+            [XmlAttribute("mileage90dPrice")] public string Mileage90dPrice;
+            [XmlAttribute("mileage365dPrice")] public string Mileage365dPrice;
+            [XmlAttribute("mileage0dPrice")] public string Mileage0dPrice;
+
+            // Original VShop table columns 35/40/45/50/55 and 56-60.
+            [XmlAttribute("bonusMito7d")] public string BonusMito7d;
+            [XmlAttribute("bonusMito30d")] public string BonusMito30d;
+            [XmlAttribute("bonusMito90d")] public string BonusMito90d;
+            [XmlAttribute("bonusMito365d")] public string BonusMito365d;
+            [XmlAttribute("bonusMito0d")] public string BonusMito0d;
+            [XmlAttribute("bonusSpeed")] public string BonusSpeed;
+            [XmlAttribute("bonusAccel")] public string BonusAccel;
+            [XmlAttribute("bonusBoost")] public string BonusBoost;
+            [XmlAttribute("bonusCrash")] public string BonusCrash;
+            [XmlAttribute("bonusAssist")] public string BonusAssist;
+
             /*
+            Original VShop/TDF column order used by the v0.77 data:
             0 Index
             1 Support
             2 UniqueId
@@ -125,7 +148,7 @@ namespace Shared.Objects.GameDatas
 
         [XmlElement(ElementName = "VShopItem")]
         public List<VShopItem> Items = new List<VShopItem>();
-        
+
         public void Save(string fileName)
         {
             var serializer = new XmlSerializer(typeof(VShopItemList));
