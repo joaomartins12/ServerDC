@@ -36,12 +36,21 @@ namespace GameServer.Network.Handlers
                 return;
             }
 
-            // Refresh persistent driver-profile values even for a live session. This makes
-            // User Information authoritative for mileage and battle records and also gives
-            // us the currently equipped license/title for the license handlers.
+            // User Information must be built from persistent profile values. This refreshes
+            // mileage, battle records and the currently equipped license/title before the
+            // 661 response is serialized.
             var currentLicenseId = CharacterProgressModel.LoadPersistentStats(
                 GameServer.Instance.Database.Connection,
                 character);
+
+            if (currentLicenseId <= 0 ||
+                !CharacterProgressModel.HasLicense(GameServer.Instance.Database.Connection,
+                    character.Id, currentLicenseId))
+            {
+                CharacterModel.EnsureDefaultLicense(GameServer.Instance.Database.Connection, character.Id);
+                currentLicenseId = CharacterProgressModel.GetCurrentLicense(
+                    GameServer.Instance.Database.Connection, character.Id);
+            }
 
             if (character.InventoryItems == null || character.InventoryItems.Count == 0)
                 ItemModel.RetrieveAll(GameServer.Instance.Database.Connection, ref character);
@@ -51,10 +60,22 @@ namespace GameServer.Network.Handlers
             var statisticInfo = BuildStatisticInfo(character);
             var serial = user == null ? (ushort)0 : user.VehicleSerial;
 
+            // Drift City v0.77a checks the first DWORD of GameCharInfoAck field_10
+            // (+0x47D) before creating the profile's 3D vehicle. Old DCNC code always
+            // sent zero here, which made the client deliberately skip the car preview.
+            // For a live player, VehicleSerial is the natural client-side identity. For
+            // an offline profile use a stable non-zero CID-derived context instead.
+            uint profileContextId = serial;
+            if (profileContextId == 0)
+                profileContextId = (uint)(character.Id & uint.MaxValue);
+            if (profileContextId == 0)
+                profileContextId = 1;
+
             Log.Debug(
-                "GameCharInfo profile: target={0} Serial={1} License={2} Mileage={3:0.##} PvP={4}W/{5}L Team={6}W/{7}L CarType={8}",
+                "GameCharInfo profile: target={0} Serial={1} ProfileContext={2} License={3} Mileage={4:0.##} PvP={5}W/{6}L Team={7}W/{8}L CarType={9}",
                 character.Name,
                 serial,
+                profileContextId,
                 currentLicenseId,
                 character.TotalDistance,
                 character.PvpWinCount,
@@ -66,11 +87,12 @@ namespace GameServer.Network.Handlers
             var ack = new GameCharInfoAnswer
             {
                 Character = character,
-                Vehicle = character.ActiveCar,
+                Vehicle = character.ActiveCar ?? new Vehicle(),
                 StatisticInfo = statisticInfo,
                 Crew = character.Crew,
-                Serial = serial,
-                ChId = (char)character.LastChannel
+                ProfileContextId = profileContextId,
+                CurrentLicenseId = currentLicenseId,
+                LocType = 2
             };
 
             if (character.ActiveCar != null)
@@ -80,10 +102,12 @@ namespace GameServer.Network.Handlers
                 if (resolved != null)
                 {
                     Log.Info(
-                        "GameCharInfo source={0}: CID={1} Serial={2} ActiveVehicleId={3} CarDbId={4} CarType={5} VehicleId={6} Name={7} Grade=V{8} Inventory={9} Source={10} Base[S={11},C={12},A={13},B={14}] Equip[S={15},C={16},A={17},B={18}]",
+                        "GameCharInfo source={0}: CID={1} Serial={2} ProfileContext={3} License={4} ActiveVehicleId={5} CarDbId={6} CarType={7} VehicleId={8} Name={9} Grade=V{10} Inventory={11} Source={12} Base[S={13},C={14},A={15},B={16}] Equip[S={17},C={18},A={19},B={20}]",
                         source,
                         character.Id,
                         serial,
+                        profileContextId,
+                        currentLicenseId,
                         character.ActiveVehicleId,
                         character.ActiveCar.CarId,
                         character.ActiveCar.CarType,
