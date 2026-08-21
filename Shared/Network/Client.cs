@@ -13,6 +13,7 @@ namespace Shared.Network
         private readonly NetworkStream _ns;
         private readonly DefaultServer _parent;
         private readonly TcpClient _tcp;
+        private readonly object _sendSync = new object();
 
         private byte[] _buffer;
         private int _bytesToRead;
@@ -103,7 +104,8 @@ namespace Shared.Network
                     return;
                 }
 
-                _ns.Write(new byte[56], 0, 56);
+                lock (_sendSync)
+                    _ns.Write(new byte[56], 0, 56);
 
                 _buffer = new byte[4];
                 _bytesToRead = _buffer.Length;
@@ -150,7 +152,6 @@ namespace Shared.Network
                     return;
                 }
 
-                // Rebuild the exact TCP packet before any handler reads or mutates its state.
                 var wirePacket = new byte[_packetLength];
                 Buffer.BlockCopy(BitConverter.GetBytes(_packetLength), 0, wirePacket, 0, 2);
                 Buffer.BlockCopy(BitConverter.GetBytes(_packetId), 0, wirePacket, 2, 2);
@@ -177,9 +178,8 @@ namespace Shared.Network
         {
             var buffer = packet.Writer.GetBuffer();
             var bufferLength = buffer.Length;
-            var length = (ushort)(bufferLength + 2); // Length includes itself.
+            var length = (ushort)(bufferLength + 2);
 
-            // Capture exactly what will be written to the network: length + packet id + body.
             var wirePacket = new byte[length];
             Buffer.BlockCopy(BitConverter.GetBytes(length), 0, wirePacket, 0, 2);
             if (bufferLength > 0)
@@ -190,8 +190,6 @@ namespace Shared.Network
 
 #if DEBUG
             var hexDump = BinaryWriterExt.HexDump(buffer);
-
-            // Stop frequent packets from spamming the console. They are still always written to Logs/Packets.
             if (!DefaultServer.PacketDumpBlacklist.Contains(packet.Id))
             {
                 if (DefaultServer.PacketNameDatabase.ContainsKey(packet.Id))
@@ -210,8 +208,15 @@ namespace Shared.Network
 
             try
             {
-                _ns.Write(BitConverter.GetBytes(length), 0, 2);
-                _ns.Write(buffer, 0, bufferLength);
+                // A target client can receive its own handler response while another
+                // client's thread broadcasts movement/chat to the same socket. Keep the
+                // packet header and body atomic so concurrent sends can never interleave.
+                lock (_sendSync)
+                {
+                    if (!_connected) return;
+                    _ns.Write(BitConverter.GetBytes(length), 0, 2);
+                    _ns.Write(buffer, 0, bufferLength);
+                }
             }
             catch (Exception ex)
             {
