@@ -63,9 +63,6 @@ WHERE CharacterId=@cid AND CarId=@carId AND CategoryIndex=@category AND ItemStat
                     }
                 }
 
-                // CmdEquipVisualItem's third DWORD is the destination car. Visual items
-                // are garage inventory entries and can be moved to the currently selected
-                // car; keeping the old persisted CarId makes UI preview and world diverge.
                 using (var equip = new MySqlCommand(@"
 UPDATE dbo.visual_items
 SET CarId=@carId, ItemState=1, UpdateTime=@now
@@ -419,6 +416,7 @@ ORDER BY CASE WHEN Category=@category THEN 0 ELSE 1 END,
                 return;
 
             var character = sourceUser.ActiveCharacter;
+            var visualSnapshot = PlayerVisualSnapshotBuilder.BuildVisualItem(character);
             var ownerSent = false;
             var remoteSent = 0;
 
@@ -429,7 +427,14 @@ ORDER BY CASE WHEN Category=@category THEN 0 ELSE 1 END,
 
                 if (ReferenceEquals(client.User, sourceUser))
                 {
-                    client.Send(BuildLocalVisualUpdate(sourceUser).CreatePacket());
+                    client.Send(new VisualUpdateAnswer
+                    {
+                        Serial = sourceUser.VehicleSerial,
+                        Age = 0,
+                        CarId = character.ActiveCar.CarId,
+                        VisualState = 0,
+                        VisualItem = visualSnapshot
+                    }.CreatePacket());
                     ownerSent = true;
                     continue;
                 }
@@ -447,38 +452,6 @@ ORDER BY CASE WHEN Category=@category THEN 0 ELSE 1 END,
         public static void Broadcast(User sourceUser)
         {
             Sync(sourceUser);
-        }
-
-        private static VisualUpdateAnswer BuildLocalVisualUpdate(User user)
-        {
-            var character = user.ActiveCharacter;
-            var vehicle = character.ActiveCar;
-            var attr = PlayerVisualSnapshotBuilder.BuildCarAttr(character);
-            var color = unchecked((uint)attr.___u0.__s1.lvalColor);
-
-            return new VisualUpdateAnswer
-            {
-                Serial = user.VehicleSerial,
-                Age = 0,
-                CarId = vehicle.CarId,
-                CarInfo = new XiStrCarInfo
-                {
-                    CarID = vehicle.CarId,
-                    CarType = vehicle.CarType,
-                    BaseColor = vehicle.BaseColor,
-                    Grade = vehicle.Grade,
-                    SlotType = vehicle.SlotType,
-                    AuctionCnt = vehicle.AuctionCnt,
-                    Mitron = vehicle.Mitron,
-                    Kmh = vehicle.Kmh,
-                    Color = color,
-                    Color2 = vehicle.Color2,
-                    MitronCapacity = vehicle.MitronCapacity,
-                    MitronEfficiency = vehicle.MitronEfficiency,
-                    AuctionOn = vehicle.AuctionOn,
-                    SBBOn = vehicle.SBBOn
-                }
-            };
         }
     }
 }
