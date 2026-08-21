@@ -13,7 +13,6 @@ namespace GameServer.Network.Handlers.Join
     public class JoinArea
     {
         private const ushort LicenseInfoRes = 806;
-        private const ushort SetVisualItemRes = 805;
         private const int RookieLicenseId = 7000;
         private const int JoinResyncDelayMs = 750;
 
@@ -161,8 +160,6 @@ namespace GameServer.Network.Handlers.Join
             LiveAreaState joiningState;
             if (!TryGetState(joiningSerial, out joiningState)) return;
 
-            var forceVisualTransition = string.Equals(reason, "join-ready", StringComparison.OrdinalIgnoreCase);
-
             foreach (var other in GameServer.Instance.Server.GetClients())
             {
                 if (other == null || other == joiningClient || !IsCurrentSerialOwner(other) ||
@@ -173,12 +170,12 @@ namespace GameServer.Network.Handlers.Join
                 if (!TryGetState(other.User.VehicleSerial, out otherState) || otherState.AreaId != areaId)
                     continue;
 
-                SendIdentityPair(joiningClient, joiningState, other, otherState, reason, forceVisualTransition);
+                SendIdentityPair(joiningClient, joiningState, other, otherState, reason);
             }
         }
 
         private static void SendIdentityPair(Client a, LiveAreaState aState,
-            Client b, LiveAreaState bState, string reason, bool forceVisualTransition)
+            Client b, LiveAreaState bState, string reason)
         {
             if (!IsCurrentSerialOwner(a) || !IsCurrentSerialOwner(b) ||
                 a.User.ActiveCharacter == null || b.User.ActiveCharacter == null) return;
@@ -186,14 +183,14 @@ namespace GameServer.Network.Handlers.Join
             var aSerial = a.User.VehicleSerial;
             var bSerial = b.User.VehicleSerial;
 
-            SendPlayerSnapshot(a, bSerial, b.User.ActiveCharacter, forceVisualTransition);
+            SendPlayerSnapshot(a, bSerial, b.User.ActiveCharacter);
             SendLicenseInfo(a, bSerial, bState.LicenseId);
 
-            SendPlayerSnapshot(b, aSerial, a.User.ActiveCharacter, forceVisualTransition);
+            SendPlayerSnapshot(b, aSerial, a.User.ActiveCharacter);
             SendLicenseInfo(b, aSerial, aState.LicenseId);
 
             Log.Debug(
-                "LiveArea identity sync[{0}]: {1}(serial={2},area={3},license={4}) <-> {5}(serial={6},area={7},license={8}) -> 802+809+805{9}+806",
+                "LiveArea identity sync[{0}]: {1}(serial={2},area={3},license={4}) <-> {5}(serial={6},area={7},license={8}) -> 802+467+806",
                 reason,
                 a.User.ActiveCharacter.Name,
                 aSerial,
@@ -202,51 +199,27 @@ namespace GameServer.Network.Handlers.Join
                 b.User.ActiveCharacter.Name,
                 bSerial,
                 bState.AreaId,
-                bState.LicenseId,
-                forceVisualTransition ? "(post-spawn invalidate)" : string.Empty);
+                bState.LicenseId);
         }
 
-        private static void SendPlayerSnapshot(Client recipient, ushort serial, Character character, bool forceVisualTransition)
+        private static void SendPlayerSnapshot(Client recipient, ushort serial, Character character)
         {
             if (recipient == null || character == null || serial == 0) return;
 
             PlayerVisualSnapshotBuilder.ApplyActivePaint(character);
             var snapshot = PlayerVisualSnapshotBuilder.BuildPlayerInfo(serial, character);
 
+            // 802 establishes/refreshes the player's identity record.
             recipient.Send(new PlayerInfoOldAnswer
             {
                 PacketId = PlayerInfoOldAnswer.PlayerInfoOldPacketId,
                 PlayerInfo = snapshot
             }.CreatePacket());
 
-            recipient.Send(new PlayerInfoOldAnswer
-            {
-                PacketId = PlayerInfoOldAnswer.PlayerInfoLivePacketId,
-                PlayerInfo = snapshot
-            }.CreatePacket());
-
-            // DriftCity.exe handler directly following PlayerInfo resolves packet 805 as
-            // a 16-byte SetVisualItem command. Mode 4 looks the world vehicle up by the
-            // serial at +4, sets its render-dirty byte (+0x43E0) and resets the pending
-            // rebuild state (+0x41E8). This is the missing bridge between XiPlayerInfo
-            // being correct and the already-spawned remote 3D car actually rebuilding.
-            if (forceVisualTransition)
-                SendRemoteVisualInvalidate(recipient, serial);
-        }
-
-        public static void SendRemoteVisualInvalidate(Client recipient, ushort serial)
-        {
-            if (recipient == null || serial == 0) return;
-
-            var visual = new Packet(SetVisualItemRes);
-            visual.Writer.Write((ushort)0); // +0x02
-            visual.Writer.Write(serial);    // +0x04 target vehicle serial
-            visual.Writer.Write((ushort)0); // +0x06
-            visual.Writer.Write(0u);        // +0x08
-            visual.Writer.Write(4u);        // +0x0C mode 4 = invalidate one vehicle
-            recipient.Send(visual);
-
-            Log.Debug("Remote visual invalidate: TargetSerial={0} Packet=805 Mode=4 Size=16", serial);
+            // 467 is the retail world-vehicle visual snapshot. The client resolves the
+            // target by serial and applies XiCarAttr + XiPlayerInfo to the existing car,
+            // which is what 809/805 could not do because they never carried paint color.
+            recipient.Send(PlayerVisualSnapshotBuilder.BuildRoomNotifyChange(serial, character).CreatePacket());
         }
 
         private static int GetCurrentLicense(ulong cid)

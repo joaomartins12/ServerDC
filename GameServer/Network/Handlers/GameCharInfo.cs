@@ -123,10 +123,18 @@ namespace GameServer.Util
             return new XiPlayerInfo(serial, character) { Age = 0, VisualItem = BuildVisualItem(character), UseTime = 0.0f };
         }
 
-        public static PlayerInfoOldAnswer BuildRoomNotifyChange(ushort serial, Character character)
+        /// <summary>
+        /// Complete retail world visual snapshot. Unlike packet 802/809 this carries
+        /// XiCarAttr as well as XiPlayerInfo, so paint and equipped cosmetics are applied
+        /// together to the vehicle identified by Serial.
+        /// </summary>
+        public static RoomNotifyChangeAnswer BuildRoomNotifyChange(ushort serial, Character character)
         {
-            return new PlayerInfoOldAnswer
+            return new RoomNotifyChangeAnswer
             {
+                Serial = serial,
+                Age = 0,
+                CarAttr = BuildCarAttr(character),
                 PlayerInfo = BuildPlayerInfo(serial, character)
             };
         }
