@@ -21,8 +21,6 @@ namespace GameServer.Network.Handlers.Social
                 GameServer.Instance.Database.Connection,
                 packet.Sender.User.ActiveCharacterId);
 
-            // The friendship table is persistent data only. Online state, serial and
-            // location must come from the currently connected GameServer session.
             foreach (var friend in friends)
                 ApplyLivePresence(friend);
 
@@ -57,9 +55,10 @@ namespace GameServer.Network.Handlers.Social
 
             if (character == null || liveClient.User.VehicleSerial == 0)
             {
-                // v0.77a treats a zero session serial/location type as offline.
                 friend.Serial = 0;
                 friend.LocationType = (char)0;
+                friend.ChannelId = (char)0;
+                friend.LocationId = 0;
                 friend.CurCarGrade = 0;
                 return;
             }
@@ -68,10 +67,12 @@ namespace GameServer.Network.Handlers.Social
             friend.Level = character.Level;
             friend.CurCarGrade = character.ActiveCar == null ? 0u : character.ActiveCar.Grade;
 
-            // Location type 2 is the normal live city/channel context used by the
-            // same v0.77a profile flow. Type 0 is offline; type 1 is Area/PvP.
-            friend.LocationType = (char)2;
-            friend.ChannelId = (char)(character.LastChannel < 0 ? 0 : character.LastChannel);
+            // v0.77a location semantics: LocType 1 means a live Area and LocId is
+            // resolved through the client's area/location table. LocType 2 selects a
+            // different activity/event table; feeding City=1 into that table rendered
+            // "2 times Exp. Arena" while both players were actually in Driver Dome.
+            friend.LocationType = (char)1;
+            friend.ChannelId = (char)Math.Max(0, character.LastChannel);
             friend.LocationId = (ushort)Math.Max(0, character.City);
 
             if (character.Crew != null)
@@ -92,16 +93,6 @@ namespace GameServer.Network.Handlers.Social
                 friend.CurCarGrade);
         }
 
-        /// <summary>
-        /// Drift City v0.77a friend unit is exactly 112 bytes:
-        /// Name[21], CrewName[13], CID, CrewId, CrewMarkId, State,
-        /// LocationType(wchar), ChannelId(wchar), LocationId(u16),
-        /// Level(u16), CurCarGrade(u32), Serial(u32).
-        ///
-        /// Do not use the old DCNC serializer here: that old research layout wrote
-        /// an additional serial before LocationType and is four bytes too long for
-        /// the packet consumed by this client build.
-        /// </summary>
         private static void WriteFriend(Packet ack, Friend friend)
         {
             ack.Writer.WriteUnicodeStatic(friend.CharacterName, 21, true);
