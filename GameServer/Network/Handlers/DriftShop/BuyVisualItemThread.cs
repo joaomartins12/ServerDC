@@ -1,11 +1,9 @@
 using System;
 using System.Globalization;
-using System.Linq;
 using GameServer.Util;
 using Shared.Models;
 using Shared.Network;
 using Shared.Network.GameServer;
-using Shared.Objects.GameDatas;
 using Shared.Util;
 
 namespace GameServer.Network.Handlers
@@ -37,9 +35,8 @@ namespace GameServer.Network.Handlers
                     request.Cash,
                     request.PlateName);
 
-                // Some visual customization rows are intentionally zero-priced helper
-                // entries (support=0). The original server accepts them as part of the
-                // customization bundle. Do not reject those as an unconfigured price.
+                // Some retail VShop rows are zero-price helper entries. They are still
+                // valid customization rows, but only support=0 entries may use this path.
                 if (!purchase.Success && purchase.Error == "visual_price_not_configured")
                 {
                     purchase = TryPersistZeroPriceVisual(
@@ -53,14 +50,10 @@ namespace GameServer.Network.Handlers
 
                 if (purchase.Success)
                 {
-                    // VShopItems.xml exposes both category and categoryIdx. category is
-                    // the visual equipment family; categoryIdx is an index inside that
-                    // family. The old implementation used categoryIdx, which produced
-                    // Category=0 for valid spoilers/decals and therefore never equipped
-                    // them. Normalize both the new row and rows bought earlier in this
-                    // session from the authoritative catalog category.
+                    // CategoryIndex now comes from the retail VisualItem.xlt table.
+                    // Normalize older rows bought before the XLT importer was installed.
                     NormalizeVisualCategories(conn, character.Id, request.CarId);
-                    purchase.Equipped = IsEquipableVisual(request.TableIndex);
+                    purchase.Equipped = purchase.CategoryIndex > 0;
                 }
             }
 
@@ -79,8 +72,7 @@ namespace GameServer.Network.Handlers
                 return;
             }
 
-            // The SQL transaction is authoritative. Keep the already-loaded character
-            // snapshot in sync so subsequent packets in this session show the new balance.
+            // The SQL transaction is authoritative. Keep the in-memory snapshot aligned.
             switch (purchase.Currency)
             {
                 case VisualShopDatabase.CurrencyType.Mito:
@@ -94,9 +86,7 @@ namespace GameServer.Network.Handlers
                     break;
             }
 
-            // The retail server sends the visual-item modification/list update as part of
-            // the purchase flow. Without this the row exists in SQL but the current client
-            // session continues to believe it owns no visual item until a relog.
+            // Retail updates the visual inventory as part of the purchase flow.
             GameServer.Network.Handlers.Join.VisualItemList.SendCurrent(packet);
 
             var ack = new BuyVisualItemThreadAnswer
@@ -140,24 +130,33 @@ namespace GameServer.Network.Handlers
                 Price = 0
             };
 
-            var source = ServerMain.VisualItems == null
-                ? null
-                : ServerMain.VisualItems.FirstOrDefault(x => ParseUInt(x.UniqueId) == shopId);
-            if (source == null)
+            int support;
+            int category;
+            using (var catalog = new MySqlCommand(@"
+SELECT Support, CategoryIndex
+FROM dbo.visual_item_catalog
+WHERE ShopId=@shopId;", conn))
             {
-                result.Error = "visual_item_not_found";
-                return result;
+                catalog.Parameters.AddWithValue("@shopId", shopId);
+                using (var reader = catalog.ExecuteReader())
+                {
+                    if (!reader.Read())
+                    {
+                        result.Error = "visual_item_not_found";
+                        return result;
+                    }
+
+                    support = Convert.ToInt32(reader[0], CultureInfo.InvariantCulture);
+                    category = Convert.ToInt32(reader[1], CultureInfo.InvariantCulture);
+                }
             }
 
-            int support;
-            int.TryParse(source.Support, NumberStyles.Integer, CultureInfo.InvariantCulture, out support);
             if (support != 0)
             {
                 result.Error = "visual_price_not_configured";
                 return result;
             }
 
-            // Verify car ownership again because this fallback bypasses Purchase().
             using (var own = new MySqlCommand(
                 "SELECT COUNT(1) FROM dbo.vehicles WHERE CID=@carId AND CharID=@charId", conn))
             {
@@ -170,7 +169,6 @@ namespace GameServer.Network.Handlers
                 }
             }
 
-            var category = ParseCategory(source.Category);
             uint inventoryIndex;
             using (var next = new MySqlCommand(@"
 SELECT ISNULL(MAX(InventoryIndex),-1)+1
@@ -223,7 +221,7 @@ VALUES
             result.Equipped = category > 0;
 
             Log.Info(
-                "VisualShop zero-price helper persisted: CID={0} ShopId={1} CarId={2} Category={3} InvenIdx={4}",
+                "VisualShop zero-price helper persisted: CID={0} ShopId={1} CarId={2} CategoryIndex={3} InvenIdx={4}",
                 characterId, shopId, carId, category, inventoryIndex);
             return result;
         }
@@ -235,17 +233,16 @@ VALUES
 (
     SELECT v.Id,
            v.InventoryIndex,
-           TRY_CONVERT(INT,c.Category) AS RealCategory,
+           c.CategoryIndex AS RealCategory,
            ROW_NUMBER() OVER
            (
-               PARTITION BY TRY_CONVERT(INT,c.Category)
+               PARTITION BY c.CategoryIndex
                ORDER BY v.InventoryIndex DESC, v.Id DESC
            ) AS rn
     FROM dbo.visual_items v
     JOIN dbo.visual_item_catalog c ON c.ShopId=v.ShopId
     WHERE v.CharacterId=@cid AND v.CarId=@carId
-      AND TRY_CONVERT(INT,c.Category) IS NOT NULL
-      AND TRY_CONVERT(INT,c.Category) > 0
+      AND c.CategoryIndex > 0
 )
 UPDATE v
 SET CategoryIndex=n.RealCategory,
@@ -257,30 +254,6 @@ JOIN normalized n ON n.Id=v.Id;", conn))
                 cmd.Parameters.AddWithValue("@carId", carId);
                 cmd.ExecuteNonQuery();
             }
-        }
-
-        private static bool IsEquipableVisual(uint shopId)
-        {
-            var source = ServerMain.VisualItems == null
-                ? null
-                : ServerMain.VisualItems.FirstOrDefault(x => ParseUInt(x.UniqueId) == shopId);
-            return source != null && ParseCategory(source.Category) > 0;
-        }
-
-        private static int ParseCategory(string value)
-        {
-            int category;
-            return int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out category)
-                ? category
-                : 0;
-        }
-
-        private static uint ParseUInt(string value)
-        {
-            uint parsed;
-            return uint.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out parsed)
-                ? parsed
-                : 0u;
         }
     }
 }
