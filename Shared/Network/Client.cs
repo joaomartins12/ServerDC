@@ -208,9 +208,6 @@ namespace Shared.Network
 
             try
             {
-                // A target client can receive its own handler response while another
-                // client's thread broadcasts movement/chat to the same socket. Keep the
-                // packet header and body atomic so concurrent sends can never interleave.
                 lock (_sendSync)
                 {
                     if (!_connected) return;
@@ -252,6 +249,15 @@ namespace Shared.Network
         public void KillConnection(string reason = "")
         {
             if (!_connected) return;
+
+            // Capture identity before closing the socket. AreaServer connections use
+            // ports 11031/11041; when one disappears, retail clients expect the remote
+            // vehicle to be explicitly removed rather than waiting for a local timeout.
+            var departingUser = User;
+            var departingSerial = departingUser == null ? (ushort)0 : departingUser.VehicleSerial;
+            var departingName = departingUser?.ActiveCharacter?.Name ?? string.Empty;
+            var localPort = LocalPort;
+
             _connected = false;
 #if !DEBUG
             if (reason != "Socket or IO Exception")
@@ -259,16 +265,47 @@ namespace Shared.Network
             {
                 Log.Info("Killing off client. {0}", reason);
             }
-            _tcp.Close();
 
-            if (User != null)
+            if (departingSerial != 0 && (localPort == 11031 || localPort == 11041))
             {
-                if (DefaultServer.ActiveSerials.ContainsKey(User.VehicleSerial) &&
-                    DefaultServer.ActiveSerials[User.VehicleSerial] == User)
+                try
                 {
-                    DefaultServer.ActiveSerials.Remove(User.VehicleSerial);
+                    var remove = new Packet(Packets.CmdRemoveVehicle);
+                    remove.Writer.Write(departingSerial);
+                    _parent.Broadcast(remove, this);
+                    Log.Debug("Area disconnect remove: Name={0} Serial={1} Port={2} -> packet 550 broadcast",
+                        departingName, departingSerial, localPort);
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning("Area disconnect remove failed for Serial={0}: {1}", departingSerial, ex.Message);
                 }
             }
+
+            if (departingUser != null && departingSerial != 0)
+            {
+                try
+                {
+                    User active;
+                    if (DefaultServer.ActiveSerials.TryGetValue(departingSerial, out active) &&
+                        ReferenceEquals(active, departingUser))
+                    {
+                        DefaultServer.ActiveSerials.Remove(departingSerial);
+                    }
+                }
+                catch
+                {
+                }
+            }
+
+            // This is intentionally cleared before the object is eventually removed from
+            // DefaultServer's backing list. Every GetClient/GetClients caller already
+            // filters through User/ActiveCharacter, so a dead connection can no longer be
+            // mistaken for a live player during a relogin.
+            User = null;
+
+            try { _tcp.Close(); }
+            catch { }
         }
 
         public void SendChatMessage(string message)
