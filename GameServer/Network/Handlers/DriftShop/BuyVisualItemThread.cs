@@ -68,7 +68,7 @@ namespace GameServer.Network.Handlers
                 Type = purchase.Support,
                 TableIndex = purchase.ShopId,
                 CarId = purchase.CarId,
-                InventoryId = purchase.InventoryIndex,
+                InventoryId = unchecked((int)purchase.InventoryIndex),
                 Period = purchase.Period,
                 Mito = purchase.Currency == VisualShopDatabase.CurrencyType.Mito ? purchase.Price : 0,
                 Hancoin = purchase.Currency == VisualShopDatabase.CurrencyType.Hancoin ? purchase.Price : 0,
