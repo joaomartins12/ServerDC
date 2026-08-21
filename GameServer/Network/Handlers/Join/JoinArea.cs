@@ -5,6 +5,7 @@ using GameServer.Util;
 using Shared.Models;
 using Shared.Network;
 using Shared.Network.GameServer;
+using Shared.Objects;
 using Shared.Util;
 
 namespace GameServer.Network.Handlers.Join
@@ -71,6 +72,8 @@ namespace GameServer.Network.Handlers.Join
             Log.Debug("LiveArea: JOIN Name={0} Serial={1} AreaId={2} License={3}",
                 character.Name, serial, joinAreaPacket.AreaId, license);
 
+            // Initial identity is sent before the AreaServer creates the remote 3D car.
+            // Do not dirty-toggle here; just populate the identity cache.
             SyncVisiblePlayers(packet.Sender, joinAreaPacket.AreaId, "join");
             QueueJoinResync(serial, joinAreaPacket.AreaId);
 
@@ -126,6 +129,10 @@ namespace GameServer.Network.Handlers.Join
                     if (!IsCurrentSerialOwner(client) || client.User.ActiveCharacter == null)
                         return;
 
+                    // At this point AreaServer has already replayed packet 541 and the
+                    // remote vehicle object exists. Force one visual difference followed
+                    // immediately by the real XiPlayerInfo so the retail manager takes its
+                    // rebuild path instead of treating an identical cached 809 as a no-op.
                     SyncVisiblePlayers(client, areaId, "join-ready");
                 }
                 catch (Exception ex)
@@ -159,6 +166,8 @@ namespace GameServer.Network.Handlers.Join
             LiveAreaState joiningState;
             if (!TryGetState(joiningSerial, out joiningState)) return;
 
+            var forceVisualTransition = string.Equals(reason, "join-ready", StringComparison.OrdinalIgnoreCase);
+
             foreach (var other in GameServer.Instance.Server.GetClients())
             {
                 if (other == null || other == joiningClient || !IsCurrentSerialOwner(other) ||
@@ -169,12 +178,12 @@ namespace GameServer.Network.Handlers.Join
                 if (!TryGetState(other.User.VehicleSerial, out otherState) || otherState.AreaId != areaId)
                     continue;
 
-                SendIdentityPair(joiningClient, joiningState, other, otherState, reason);
+                SendIdentityPair(joiningClient, joiningState, other, otherState, reason, forceVisualTransition);
             }
         }
 
         private static void SendIdentityPair(Client a, LiveAreaState aState,
-            Client b, LiveAreaState bState, string reason)
+            Client b, LiveAreaState bState, string reason, bool forceVisualTransition)
         {
             if (!IsCurrentSerialOwner(a) || !IsCurrentSerialOwner(b) ||
                 a.User.ActiveCharacter == null || b.User.ActiveCharacter == null) return;
@@ -182,14 +191,14 @@ namespace GameServer.Network.Handlers.Join
             var aSerial = a.User.VehicleSerial;
             var bSerial = b.User.VehicleSerial;
 
-            SendPlayerSnapshot(a, bSerial, b.User.ActiveCharacter);
+            SendPlayerSnapshot(a, bSerial, b.User.ActiveCharacter, forceVisualTransition);
             SendLicenseInfo(a, bSerial, bState.LicenseId);
 
-            SendPlayerSnapshot(b, aSerial, a.User.ActiveCharacter);
+            SendPlayerSnapshot(b, aSerial, a.User.ActiveCharacter, forceVisualTransition);
             SendLicenseInfo(b, aSerial, aState.LicenseId);
 
             Log.Debug(
-                "LiveArea identity sync[{0}]: {1}(serial={2},area={3},license={4}) <-> {5}(serial={6},area={7},license={8}) -> 802+809+806",
+                "LiveArea identity sync[{0}]: {1}(serial={2},area={3},license={4}) <-> {5}(serial={6},area={7},license={8}) -> 802+809{9}+806",
                 reason,
                 a.User.ActiveCharacter.Name,
                 aSerial,
@@ -198,24 +207,33 @@ namespace GameServer.Network.Handlers.Join
                 b.User.ActiveCharacter.Name,
                 bSerial,
                 bState.AreaId,
-                bState.LicenseId);
+                bState.LicenseId,
+                forceVisualTransition ? "(reset+real)" : string.Empty);
         }
 
-        private static void SendPlayerSnapshot(Client recipient, ushort serial, Shared.Objects.Character character)
+        private static void SendPlayerSnapshot(Client recipient, ushort serial, Character character, bool forceVisualTransition)
         {
             if (recipient == null || character == null || serial == 0) return;
 
+            PlayerVisualSnapshotBuilder.ApplyActivePaint(character);
             var snapshot = PlayerVisualSnapshotBuilder.BuildPlayerInfo(serial, character);
 
-            // 802 is the retail "old" discovery packet. 809 (0x329) is the live
-            // PlayerInfoRes path used by this client build; its handler consumes the
-            // full 216-byte XiPlayerInfo directly. Send both during discovery so the
-            // remote render object is created and then populated with its live visual.
             recipient.Send(new PlayerInfoOldAnswer
             {
                 PacketId = PlayerInfoOldAnswer.PlayerInfoOldPacketId,
                 PlayerInfo = snapshot
             }.CreatePacket());
+
+            if (forceVisualTransition)
+            {
+                var reset = PlayerVisualSnapshotBuilder.BuildPlayerInfo(serial, character);
+                reset.VisualItem = new XiVisualItem { PlateString = string.Empty };
+                recipient.Send(new PlayerInfoOldAnswer
+                {
+                    PacketId = PlayerInfoOldAnswer.PlayerInfoLivePacketId,
+                    PlayerInfo = reset
+                }.CreatePacket());
+            }
 
             recipient.Send(new PlayerInfoOldAnswer
             {
