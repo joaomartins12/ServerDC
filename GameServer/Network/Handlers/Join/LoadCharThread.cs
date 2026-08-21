@@ -23,8 +23,6 @@ namespace GameServer.Network.Handlers.Join
                 return;
             }
 
-            // CharacterModel predates the profile/license persistence columns. Load the
-            // extended driver record before the character is serialized to the client.
             var currentLicenseId = CharacterProgressModel.LoadPersistentStats(
                 GameServer.Instance.Database.Connection,
                 character);
@@ -73,10 +71,12 @@ namespace GameServer.Network.Handlers.Join
             packet.Sender.Send(ack.CreatePacket());
 
             SendInitialStats(packet, character);
-
-            // Guarantee the default Rookie ownership and exercise the dedicated client
-            // NewLicenseNoti path. Detailed state is written to Logs/Research/LicenseProtocol.txt.
             global::GameServer.Network.Handlers.LicenseProtocol.Bootstrap(packet.Sender, character);
+
+            // Native retail packet 275 drives the "friend connected" popup. Notify only
+            // after the character is fully loaded so recipients can immediately request
+            // or receive the corresponding live friend/location state.
+            global::GameServer.Network.Handlers.Social.FriendList.NotifyConnection(character.Name, true);
         }
 
         private static void SendInitialStats(Packet packet, Character character)
