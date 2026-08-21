@@ -6,13 +6,14 @@ using Shared.Util;
 namespace Shared.Network.GameServer
 {
     /// <summary>
-    /// VisualItemListAck (1201). Header is ListUpdate + ItemNum followed by
-    /// 120-byte XiStrMyVSItem records. The empty response still carries one null
-    /// record, matching the v0.77 capture (132 wire bytes including packet header).
+    /// VisualItemListAck (1201). Retail v0.77a uses an 8-byte payload header
+    /// (ListUpdate + ItemNum), followed by exactly ItemNum 120-byte XiStrMyVSItem
+    /// records. ListUpdate 0x40000 tells the client to clear its current visual
+    /// inventory before inserting the supplied records.
     /// </summary>
     public class VisualItemListAnswer : OutPacket
     {
-        public int ListUpdate = 262144;
+        public int ListUpdate = 0x40000;
         public List<InventoryVisualItem> Items = new List<InventoryVisualItem>();
 
         public override Packet CreatePacket()
@@ -22,7 +23,7 @@ namespace Shared.Network.GameServer
 
         public override int ExpectedSize()
         {
-            return 12 + (120 * (Items.Count == 0 ? 1 : Items.Count));
+            return 12 + (120 * Items.Count);
         }
 
         public override byte[] GetBytes()
@@ -33,15 +34,8 @@ namespace Shared.Network.GameServer
                 bs.Write(ListUpdate);
                 bs.Write(Items.Count);
 
-                if (Items.Count == 0)
-                {
-                    bs.Write(new byte[120]);
-                }
-                else
-                {
-                    foreach (var item in Items)
-                        bs.Write(item);
-                }
+                foreach (var item in Items)
+                    bs.Write(item);
 
                 return ms.ToArray();
             }
