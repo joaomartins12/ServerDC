@@ -1,9 +1,11 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Text.RegularExpressions;
 using GameServer.Util;
 using Shared.Models;
 using Shared.Network;
+using Shared.Objects;
 using Shared.Util;
 
 namespace GameServer.Network.Handlers
@@ -18,39 +20,30 @@ namespace GameServer.Network.Handlers
 
             var inventoryIndex = packet.Reader.ReadUInt32();
             var previousIndex = packet.Reader.ReadInt32();
-            var carId = packet.Reader.ReadUInt32();
+            var requestedCarId = packet.Reader.ReadUInt32();
 
+            VisualShopProtocolSync.VisualRow row;
             using (var conn = global::GameServer.GameServer.Instance.Database.Connection)
             {
-                int category;
-                using (var lookup = new MySqlCommand(@"
-SELECT CategoryIndex
-FROM dbo.visual_items
-WHERE CharacterId=@cid AND CarId=@carId AND InventoryIndex=@inven;", conn))
+                row = VisualShopProtocolSync.LoadByInventory(conn, character.Id, inventoryIndex);
+                if (row == null)
                 {
-                    lookup.Parameters.AddWithValue("@cid", character.Id);
-                    lookup.Parameters.AddWithValue("@carId", carId);
-                    lookup.Parameters.AddWithValue("@inven", inventoryIndex);
-                    var value = lookup.ExecuteScalar();
-                    if (value == null || value == DBNull.Value)
-                    {
-                        packet.Sender.SendError("visual_item_not_found");
-                        return;
-                    }
-                    category = Convert.ToInt32(value, CultureInfo.InvariantCulture);
+                    packet.Sender.SendError("visual_item_not_found");
+                    return;
                 }
 
-                if (category > 0)
+                var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                if (row.CategoryIndex > 0)
                 {
                     using (var unequip = new MySqlCommand(@"
 UPDATE dbo.visual_items
 SET ItemState=0, UpdateTime=@now
 WHERE CharacterId=@cid AND CarId=@carId AND CategoryIndex=@category AND ItemState=1;", conn))
                     {
-                        unequip.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+                        unequip.Parameters.AddWithValue("@now", now);
                         unequip.Parameters.AddWithValue("@cid", character.Id);
-                        unequip.Parameters.AddWithValue("@carId", carId);
-                        unequip.Parameters.AddWithValue("@category", category);
+                        unequip.Parameters.AddWithValue("@carId", row.CarId);
+                        unequip.Parameters.AddWithValue("@category", row.CategoryIndex);
                         unequip.ExecuteNonQuery();
                     }
                 }
@@ -58,27 +51,36 @@ WHERE CharacterId=@cid AND CarId=@carId AND CategoryIndex=@category AND ItemStat
                 using (var equip = new MySqlCommand(@"
 UPDATE dbo.visual_items
 SET ItemState=1, UpdateTime=@now
-WHERE CharacterId=@cid AND CarId=@carId AND InventoryIndex=@inven;", conn))
+WHERE CharacterId=@cid AND InventoryIndex=@inven;", conn))
                 {
-                    equip.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+                    equip.Parameters.AddWithValue("@now", now);
                     equip.Parameters.AddWithValue("@cid", character.Id);
-                    equip.Parameters.AddWithValue("@carId", carId);
                     equip.Parameters.AddWithValue("@inven", inventoryIndex);
-                    equip.ExecuteNonQuery();
+                    if (equip.ExecuteNonQuery() == 0)
+                    {
+                        packet.Sender.SendError("visual_item_not_found");
+                        return;
+                    }
                 }
             }
 
-            var ack = new Packet(1206);
+            var ack = new Packet((ushort)1206);
             ack.Writer.Write(inventoryIndex);
             ack.Writer.Write(previousIndex);
-            ack.Writer.Write(carId);
+            ack.Writer.Write(row.CarId);
             packet.Sender.Send(ack);
 
-            global::GameServer.Network.Handlers.Join.VisualItemList.SendCurrent(packet);
+            // Retail v0.77 does not refresh the whole 1201 list here. It sends 1202
+            // (Cmd_VSItemModList): count + 124-byte records. Sending every row from the
+            // affected category updates both the newly-equipped row and the row that was
+            // implicitly unequipped.
+            VisualShopProtocolSync.SendCategory(packet, character.Id, row.CarId, row.CategoryIndex);
             VisualShopWorldSync.Broadcast(packet.Sender.User);
             CheckStat.Handle(packet);
 
-            Log.Info("Visual item equipped: CID={0} CarId={1} InvenIdx={2}", character.Id, carId, inventoryIndex);
+            Log.Info(
+                "Visual item equipped: CID={0} RequestedCarId={1} RealCarId={2} Category={3} InvenIdx={4}",
+                character.Id, requestedCarId, row.CarId, row.CategoryIndex, inventoryIndex);
         }
 
         [Packet(Packets.CmdUnEquipVisualItem)]
@@ -88,31 +90,48 @@ WHERE CharacterId=@cid AND CarId=@carId AND InventoryIndex=@inven;", conn))
             if (character == null) return;
 
             var inventoryIndex = packet.Reader.ReadUInt32();
-            var carId = packet.Reader.ReadUInt32();
+            var requestedCarId = packet.Reader.ReadUInt32();
 
+            VisualShopProtocolSync.VisualRow row;
             using (var conn = global::GameServer.GameServer.Instance.Database.Connection)
-            using (var cmd = new MySqlCommand(@"
+            {
+                // Some v0.77 visual categories send CarId=0 in CmdUnEquipVisualItem.
+                // InventoryIndex is the authoritative key; resolve the real car from SQL.
+                row = VisualShopProtocolSync.LoadByInventory(conn, character.Id, inventoryIndex);
+                if (row == null)
+                {
+                    packet.Sender.SendError("visual_item_not_found");
+                    return;
+                }
+
+                using (var cmd = new MySqlCommand(@"
 UPDATE dbo.visual_items
 SET ItemState=0, UpdateTime=@now
-WHERE CharacterId=@cid AND CarId=@carId AND InventoryIndex=@inven;", conn))
-            {
-                cmd.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
-                cmd.Parameters.AddWithValue("@cid", character.Id);
-                cmd.Parameters.AddWithValue("@carId", carId);
-                cmd.Parameters.AddWithValue("@inven", inventoryIndex);
-                cmd.ExecuteNonQuery();
+WHERE CharacterId=@cid AND InventoryIndex=@inven;", conn))
+                {
+                    cmd.Parameters.AddWithValue("@now", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+                    cmd.Parameters.AddWithValue("@cid", character.Id);
+                    cmd.Parameters.AddWithValue("@inven", inventoryIndex);
+                    if (cmd.ExecuteNonQuery() == 0)
+                    {
+                        packet.Sender.SendError("visual_item_not_found");
+                        return;
+                    }
+                }
             }
 
-            var ack = new Packet(1208);
+            var ack = new Packet((ushort)1208);
             ack.Writer.Write(inventoryIndex);
-            ack.Writer.Write(carId);
+            ack.Writer.Write(row.CarId);
             packet.Sender.Send(ack);
 
-            global::GameServer.Network.Handlers.Join.VisualItemList.SendCurrent(packet);
+            VisualShopProtocolSync.SendCategory(packet, character.Id, row.CarId, row.CategoryIndex);
             VisualShopWorldSync.Broadcast(packet.Sender.User);
             CheckStat.Handle(packet);
 
-            Log.Info("Visual item unequipped: CID={0} CarId={1} InvenIdx={2}", character.Id, carId, inventoryIndex);
+            Log.Info(
+                "Visual item unequipped: CID={0} RequestedCarId={1} RealCarId={2} Category={3} InvenIdx={4}",
+                character.Id, requestedCarId, row.CarId, row.CategoryIndex, inventoryIndex);
         }
 
         [Packet(Packets.CmdDropVisualItem)]
@@ -123,65 +142,176 @@ WHERE CharacterId=@cid AND CarId=@carId AND InventoryIndex=@inven;", conn))
 
             var shopId = packet.Reader.ReadUInt32();
             var inventoryIndex = packet.Reader.ReadUInt32();
-            uint carId = 0;
-            var wasEquipped = false;
 
+            VisualShopProtocolSync.VisualRow row;
             using (var conn = global::GameServer.GameServer.Instance.Database.Connection)
             {
-                using (var lookup = new MySqlCommand(@"
-SELECT CarId,ItemState
-FROM dbo.visual_items
-WHERE CharacterId=@cid AND ShopId=@shopId AND InventoryIndex=@inven;", conn))
+                row = VisualShopProtocolSync.LoadByInventory(conn, character.Id, inventoryIndex);
+                if (row == null || row.Item.TableIdx != shopId)
                 {
-                    lookup.Parameters.AddWithValue("@cid", character.Id);
-                    lookup.Parameters.AddWithValue("@shopId", shopId);
-                    lookup.Parameters.AddWithValue("@inven", inventoryIndex);
-                    using (var reader = lookup.ExecuteReader())
-                    {
-                        if (!reader.Read())
-                        {
-                            packet.Sender.SendError("visual_item_not_found");
-                            return;
-                        }
-                        carId = unchecked((uint)Convert.ToInt64(reader[0], CultureInfo.InvariantCulture));
-                        wasEquipped = Convert.ToInt32(reader[1], CultureInfo.InvariantCulture) != 0;
-                    }
+                    packet.Sender.SendError("visual_item_not_found");
+                    return;
                 }
 
                 using (var delete = new MySqlCommand(@"
 DELETE FROM dbo.visual_items
-WHERE CharacterId=@cid AND ShopId=@shopId AND InventoryIndex=@inven;", conn))
+WHERE CharacterId=@cid AND InventoryIndex=@inven;", conn))
                 {
                     delete.Parameters.AddWithValue("@cid", character.Id);
-                    delete.Parameters.AddWithValue("@shopId", shopId);
                     delete.Parameters.AddWithValue("@inven", inventoryIndex);
-                    delete.ExecuteNonQuery();
+                    if (delete.ExecuteNonQuery() == 0)
+                    {
+                        packet.Sender.SendError("visual_item_not_found");
+                        return;
+                    }
                 }
             }
 
-            // Retail pairs CmdDropVisualItem 1211 with 1212. Echo the two request keys.
             var ack = new Packet((ushort)1212);
             ack.Writer.Write(shopId);
             ack.Writer.Write(inventoryIndex);
             packet.Sender.Send(ack);
 
-            global::GameServer.Network.Handlers.Join.VisualItemList.SendCurrent(packet);
-            if (wasEquipped) VisualShopWorldSync.Broadcast(packet.Sender.User);
+            // ModType 2 is the deletion discriminator proven from DriftCity.exe's
+            // Cmd_VSItemModList handler.
+            VisualShopProtocolSync.SendDelete(packet, row.Item);
+            if (row.Item.ItemState != 0)
+                VisualShopWorldSync.Broadcast(packet.Sender.User);
             CheckStat.Handle(packet);
 
             Log.Info("Visual item dropped: CID={0} ShopId={1} CarId={2} InvenIdx={3} Equipped={4}",
-                character.Id, shopId, carId, inventoryIndex, wasEquipped);
+                character.Id, shopId, row.CarId, inventoryIndex, row.Item.ItemState != 0);
+        }
+    }
+
+    internal static class VisualShopProtocolSync
+    {
+        private const ushort VsItemModListAck = 1202;
+        private const int ModAddOrUpdate = 0;
+        private const int ModDelete = 2;
+
+        internal sealed class VisualRow
+        {
+            public InventoryVisualItem Item;
+            public uint CarId;
+            public int CategoryIndex;
+        }
+
+        public static VisualRow LoadByInventory(MySqlConnection conn, ulong characterId, uint inventoryIndex)
+        {
+            using (var cmd = new MySqlCommand(@"
+SELECT CarId,ItemState,ShopId,InventoryIndex,Data,Period,UpdateTime,CreateTime,CategoryIndex
+FROM dbo.visual_items
+WHERE CharacterId=@cid AND InventoryIndex=@inven;", conn))
+            {
+                cmd.Parameters.AddWithValue("@cid", characterId);
+                cmd.Parameters.AddWithValue("@inven", inventoryIndex);
+                using (var r = cmd.ExecuteReader())
+                {
+                    if (!r.Read()) return null;
+                    return ReadRow(r);
+                }
+            }
+        }
+
+        public static void SendInventory(Packet packet, ulong characterId, uint inventoryIndex)
+        {
+            using (var conn = global::GameServer.GameServer.Instance.Database.Connection)
+            {
+                var row = LoadByInventory(conn, characterId, inventoryIndex);
+                if (row == null) return;
+                Send(packet, new[] { row.Item }, ModAddOrUpdate, "inventory=" + inventoryIndex);
+            }
+        }
+
+        public static void SendCategory(Packet packet, ulong characterId, uint carId, int categoryIndex)
+        {
+            if (categoryIndex <= 0)
+            {
+                return;
+            }
+
+            var items = new List<InventoryVisualItem>();
+            using (var conn = global::GameServer.GameServer.Instance.Database.Connection)
+            using (var cmd = new MySqlCommand(@"
+SELECT CarId,ItemState,ShopId,InventoryIndex,Data,Period,UpdateTime,CreateTime,CategoryIndex
+FROM dbo.visual_items
+WHERE CharacterId=@cid AND CarId=@carId AND CategoryIndex=@category
+ORDER BY InventoryIndex;", conn))
+            {
+                cmd.Parameters.AddWithValue("@cid", characterId);
+                cmd.Parameters.AddWithValue("@carId", carId);
+                cmd.Parameters.AddWithValue("@category", categoryIndex);
+                using (var r = cmd.ExecuteReader())
+                {
+                    while (r.Read())
+                        items.Add(ReadRow(r).Item);
+                }
+            }
+
+            if (items.Count == 0) return;
+            Send(packet, items, ModAddOrUpdate,
+                "car=" + carId + " category=" + categoryIndex);
+        }
+
+        public static void SendDelete(Packet packet, InventoryVisualItem item)
+        {
+            if (item == null) return;
+            Send(packet, new[] { item }, ModDelete,
+                "delete inventory=" + item.InvenIdx);
+        }
+
+        private static void Send(Packet requestPacket, IEnumerable<InventoryVisualItem> items, int modType, string context)
+        {
+            var list = new List<InventoryVisualItem>(items);
+            if (list.Count == 0) return;
+
+            var ack = new Packet(VsItemModListAck);
+            ack.Writer.Write(list.Count);
+            foreach (var item in list)
+            {
+                // DriftCity.exe Cmd_VSItemModList uses an exact 0x7C (124-byte) stride:
+                // the normal 120-byte XiStrMyVSItem followed by a 32-bit mod type.
+                ack.Writer.Write(item);
+                ack.Writer.Write(modType);
+            }
+            requestPacket.Sender.Send(ack);
+
+            Log.Debug("VSItemModList 1202: Count={0} ModType={1} {2}",
+                list.Count, modType, context ?? string.Empty);
+        }
+
+        private static VisualRow ReadRow(System.Data.IDataRecord r)
+        {
+            var carId = unchecked((uint)Convert.ToInt64(r[0], CultureInfo.InvariantCulture));
+            return new VisualRow
+            {
+                CarId = carId,
+                CategoryIndex = Convert.ToInt32(r[8], CultureInfo.InvariantCulture),
+                Item = new InventoryVisualItem
+                {
+                    CarId = carId,
+                    ItemState = Convert.ToInt32(r[1], CultureInfo.InvariantCulture),
+                    TableIdx = unchecked((uint)Convert.ToInt32(r[2], CultureInfo.InvariantCulture)),
+                    InvenIdx = unchecked((uint)Convert.ToInt32(r[3], CultureInfo.InvariantCulture)),
+                    PlateName = r.IsDBNull(4) ? string.Empty : Convert.ToString(r[4], CultureInfo.InvariantCulture),
+                    Period = Convert.ToInt32(r[5], CultureInfo.InvariantCulture),
+                    UpdateTime = ClampInt64ToInt32(Convert.ToInt64(r[6], CultureInfo.InvariantCulture)),
+                    CreateTime = ClampInt64ToInt32(Convert.ToInt64(r[7], CultureInfo.InvariantCulture))
+                }
+            };
+        }
+
+        private static int ClampInt64ToInt32(long value)
+        {
+            if (value > int.MaxValue) return int.MaxValue;
+            if (value < int.MinValue) return int.MinValue;
+            return (int)value;
         }
     }
 
     internal static class VisualShopCatalogRecovery
     {
-        /// <summary>
-        /// Some retail XLT rows (notably paint helper rows such as i_g_paint_S15)
-        /// contain no direct price even though the shop UI sells them. Infer only from
-        /// another row in the same retail category/tier, and store the result as a
-        /// Server* override so the original imported Source* columns remain untouched.
-        /// </summary>
         public static bool TryInferMissingMitoPrice(MySqlConnection conn, uint shopId, int period)
         {
             if (conn == null) return false;
@@ -206,9 +336,12 @@ WHERE ShopId=@shopId;", conn))
                 }
             }
 
-            if (!useMito) return false;
             var normalized = (itemCode ?? string.Empty).ToLowerInvariant();
-            if (!normalized.Contains("paint")) return false;
+            var isPaint = normalized.Contains("paint");
+            // The malformed i_g_paint_S15 retail row has UseMito=0 even though the UI
+            // sells it for Mito. Do not let that bad source flag prevent recovery.
+            if (!useMito && !isPaint) return false;
+            if (!isPaint) return false;
 
             string sourceColumn;
             string serverColumn;
@@ -249,16 +382,15 @@ ORDER BY CASE WHEN Category=@category THEN 0 ELSE 1 END,
                     price = Convert.ToInt32(raw, CultureInfo.InvariantCulture);
             }
 
-            // S15 is a retail premium visual tier. If its malformed paint row has no
-            // usable peer in this client build, the neighboring S15 visual rows establish
-            // the 7-day tier at 30,000 Mito. Keep this as a Server override, never Source.
             if (price <= 0 && tier.Equals("S15", StringComparison.OrdinalIgnoreCase) && period == 1)
                 price = 30000;
 
             if (price <= 0) return false;
 
+            // Explicitly repair the malformed retail UseMito flag and replace zero/NULL
+            // Server overrides. Source columns remain untouched for forensic comparison.
             var updateSql = string.Format(CultureInfo.InvariantCulture,
-                "UPDATE dbo.visual_item_catalog SET {0}=@price, UpdatedUtc=SYSUTCDATETIME() WHERE ShopId=@shopId AND {0} IS NULL;",
+                "UPDATE dbo.visual_item_catalog SET UseMito=1, {0}=@price, UpdatedUtc=SYSUTCDATETIME() WHERE ShopId=@shopId;",
                 serverColumn);
             using (var update = new MySqlCommand(updateSql, conn))
             {
@@ -275,7 +407,7 @@ ORDER BY CASE WHEN Category=@category THEN 0 ELSE 1 END,
 
     internal static class VisualShopWorldSync
     {
-        public static void Broadcast(Shared.Objects.User sourceUser)
+        public static void Broadcast(User sourceUser)
         {
             if (sourceUser == null || sourceUser.ActiveCharacter == null ||
                 global::GameServer.GameServer.Instance.Server == null)
@@ -287,6 +419,8 @@ ORDER BY CASE WHEN Category=@category THEN 0 ELSE 1 END,
                 if (client == null || client.User == null)
                     continue;
 
+                // Build from SQL for every recipient so local and remote players receive
+                // the exact same equipped visual snapshot (XiCarAttr + XiPlayerInfo).
                 var visual = PlayerVisualSnapshotBuilder.BuildRoomNotifyChange(
                     sourceUser.VehicleSerial,
                     sourceUser.ActiveCharacter);
