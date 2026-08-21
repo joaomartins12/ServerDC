@@ -71,7 +71,7 @@ namespace GameServer.Network.Handlers.Join
 
             User liveOwner;
             if (!DefaultServer.ActiveSerials.TryGetValue(user.VehicleSerial, out liveOwner) ||
-                !ReferenceEquals(liveOwner, user))
+                !object.ReferenceEquals(liveOwner, user))
             {
                 Log.Debug(
                     "Visual inventory refresh deferred: CID={0} PersistedSerial={1} has not been assigned by JoinChannel yet; 1201 sent, 1061 skipped.",
@@ -90,7 +90,7 @@ namespace GameServer.Network.Handlers.Join
 
             User liveOwner;
             if (!DefaultServer.ActiveSerials.TryGetValue(user.VehicleSerial, out liveOwner) ||
-                !ReferenceEquals(liveOwner, user))
+                !object.ReferenceEquals(liveOwner, user))
                 return;
 
             PlayerVisualSnapshotBuilder.ApplyActivePaint(character);
