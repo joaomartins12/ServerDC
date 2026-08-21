@@ -127,11 +127,10 @@ namespace GameServer.Network.Handlers.Join
                     if (!IsCurrentSerialOwner(client) || client.User.ActiveCharacter == null)
                         return;
 
-                    // Packet 541 creates/announces free-roam vehicles through AreaServer.
-                    // Once those objects exist, repeat the local-only 1061 snapshot and the
-                    // remote PlayerInfo cache. Do not send Cmd_RoomNotifyChange (467): its
-                    // retail handler is gated by Room/Battle state and is not a free-roam
-                    // vehicle refresh packet.
+                    // By this point AreaServer has normally created the free-roam car from
+                    // the first 541. Reinstall the local car colour/tint through 1061 and
+                    // immediately run the retail 1201 visual-list path, whose handler calls
+                    // the actual XiVisualItem apply routine on the existing render object.
                     SendOwnWorldSnapshot(client);
                     SyncVisiblePlayers(client, areaId, "join-ready");
                 }
@@ -150,40 +149,18 @@ namespace GameServer.Network.Handlers.Join
                 return;
 
             var character = client.User.ActiveCharacter;
-            var vehicle = character.ActiveCar;
-            var serial = client.User.VehicleSerial;
-
             PlayerVisualSnapshotBuilder.ApplyActivePaint(character);
+
+            VisualItemList.SendLocalVisualUpdate(client, client.User, character, "join-area-ready");
+            var visualInventory = VisualItemList.BuildAnswer(character);
+            client.Send(visualInventory.CreatePacket());
+
+            var vehicle = character.ActiveCar;
             var effectiveColor = vehicle.Color != 0 ? vehicle.Color : vehicle.BaseColor;
-
-            client.Send(new VisualUpdateAnswer
-            {
-                Serial = serial,
-                Age = 0,
-                CarId = vehicle.CarId,
-                VisualState = 1,
-                CarInfo = new XiStrCarInfo
-                {
-                    CarID = vehicle.CarId,
-                    CarType = vehicle.CarType,
-                    BaseColor = effectiveColor,
-                    Grade = vehicle.Grade,
-                    SlotType = vehicle.SlotType,
-                    AuctionCnt = vehicle.AuctionCnt,
-                    Mitron = vehicle.Mitron,
-                    Kmh = vehicle.Kmh,
-                    Color = effectiveColor,
-                    Color2 = vehicle.Color2,
-                    MitronCapacity = vehicle.MitronCapacity,
-                    MitronEfficiency = vehicle.MitronEfficiency,
-                    AuctionOn = vehicle.AuctionOn,
-                    SBBOn = vehicle.SBBOn
-                }
-            }.CreatePacket());
-
             Log.Debug(
-                "LiveArea self visual sync: Name={0} Serial={1} CarId={2} Color=0x{3:X6} Color2=0x{4:X8} -> 1061",
-                character.Name, serial, vehicle.CarId, effectiveColor, vehicle.Color2);
+                "LiveArea self visual sync: Name={0} Serial={1} CarId={2} Color=0x{3:X6} Color2=0x{4:X8} Items={5} -> 1061+1201",
+                character.Name, client.User.VehicleSerial, vehicle.CarId, effectiveColor,
+                vehicle.Color2, visualInventory.Items.Count);
         }
 
         private static bool TryGetState(ushort serial, out LiveAreaState state)
@@ -258,9 +235,6 @@ namespace GameServer.Network.Handlers.Join
             PlayerVisualSnapshotBuilder.ApplyActivePaint(character);
             var snapshot = PlayerVisualSnapshotBuilder.BuildPlayerInfo(serial, character);
 
-            // 802 establishes identity/discovery metadata. 809 feeds the live
-            // XiPlayerInfo cache used by the free-roam player manager. Both carry the
-            // same retail 0xD8 record; neither is a Room packet.
             recipient.Send(new PlayerInfoOldAnswer
             {
                 PacketId = PlayerInfoOldAnswer.PlayerInfoOldPacketId,
