@@ -11,6 +11,11 @@ namespace GameServer.Network.Handlers.Join
         [Packet(Packets.CmdVisualItemList)]
         public static void Handle(Packet packet)
         {
+            SendCurrent(packet);
+        }
+
+        public static void SendCurrent(Packet packet)
+        {
             var character = packet.Sender.User == null ? null : packet.Sender.User.ActiveCharacter;
             if (character == null)
             {
