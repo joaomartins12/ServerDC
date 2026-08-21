@@ -123,11 +123,6 @@ namespace GameServer.Util
             return new XiPlayerInfo(serial, character) { Age = 0, VisualItem = BuildVisualItem(character), UseTime = 0.0f };
         }
 
-        /// <summary>
-        /// Complete retail world visual snapshot. Unlike packet 802/809 this carries
-        /// XiCarAttr as well as XiPlayerInfo, so paint and equipped cosmetics are applied
-        /// together to the vehicle identified by Serial.
-        /// </summary>
         public static RoomNotifyChangeAnswer BuildRoomNotifyChange(ushort serial, Character character)
         {
             return new RoomNotifyChangeAnswer
@@ -302,65 +297,85 @@ ORDER BY v.InventoryIndex;", conn))
             return visual;
         }
 
+        /// <summary>
+        /// Applies VisualItem.xlt's real category dispatcher (sub_54CC80) to the
+        /// 0x38-byte XiVisualItem. Categories not present in the retail jump table are
+        /// intentionally not forced into a guessed slot. In particular category 3
+        /// (window tint in our imported data) and category 32 (paint) are no-ops here;
+        /// their RGB values belong to XiStrCarInfo Color2/Color respectively.
+        /// </summary>
         private static void ApplyVisual(XiVisualItem visual, int shopId, int categoryIndex, string category, string itemCode, string data)
         {
-            var value = unchecked((short)shopId);
+            var value = unchecked((ushort)shopId);
+            uint numericData;
+            var hasNumericData = TryParseVisualData(data, out numericData);
 
             switch (categoryIndex)
             {
-                case 1:
-                case 32:
-                    // Paint is carried by XiStrCarInfo.Color.
-                    return;
                 case 2:
-                    visual.Neon = value;
-                    return;
-                case 3:
-                    // The retail visual slot still needs the Window Tint item id. The
-                    // selected RGB itself is carried separately through Color2 (RGB565).
-                    visual.DecalColor = value;
+                    visual.Slot00 = value;
+                    if (hasNumericData) visual.Value0A = numericData;
                     return;
                 case 4:
-                    visual.AeroBumper = value;
+                    visual.Slot0E = value;
                     return;
                 case 5:
-                    visual.AeroIntercooler = value;
+                    visual.Slot10 = value;
                     return;
                 case 6:
-                    visual.AeroSet = value;
+                    visual.Slot12 = value;
                     return;
                 case 7:
-                    visual.Spoiler = value;
+                    visual.Slot18 = value;
                     return;
                 case 8:
-                case 48:
-                    visual.Wheel = value;
+                    visual.Slot16 = value;
                     return;
                 case 9:
-                    visual.Plate = value;
+                    visual.Slot02 = value;
                     visual.PlateString = string.IsNullOrEmpty(data) ? string.Empty : data;
                     return;
                 case 10:
-                    visual.MufflerFlame = value;
+                    visual.Slot14 = value != 0 ? value : unchecked((ushort)numericData);
                     return;
                 case 11:
-                    visual.Decal = value;
+                    visual.Slot04 = value;
+                    if (hasNumericData) visual.Value06 = numericData;
+                    return;
+                case 47:
+                    visual.Slot1A = value;
+                    return;
+                case 48:
+                    visual.Slot16 = value != 0 ? value : unchecked((ushort)numericData);
+                    return;
+                case 52:
+                    visual.Slot1C = value;
+                    return;
+                case 57:
+                    visual.Slot1E = value;
+                    return;
+
+                // Explicit retail no-op categories for the two RGB customizations.
+                case 1:
+                case 3:
+                case 32:
                     return;
             }
 
-            var normalizedCategory = Normalize(category);
-            var normalizedCode = Normalize(itemCode);
-            if (ContainsAny(normalizedCode, normalizedCategory, "paint")) return;
-            if (ContainsAny(normalizedCode, normalizedCategory, "windowtint")) visual.DecalColor = value;
-            else if (ContainsAny(normalizedCode, normalizedCategory, "airduct", "intercooler")) visual.AeroIntercooler = value;
-            else if (ContainsAny(normalizedCode, normalizedCategory, "bodykit", "bodyset", "aeroset", "aeroadv") || normalizedCode == "pcaero") visual.AeroSet = value;
-            else if (ContainsAny(normalizedCode, normalizedCategory, "tire", "wheel", "rim")) visual.Wheel = value;
-            else if (ContainsAny(normalizedCode, normalizedCategory, "aerowing", "boosterwing", "spoiler", "wing")) visual.Spoiler = value;
-            else if (ContainsAny(normalizedCode, normalizedCategory, "drinkadv")) { }
-            else Log.Debug("Visual snapshot: unmapped visual ShopId={0} CategoryIndex={1} Category={2} ItemCode={3}", shopId, categoryIndex, category ?? string.Empty, itemCode ?? string.Empty);
+            Log.Debug("Visual snapshot: retail category has no XiVisualItem slot ShopId={0} CategoryIndex={1} Category={2} ItemCode={3}",
+                shopId, categoryIndex, category ?? string.Empty, itemCode ?? string.Empty);
         }
 
-        private static string Normalize(string value) { return (value ?? string.Empty).Trim().ToLowerInvariant().Replace("_", string.Empty).Replace("-", string.Empty).Replace(" ", string.Empty); }
-        private static bool ContainsAny(string a, string b, params string[] values) { foreach (var value in values) if (a.Contains(value) || b.Contains(value)) return true; return false; }
+        private static bool TryParseVisualData(string data, out uint value)
+        {
+            value = 0;
+            if (string.IsNullOrWhiteSpace(data)) return false;
+            var text = data.Trim();
+            if (text.StartsWith("0x", System.StringComparison.OrdinalIgnoreCase))
+                return uint.TryParse(text.Substring(2), System.Globalization.NumberStyles.HexNumber,
+                    System.Globalization.CultureInfo.InvariantCulture, out value);
+            return uint.TryParse(text, System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture, out value);
+        }
     }
 }
