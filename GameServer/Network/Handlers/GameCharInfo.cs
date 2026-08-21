@@ -217,7 +217,7 @@ namespace GameServer.Util
             {
                 using (var conn = GameServer.Instance.Database.Connection)
                 using (var cmd = new MySqlCommand(@"
-SELECT v.ShopId, v.CategoryIndex, c.Category, v.Data
+SELECT v.ShopId, v.CategoryIndex, c.Category, c.ItemCode, v.Data
 FROM dbo.visual_items v
 JOIN dbo.visual_item_catalog c ON c.ShopId=v.ShopId
 WHERE v.CharacterId=@cid AND v.CarId=@carId AND v.ItemState=1
@@ -234,8 +234,9 @@ ORDER BY v.InventoryIndex;", conn))
                             var shopId = System.Convert.ToInt32(r[0]);
                             var categoryIndex = System.Convert.ToInt32(r[1]);
                             var category = r.IsDBNull(2) ? string.Empty : System.Convert.ToString(r[2]);
-                            var data = r.IsDBNull(3) ? string.Empty : System.Convert.ToString(r[3]);
-                            ApplyVisual(visual, shopId, categoryIndex, category, data);
+                            var itemCode = r.IsDBNull(3) ? string.Empty : System.Convert.ToString(r[3]);
+                            var data = r.IsDBNull(4) ? string.Empty : System.Convert.ToString(r[4]);
+                            ApplyVisual(visual, shopId, categoryIndex, category, itemCode, data);
                         }
                     }
                 }
@@ -248,37 +249,70 @@ ORDER BY v.InventoryIndex;", conn))
             return visual;
         }
 
-        private static void ApplyVisual(XiVisualItem visual, int shopId, int categoryIndex, string category, string data)
+        private static void ApplyVisual(
+            XiVisualItem visual,
+            int shopId,
+            int categoryIndex,
+            string category,
+            string itemCode,
+            string data)
         {
             var value = unchecked((short)shopId);
-            var normalized = (category ?? string.Empty).Trim().ToLowerInvariant()
-                .Replace("_", string.Empty).Replace("-", string.Empty).Replace(" ", string.Empty);
+            var normalizedCategory = Normalize(category);
+            var normalizedCode = Normalize(itemCode);
 
-            if (normalized.Contains("decalcolor") || normalized.Contains("stickercolor"))
+            // The exported VShop category is numeric in this client build. ItemCode is
+            // therefore the reliable semantic discriminator for the XiVisualItem slot.
+            // Keep textual-category support as a fallback for hand-maintained catalogs.
+            if (ContainsAny(normalizedCode, normalizedCategory, "decalcolor", "stickercolor", "paintcolor"))
                 visual.DecalColor = value;
-            else if (normalized.Contains("neon"))
+            else if (ContainsAny(normalizedCode, normalizedCategory, "neon"))
                 visual.Neon = value;
-            else if (normalized.Contains("plate"))
+            else if (ContainsAny(normalizedCode, normalizedCategory, "numplate", "numberplate", "licenseplate", "plate"))
             {
                 visual.Plate = value;
                 visual.PlateString = string.IsNullOrEmpty(data) ? string.Empty : data;
             }
-            else if (normalized.Contains("decal") || normalized.Contains("sticker"))
+            else if (ContainsAny(normalizedCode, normalizedCategory, "decal", "sticker") ||
+                     normalizedCode.StartsWith("igd", System.StringComparison.Ordinal))
                 visual.Decal = value;
-            else if (normalized.Contains("bumper"))
+            else if (ContainsAny(normalizedCode, normalizedCategory, "bumper"))
                 visual.AeroBumper = value;
-            else if (normalized.Contains("intercooler"))
+            else if (ContainsAny(normalizedCode, normalizedCategory, "intercooler"))
                 visual.AeroIntercooler = value;
-            else if (normalized.Contains("aero") || normalized.Contains("bodykit") || normalized.Contains("bodyset"))
+            else if (ContainsAny(normalizedCode, normalizedCategory, "bodykit", "bodyset", "aeroset"))
                 visual.AeroSet = value;
-            else if (normalized.Contains("muffler") || normalized.Contains("flame"))
+            else if (ContainsAny(normalizedCode, normalizedCategory, "muffler", "flame"))
                 visual.MufflerFlame = value;
-            else if (normalized.Contains("wheel") || normalized.Contains("rim"))
+            else if (ContainsAny(normalizedCode, normalizedCategory, "tire", "wheel", "rim"))
                 visual.Wheel = value;
-            else if (normalized.Contains("spoiler") || normalized.Contains("wing"))
+            else if (ContainsAny(normalizedCode, normalizedCategory, "aerowing", "boosterwing", "spoiler", "wing"))
                 visual.Spoiler = value;
             else
-                Log.Debug("Visual snapshot: unmapped category ShopId={0} CategoryIndex={1} Category={2}", shopId, categoryIndex, category ?? string.Empty);
+                Log.Debug(
+                    "Visual snapshot: unmapped visual ShopId={0} CategoryIndex={1} Category={2} ItemCode={3}",
+                    shopId,
+                    categoryIndex,
+                    category ?? string.Empty,
+                    itemCode ?? string.Empty);
+        }
+
+        private static string Normalize(string value)
+        {
+            return (value ?? string.Empty).Trim().ToLowerInvariant()
+                .Replace("_", string.Empty)
+                .Replace("-", string.Empty)
+                .Replace(" ", string.Empty);
+        }
+
+        private static bool ContainsAny(string a, string b, params string[] values)
+        {
+            foreach (var value in values)
+            {
+                if (a.Contains(value) || b.Contains(value))
+                    return true;
+            }
+            return false;
         }
     }
 }
