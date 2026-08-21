@@ -13,6 +13,7 @@ namespace ServerManager
 
             var form = new MainForm();
             ManagerEnhancements.Attach(form);
+            VShopManagerEnhancement.Attach(form);
             LogClearBehavior.Attach(form);
             CommandHintEnhancement.Attach(form);
             Application.Run(form);
