@@ -122,12 +122,15 @@ namespace GameServer.Util
             return new XiPlayerInfo(serial, character) { Age = 0, VisualItem = BuildVisualItem(character), UseTime = 0.0f };
         }
 
-        public static RoomNotifyChangeAnswer BuildRoomNotifyChange(ushort serial, Character character)
+        /// <summary>
+        /// Remote free-roam players are refreshed through packet 802, the same
+        /// XiPlayerInfo path used by CmdPlayerInfoReq. Packet 467 belongs to the
+        /// PvP room protocol and must not be used as a world visual broadcast.
+        /// </summary>
+        public static PlayerInfoOldAnswer BuildRoomNotifyChange(ushort serial, Character character)
         {
-            return new RoomNotifyChangeAnswer
+            return new PlayerInfoOldAnswer
             {
-                Serial = serial,
-                CarAttr = BuildCarAttr(character),
                 PlayerInfo = BuildPlayerInfo(serial, character)
             };
         }
