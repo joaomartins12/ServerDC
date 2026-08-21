@@ -68,6 +68,7 @@ namespace GameServer.Network.Handlers
 
             if (character.ActiveCar != null)
             {
+                PlayerVisualSnapshotBuilder.ApplyActivePaint(character);
                 var resolved = VehicleStatResolver.Resolve(character.ActiveCar);
                 var equipped = EquippedItemStatResolver.Resolve(character, character.ActiveCar);
                 if (resolved != null)
@@ -122,11 +123,6 @@ namespace GameServer.Util
             return new XiPlayerInfo(serial, character) { Age = 0, VisualItem = BuildVisualItem(character), UseTime = 0.0f };
         }
 
-        /// <summary>
-        /// Remote free-roam players are refreshed through packet 802, the same
-        /// XiPlayerInfo path used by CmdPlayerInfoReq. Packet 467 belongs to the
-        /// PvP room protocol and must not be used as a world visual broadcast.
-        /// </summary>
         public static PlayerInfoOldAnswer BuildRoomNotifyChange(ushort serial, Character character)
         {
             return new PlayerInfoOldAnswer
@@ -162,13 +158,21 @@ namespace GameServer.Util
             return result;
         }
 
-        public static uint? ResolveVisualPaintColor(Character character)
+        private static uint? ResolveVisualColor(Character character, string kind)
         {
             if (character == null || character.ActiveCar == null || global::GameServer.GameServer.Instance.Database == null) return null;
             try
             {
+                var isTint = kind == "tint";
                 using (var conn = global::GameServer.GameServer.Instance.Database.Connection)
-                using (var cmd = new MySqlCommand(@"
+                using (var cmd = new MySqlCommand(isTint ? @"
+SELECT TOP 1 v.Data
+FROM dbo.visual_items v
+JOIN dbo.visual_item_catalog c ON c.ShopId=v.ShopId
+WHERE v.CharacterId=@cid AND v.CarId=@carId AND v.ItemState=1
+  AND (v.ExpireTime=0 OR v.ExpireTime>@now)
+  AND (v.CategoryIndex=3 OR LOWER(c.ItemCode) LIKE '%window%' OR LOWER(c.Category) LIKE '%windowtint%')
+ORDER BY v.InventoryIndex DESC;" : @"
 SELECT TOP 1 v.Data
 FROM dbo.visual_items v
 JOIN dbo.visual_item_catalog c ON c.ShopId=v.ShopId
@@ -184,16 +188,27 @@ ORDER BY v.InventoryIndex DESC;", conn))
                     uint color;
                     if (raw != null && raw != System.DBNull.Value && uint.TryParse(System.Convert.ToString(raw).Trim(), out color))
                     {
-                        Log.Debug("Visual paint resolved: CID={0} CarId={1} Color={2}", character.Id, character.ActiveCar.CarId, color);
+                        Log.Debug("Visual {0} resolved: CID={1} CarId={2} Color={3} Hex=0x{4:X6}",
+                            isTint ? "tint" : "paint", character.Id, character.ActiveCar.CarId, color, color);
                         return color;
                     }
                 }
             }
             catch (System.Exception ex)
             {
-                Log.Warning("Visual paint lookup failed for CID={0}: {1}", character.Id, ex.Message);
+                Log.Warning("Visual {0} lookup failed for CID={1}: {2}", kind, character.Id, ex.Message);
             }
             return null;
+        }
+
+        public static uint? ResolveVisualPaintColor(Character character)
+        {
+            return ResolveVisualColor(character, "paint");
+        }
+
+        public static uint? ResolveVisualTintColor(Character character)
+        {
+            return ResolveVisualColor(character, "tint");
         }
 
         public static void ApplyActivePaint(Character character)
@@ -202,28 +217,36 @@ ORDER BY v.InventoryIndex DESC;", conn))
                 return;
 
             var paint = ResolveVisualPaintColor(character);
+            var tint = ResolveVisualTintColor(character);
             var color = paint ?? character.ActiveCar.BaseColor;
-            if (character.ActiveCar.Color == color)
-                return;
+            var color2 = tint ?? 0u;
+            var changed = character.ActiveCar.Color != color || character.ActiveCar.Color2 != color2;
 
             character.ActiveCar.Color = color;
+            character.ActiveCar.Color2 = color2;
             if (character.GarageVehicles != null)
             {
                 foreach (var vehicle in character.GarageVehicles)
-                    if (vehicle != null && vehicle.CarId == character.ActiveCar.CarId)
-                        vehicle.Color = color;
+                {
+                    if (vehicle == null || vehicle.CarId != character.ActiveCar.CarId) continue;
+                    vehicle.Color = color;
+                    vehicle.Color2 = color2;
+                }
             }
+
+            if (!changed) return;
 
             try
             {
                 using (var conn = global::GameServer.GameServer.Instance.Database.Connection)
                     VehicleModel.Update(conn, character.ActiveCar);
-                Log.Info("Visual paint persisted to vehicle: CID={0} CarId={1} Color={2} Source={3}",
-                    character.Id, character.ActiveCar.CarId, color, paint.HasValue ? "visual" : "base");
+                Log.Info("Visual colors persisted to vehicle: CID={0} CarId={1} Color={2} Color2={3} Paint={4} Tint={5}",
+                    character.Id, character.ActiveCar.CarId, color, color2,
+                    paint.HasValue ? "visual" : "base", tint.HasValue ? "visual" : "default");
             }
             catch (System.Exception ex)
             {
-                Log.Warning("Visual paint vehicle persistence failed: CID={0} CarId={1} Error={2}",
+                Log.Warning("Visual color vehicle persistence failed: CID={0} CarId={1} Error={2}",
                     character.Id, character.ActiveCar.CarId, ex.Message);
             }
         }
@@ -270,13 +293,14 @@ ORDER BY v.InventoryIndex;", conn))
             switch (categoryIndex)
             {
                 case 1:
+                case 3:
                 case 32:
+                    // Paint and Window Tint are packed RGB values in the generic Data
+                    // field. Retail VisualUpdate copies them through XiStrCarInfo.Color
+                    // and Color2 respectively; they are not XiVisualItem ids.
                     return;
                 case 2:
                     visual.Neon = value;
-                    return;
-                case 3:
-                    visual.DecalColor = value;
                     return;
                 case 4:
                     visual.AeroBumper = value;
@@ -308,7 +332,7 @@ ORDER BY v.InventoryIndex;", conn))
 
             var normalizedCategory = Normalize(category);
             var normalizedCode = Normalize(itemCode);
-            if (ContainsAny(normalizedCode, normalizedCategory, "paint")) return;
+            if (ContainsAny(normalizedCode, normalizedCategory, "paint", "windowtint")) return;
             if (ContainsAny(normalizedCode, normalizedCategory, "airduct", "intercooler")) visual.AeroIntercooler = value;
             else if (ContainsAny(normalizedCode, normalizedCategory, "bodykit", "bodyset", "aeroset", "aeroadv") || normalizedCode == "pcaero") visual.AeroSet = value;
             else if (ContainsAny(normalizedCode, normalizedCategory, "tire", "wheel", "rim")) visual.Wheel = value;
