@@ -127,10 +127,11 @@ namespace GameServer.Network.Handlers
                 return;
             }
 
-            var recipientText = string.Format("[Whisper From] ({0}): {1}", senderCharacter.Name, message ?? string.Empty);
-            var senderText = string.Format("[Whisper To] ({0}): {1}", target.User.ActiveCharacter.Name, message ?? string.Empty);
-            var recipientPacket = CreateNativeWhisperAck(recipientText);
-            var senderEchoPacket = CreateNativeWhisperAck(senderText);
+            // Retail v0.77a expects the whisper category (0x2A) followed by the chat
+            // payload itself. Do not prepend custom [Whisper From]/[Whisper To] labels;
+            // the client owns the native whisper presentation.
+            var recipientPacket = CreateNativeWhisperAck(message);
+            var senderEchoPacket = CreateNativeWhisperAck(message);
 
             target.Send(recipientPacket);
             packet.Sender.Send(senderEchoPacket);
@@ -139,7 +140,7 @@ namespace GameServer.Network.Handlers
 
             WriteWhisperResearch("OUT147", packet.Sender.User.VehicleSerial, target.User.VehicleSerial,
                 senderCharacter.Name, target.User.ActiveCharacter.Name, message, recipientPacket,
-                "type=0x002A native retail ChatMsgAck");
+                "type=0x002A native retail ChatMsgAck raw-message");
             Log.Debug("Whisper: {0} -> {1}: {2}", senderCharacter.Name, target.User.ActiveCharacter.Name, message);
         }
 
