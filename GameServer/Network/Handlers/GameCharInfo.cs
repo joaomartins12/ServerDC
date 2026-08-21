@@ -172,7 +172,7 @@ FROM dbo.visual_items v
 JOIN dbo.visual_item_catalog c ON c.ShopId=v.ShopId
 WHERE v.CharacterId=@cid AND v.CarId=@carId AND v.ItemState=1
   AND (v.ExpireTime=0 OR v.ExpireTime>@now)
-  AND (LOWER(c.ItemCode) LIKE '%paint%' OR LOWER(c.Category) LIKE '%paint%')
+  AND (v.CategoryIndex IN (1,32) OR LOWER(c.ItemCode) LIKE '%paint%' OR LOWER(c.Category) LIKE '%paint%')
 ORDER BY v.InventoryIndex DESC;", conn))
                 {
                     cmd.Parameters.AddWithValue("@cid", character.Id);
@@ -232,26 +232,59 @@ ORDER BY v.InventoryIndex;", conn))
         private static void ApplyVisual(XiVisualItem visual, int shopId, int categoryIndex, string category, string itemCode, string data)
         {
             var value = unchecked((short)shopId);
-            var normalizedCategory = Normalize(category); var normalizedCode = Normalize(itemCode);
-            if (ContainsAny(normalizedCode, normalizedCategory, "paint")) return;
-            if (ContainsAny(normalizedCode, normalizedCategory, "windowtint", "windowtinting", "tint"))
+
+            // VisualItem.xlt is authoritative for the original retail slots. Its category
+            // indices line up with XiVisualItem: 2 Neon, 3 window color/tint, 4 bumper,
+            // 5 intercooler, 6 aero set, 7 spoiler, 8 tire, 9 plate, 10 flame, 11 decal.
+            // GrossTire (48) uses the same wheel slot. Paint/GrossPaint are carried by
+            // XiCarAttr/XiStrCarInfo color instead of XiVisualItem.
+            switch (categoryIndex)
             {
-                // v0.77 keeps newer cosmetic slots in XiVisualItem.Reserve[]. The client
-                // XLT identifies WINDOWTINTING as a separate visual family; Reserve[0]
-                // is used consistently for it in the world/profile snapshot.
-                visual.Reserve[0] = value;
+                case 1:
+                case 32:
+                    return;
+                case 2:
+                    visual.Neon = value;
+                    return;
+                case 3:
+                    visual.DecalColor = value;
+                    return;
+                case 4:
+                    visual.AeroBumper = value;
+                    return;
+                case 5:
+                    visual.AeroIntercooler = value;
+                    return;
+                case 6:
+                    visual.AeroSet = value;
+                    return;
+                case 7:
+                    visual.Spoiler = value;
+                    return;
+                case 8:
+                case 48:
+                    visual.Wheel = value;
+                    return;
+                case 9:
+                    visual.Plate = value;
+                    visual.PlateString = string.IsNullOrEmpty(data) ? string.Empty : data;
+                    return;
+                case 10:
+                    visual.MufflerFlame = value;
+                    return;
+                case 11:
+                    visual.Decal = value;
+                    return;
             }
-            else if (ContainsAny(normalizedCode, normalizedCategory, "decalcolor", "stickercolor")) visual.DecalColor = value;
-            else if (ContainsAny(normalizedCode, normalizedCategory, "neon")) visual.Neon = value;
-            else if (ContainsAny(normalizedCode, normalizedCategory, "numplate", "numberplate", "licenseplate", "plate")) { visual.Plate = value; visual.PlateString = string.IsNullOrEmpty(data) ? string.Empty : data; }
-            else if (ContainsAny(normalizedCode, normalizedCategory, "decal", "sticker") || normalizedCode.StartsWith("igd", System.StringComparison.Ordinal)) visual.Decal = value;
-            else if (ContainsAny(normalizedCode, normalizedCategory, "bumper")) visual.AeroBumper = value;
-            else if (ContainsAny(normalizedCode, normalizedCategory, "intercooler", "airduct")) visual.AeroIntercooler = value;
+
+            var normalizedCategory = Normalize(category);
+            var normalizedCode = Normalize(itemCode);
+            if (ContainsAny(normalizedCode, normalizedCategory, "paint")) return;
+            if (ContainsAny(normalizedCode, normalizedCategory, "airduct", "intercooler")) visual.AeroIntercooler = value;
             else if (ContainsAny(normalizedCode, normalizedCategory, "bodykit", "bodyset", "aeroset", "aeroadv") || normalizedCode == "pcaero") visual.AeroSet = value;
-            else if (ContainsAny(normalizedCode, normalizedCategory, "muffler", "flame")) visual.MufflerFlame = value;
             else if (ContainsAny(normalizedCode, normalizedCategory, "tire", "wheel", "rim")) visual.Wheel = value;
             else if (ContainsAny(normalizedCode, normalizedCategory, "aerowing", "boosterwing", "spoiler", "wing")) visual.Spoiler = value;
-            else if (ContainsAny(normalizedCode, normalizedCategory, "drinkadv")) { /* inventory consumable/helper: no world visual */ }
+            else if (ContainsAny(normalizedCode, normalizedCategory, "drinkadv")) { }
             else Log.Debug("Visual snapshot: unmapped visual ShopId={0} CategoryIndex={1} Category={2} ItemCode={3}", shopId, categoryIndex, category ?? string.Empty, itemCode ?? string.Empty);
         }
 
