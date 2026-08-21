@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Threading;
 using GameServer.Util;
 using Shared.Models;
 using Shared.Network;
@@ -12,6 +13,7 @@ namespace GameServer.Network.Handlers.Join
     {
         private const ushort LicenseInfoRes = 806;
         private const int RookieLicenseId = 7000;
+        private const int JoinResyncDelayMs = 750;
 
         private sealed class LiveAreaState
         {
@@ -69,12 +71,17 @@ namespace GameServer.Network.Handlers.Join
             Log.Debug("LiveArea: JOIN Name={0} Serial={1} AreaId={2} License={3}",
                 character.Name, serial, joinAreaPacket.AreaId, license);
 
-            // Identity packets are discovery/state packets, not movement heartbeats.
-            // Re-sending 802 periodically makes v0.77a rebuild/reposition the remote
-            // car, causing visible blinking and teleport-like movement. Send 802/806
-            // only when the player actually joins/rejoins an area; packet 541 remains
-            // the sole continuous movement stream.
+            // First discovery attempt: useful when both clients are already fully in-area.
             SyncVisiblePlayers(packet.Sender, joinAreaPacket.AreaId, "join");
+
+            // Retail v0.77a can issue CmdJoinArea before the scene has finished creating
+            // remote-player UI/world state. In that case the first 802/806 pair is accepted
+            // by the socket but discarded by the client-side scene. Perform ONE delayed
+            // discovery refresh after the map is ready. This is deliberately not a periodic
+            // heartbeat: repeating 802 causes remote cars to blink/reposition, while 541
+            // remains the sole continuous movement stream.
+            QueueJoinResync(serial, joinAreaPacket.AreaId);
+
             global::GameServer.Network.Handlers.Social.FriendList.PushLiveUpdate(character.Name);
         }
 
@@ -109,6 +116,32 @@ namespace GameServer.Network.Handlers.Join
                 }
             }
             return false;
+        }
+
+        private static void QueueJoinResync(ushort serial, int areaId)
+        {
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                Thread.Sleep(JoinResyncDelayMs);
+
+                try
+                {
+                    LiveAreaState state;
+                    if (!TryGetState(serial, out state) || state.AreaId != areaId)
+                        return;
+
+                    var client = GameServer.Instance.Server.GetClient(serial);
+                    if (!IsCurrentSerialOwner(client) || client.User.ActiveCharacter == null)
+                        return;
+
+                    SyncVisiblePlayers(client, areaId, "join-ready");
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning("LiveArea delayed join sync failed Serial={0} Area={1}: {2}",
+                        serial, areaId, ex.Message);
+                }
+            });
         }
 
         private static bool TryGetState(ushort serial, out LiveAreaState state)
