@@ -71,15 +71,7 @@ namespace GameServer.Network.Handlers.Join
             Log.Debug("LiveArea: JOIN Name={0} Serial={1} AreaId={2} License={3}",
                 character.Name, serial, joinAreaPacket.AreaId, license);
 
-            // First discovery attempt: useful when both clients are already fully in-area.
             SyncVisiblePlayers(packet.Sender, joinAreaPacket.AreaId, "join");
-
-            // Retail v0.77a can issue CmdJoinArea before the scene has finished creating
-            // remote-player UI/world state. In that case the first 802/806 pair is accepted
-            // by the socket but discarded by the client-side scene. Perform ONE delayed
-            // discovery refresh after the map is ready. This is deliberately not a periodic
-            // heartbeat: repeating 802 causes remote cars to blink/reposition, while 541
-            // remains the sole continuous movement stream.
             QueueJoinResync(serial, joinAreaPacket.AreaId);
 
             global::GameServer.Network.Handlers.Social.FriendList.PushLiveUpdate(character.Name);
@@ -197,7 +189,7 @@ namespace GameServer.Network.Handlers.Join
             SendLicenseInfo(b, aSerial, aState.LicenseId);
 
             Log.Debug(
-                "LiveArea identity sync[{0}]: {1}(serial={2},area={3},license={4}) <-> {5}(serial={6},area={7},license={8}) -> 802+806",
+                "LiveArea identity sync[{0}]: {1}(serial={2},area={3},license={4}) <-> {5}(serial={6},area={7},license={8}) -> 802+809+806",
                 reason,
                 a.User.ActiveCharacter.Name,
                 aSerial,
@@ -213,9 +205,22 @@ namespace GameServer.Network.Handlers.Join
         {
             if (recipient == null || character == null || serial == 0) return;
 
+            var snapshot = PlayerVisualSnapshotBuilder.BuildPlayerInfo(serial, character);
+
+            // 802 is the retail "old" discovery packet. 809 (0x329) is the live
+            // PlayerInfoRes path used by this client build; its handler consumes the
+            // full 216-byte XiPlayerInfo directly. Send both during discovery so the
+            // remote render object is created and then populated with its live visual.
             recipient.Send(new PlayerInfoOldAnswer
             {
-                PlayerInfo = PlayerVisualSnapshotBuilder.BuildPlayerInfo(serial, character)
+                PacketId = PlayerInfoOldAnswer.PlayerInfoOldPacketId,
+                PlayerInfo = snapshot
+            }.CreatePacket());
+
+            recipient.Send(new PlayerInfoOldAnswer
+            {
+                PacketId = PlayerInfoOldAnswer.PlayerInfoLivePacketId,
+                PlayerInfo = snapshot
             }.CreatePacket());
         }
 
