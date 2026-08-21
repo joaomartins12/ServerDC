@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using Shared.Network.GameServer;
 using Shared.Objects;
 using Shared.Util;
 
