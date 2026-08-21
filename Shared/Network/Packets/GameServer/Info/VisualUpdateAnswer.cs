@@ -8,30 +8,26 @@ namespace Shared.Network.GameServer
     /// Cmd_VisualUpdate / packet 1061, handler 0x529FD0 in Drift City v0.77a.
     ///
     /// The handler returns 0x3D, so the complete packet beginning with its id is
-    /// exactly 61 bytes. Its accessed offsets prove the packed layout below:
+    /// exactly 61 bytes. Disassembly shows the payload is:
     ///   PacketId       2
     ///   Serial         2   (+0x02)
     ///   Age            2   (+0x04)
     ///   CarId          4   (+0x06)
     ///   VisualState    1   (+0x0A)
-    ///   XiVisualItem  50   (+0x0B)
+    ///   XiStrCarInfo  50   (+0x0B)
     /// Total           61
     ///
-    /// The previous implementation incorrectly serialized XiStrCarInfo after
-    /// CarId. That happened to be close in size but put completely unrelated
-    /// garage fields where the client expects the equipped XiVisualItem snapshot.
+    /// Proof from the retail handler: +0x0B is treated as CarID, +0x0F as
+    /// CarType, +0x2B as Color and +0x2F as Color2, exactly matching
+    /// XiStrCarInfo. The missing byte in the old emulator was VisualState.
     /// </summary>
     public class VisualUpdateAnswer : OutPacket
     {
         public ushort Serial;
         public ushort Age;
         public uint CarId;
-
-        // Copied by the client into the local vehicle visual-state byte. Retail
-        // sends the normal active state here; zero is the safe/default state.
         public byte VisualState;
-
-        public XiVisualItem VisualItem = new XiVisualItem();
+        public XiStrCarInfo CarInfo = new XiStrCarInfo();
 
         public override Packet CreatePacket()
         {
@@ -49,7 +45,7 @@ namespace Shared.Network.GameServer
                 bs.Write(Age);
                 bs.Write(CarId);
                 bs.Write(VisualState);
-                bs.Write(VisualItem ?? new XiVisualItem());
+                (CarInfo ?? new XiStrCarInfo()).Serialize(bs);
                 return ms.ToArray();
             }
         }
