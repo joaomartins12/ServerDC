@@ -87,7 +87,7 @@ namespace GameServer.Network.Handlers
             }
 
             // Retail updates the visual inventory as part of the purchase flow.
-            GameServer.Network.Handlers.Join.VisualItemList.SendCurrent(packet);
+            global::GameServer.Network.Handlers.Join.VisualItemList.SendCurrent(packet);
 
             var ack = new BuyVisualItemThreadAnswer
             {
