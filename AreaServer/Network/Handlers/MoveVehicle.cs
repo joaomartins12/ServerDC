@@ -2,8 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using Shared.Models;
 using Shared.Network;
 using Shared.Objects;
+using Shared.Util;
 
 namespace AreaServer.Network.Handlers
 {
@@ -21,11 +23,22 @@ namespace AreaServer.Network.Handlers
             public int LastBodyLength;
         }
 
+        private sealed class VisualAttrState
+        {
+            public uint CarId;
+            public ushort Body;
+            public uint Color;
+            public uint Color2;
+            public DateTime RefreshedUtc;
+        }
+
         private static readonly object Sync = new object();
         private static readonly Dictionary<ushort, byte[]> LastMovement = new Dictionary<ushort, byte[]>();
         private static readonly Dictionary<ushort, int> SerialArea = new Dictionary<ushort, int>();
         private static readonly Dictionary<ushort, PresenceState> Presence = new Dictionary<ushort, PresenceState>();
         private static readonly Dictionary<ulong, long> PairRelayCounts = new Dictionary<ulong, long>();
+        private static readonly Dictionary<ushort, VisualAttrState> VisualAttrs = new Dictionary<ushort, VisualAttrState>();
+        private static readonly TimeSpan VisualAttrRefreshInterval = TimeSpan.FromMilliseconds(500);
         private static DateTime _lastSnapshotUtc = DateTime.MinValue;
 
         public static void RegisterArea(ushort serial, int areaId)
@@ -169,6 +182,16 @@ namespace AreaServer.Network.Handlers
             var remaining = (int)Math.Max(0, stream.Length - stream.Position);
             var movement = packet.Reader.ReadBytes(remaining);
 
+            // Retail Cmd_MoveVehicle contains the render car-attribute block directly
+            // after the two bytes that precede Sort/Body in this post-serial body:
+            // movement+2 Sort:u16, +4 Body:u16, +6 Color:u32, +10 Color2:u32,
+            // +14 State:u32. This was confirmed both in the v0.77a apply routine
+            // (sub_54D8A0 -> sub_4C8BB0) and in captured client 541 packets. A client
+            // whose own render was created with stale/default paint naturally emits the
+            // same stale values, so AreaServer replaces only Body/Color/Color2 from the
+            // authoritative vehicle row before caching and relaying the movement.
+            PatchAuthoritativeCarAttr(packet.Sender, vehicleSerial, movement);
+
             int areaId;
             Dictionary<ushort, int> areaSnapshot;
             var now = DateTime.UtcNow;
@@ -222,6 +245,84 @@ namespace AreaServer.Network.Handlers
                     "otherCurrentPlayersDetected=true");
 
             MaybeWriteSnapshot(false);
+        }
+
+        private static void PatchAuthoritativeCarAttr(Client source, ushort serial, byte[] movement)
+        {
+            if (source?.User?.ActiveCharacter == null || movement == null || movement.Length < 18)
+                return;
+
+            var activeCarId = source.User.ActiveCharacter.ActiveVehicleId;
+            if (activeCarId == 0) return;
+
+            var now = DateTime.UtcNow;
+            VisualAttrState state;
+            lock (Sync)
+            {
+                if (VisualAttrs.TryGetValue(serial, out state) &&
+                    state.CarId == activeCarId &&
+                    now - state.RefreshedUtc < VisualAttrRefreshInterval)
+                {
+                    WriteCarAttr(movement, state);
+                    return;
+                }
+            }
+
+            try
+            {
+                Vehicle vehicle;
+                using (var conn = AreaServer.Instance.Database.Connection)
+                    vehicle = VehicleModel.Retrieve(conn, activeCarId);
+
+                if (vehicle == null) return;
+
+                var effectiveColor = vehicle.Color != 0 ? vehicle.Color : vehicle.BaseColor;
+                var refreshed = new VisualAttrState
+                {
+                    CarId = activeCarId,
+                    Body = unchecked((ushort)vehicle.CarType),
+                    Color = effectiveColor,
+                    Color2 = vehicle.Color2,
+                    RefreshedUtc = now
+                };
+
+                var changed = state == null || state.CarId != refreshed.CarId || state.Body != refreshed.Body ||
+                              state.Color != refreshed.Color || state.Color2 != refreshed.Color2;
+
+                lock (Sync)
+                    VisualAttrs[serial] = refreshed;
+
+                WriteCarAttr(movement, refreshed);
+
+                if (changed)
+                {
+                    Log.Info(
+                        "Area authoritative 541 visual: Name={0} Serial={1} CarId={2} Body={3} Color=0x{4:X6} Color2=0x{5:X8}",
+                        source.User.ActiveCharacter.Name,
+                        serial,
+                        refreshed.CarId,
+                        refreshed.Body,
+                        refreshed.Color,
+                        refreshed.Color2);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Warning("Area authoritative 541 visual lookup failed: Serial={0} CarId={1} Error={2}",
+                    serial, activeCarId, ex.Message);
+            }
+        }
+
+        private static void WriteCarAttr(byte[] movement, VisualAttrState state)
+        {
+            if (movement == null || movement.Length < 18 || state == null) return;
+
+            // movement[0..1] are not part of XiCarAttr. Preserve them.
+            // +2/+3 Sort is client-owned and is normally zero for player cars.
+            Buffer.BlockCopy(BitConverter.GetBytes(state.Body), 0, movement, 4, 2);
+            Buffer.BlockCopy(BitConverter.GetBytes(state.Color), 0, movement, 6, 4);
+            Buffer.BlockCopy(BitConverter.GetBytes(state.Color2), 0, movement, 10, 4);
+            // movement[14..17] is the retail State dword; preserve the client's value.
         }
 
         private static void RecordRelay(ushort sourceSerial, ushort targetSerial)
@@ -381,6 +482,7 @@ namespace AreaServer.Network.Handlers
                 SerialArea.Remove(serial);
                 LastMovement.Remove(serial);
                 Presence.Remove(serial);
+                VisualAttrs.Remove(serial);
             }
 
             if (inactive.Count != 0)
