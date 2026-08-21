@@ -9,8 +9,19 @@ namespace Shared.Models
 {
     public class VehicleModel
     {
+        private static void EnsureVisualColorSchema(MySqlConnection dbconn)
+        {
+            using (var cmd = new MySqlCommand(@"
+IF COL_LENGTH('dbo.vehicles','color2') IS NULL
+    ALTER TABLE dbo.vehicles ADD color2 BIGINT NOT NULL CONSTRAINT DF_vehicles_color2 DEFAULT (0);", dbconn))
+            {
+                cmd.ExecuteNonQuery();
+            }
+        }
+
         public static void Update(MySqlConnection dbconn, Vehicle vehicle)
         {
+            EnsureVisualColorSchema(dbconn);
             using (var cmd = new UpdateCommand("UPDATE vehicles SET {0} WHERE CID=@vehId", dbconn))
             {
                 cmd.AddParameter("@vehId", vehicle.CarId);
@@ -21,6 +32,7 @@ namespace Shared.Models
 
         public static Vehicle Retrieve(MySqlConnection dbconn, uint carId)
         {
+            EnsureVisualColorSchema(dbconn);
             var vehicle = new Vehicle();
 
             var command = new MySqlCommand(
@@ -39,6 +51,7 @@ namespace Shared.Models
 
         public static List<Vehicle> Retrieve(MySqlConnection dbconn, ulong cid)
         {
+            EnsureVisualColorSchema(dbconn);
             var command = new MySqlCommand("SELECT * FROM Vehicles WHERE CharID = @cid", dbconn);
 
             command.Parameters.AddWithValue("@cid", cid);
@@ -60,6 +73,7 @@ namespace Shared.Models
 
         public static long Create(MySqlConnection dbconn, Vehicle veh, ulong ownerId = 0)
         {
+            EnsureVisualColorSchema(dbconn);
             using (var cmd = new InsertCommand("INSERT INTO vehicles {0}", dbconn))
             {
                 if (ownerId != 0UL)
