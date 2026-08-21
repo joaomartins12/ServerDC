@@ -35,10 +35,9 @@ namespace GameServer.Network.Handlers
                     request.Cash,
                     request.PlateName);
 
-                // A small number of retail paint helper rows have no direct price in
-                // VShopItem.xlt although the retail UI sells them. Recover the price from
-                // the same imported category/tier, persist it as Server* override, and
-                // retry the authoritative transaction before considering zero-price logic.
+                // Some retail paint rows (notably i_g_paint_S15) are malformed in the
+                // XLT: their price/useMito cells are empty although the retail UI sells
+                // them. Repair only the Server* override and retry the transaction.
                 if (!purchase.Success && purchase.Error == "visual_price_not_configured" &&
                     VisualShopCatalogRecovery.TryInferMissingMitoPrice(
                         conn, request.TableIndex, unchecked((int)request.PeriodIdx)))
@@ -69,6 +68,9 @@ namespace GameServer.Network.Handlers
 
                 if (purchase.Success)
                 {
+                    // Repair only legacy CategoryIndex values. Do NOT recompute ItemState
+                    // for unrelated categories: doing that re-equipped visuals the player
+                    // had deliberately unequipped whenever another visual was purchased.
                     NormalizeVisualCategories(conn, character.Id, request.CarId);
                     purchase.Equipped = purchase.CategoryIndex > 0;
                 }
@@ -102,13 +104,17 @@ namespace GameServer.Network.Handlers
                     break;
             }
 
-            global::GameServer.Network.Handlers.Join.VisualItemList.SendCurrent(packet);
+            // Retail sends Cmd_VSItemModList (1202), not a complete VisualItemListAck
+            // (1201), after a visual mutation. Sending the affected category is important
+            // because purchase can implicitly unequip the previous item in that category.
+            if (purchase.CategoryIndex > 0)
+                VisualShopProtocolSync.SendCategory(packet, character.Id, purchase.CarId, purchase.CategoryIndex);
+            else
+                VisualShopProtocolSync.SendInventory(packet, character.Id, purchase.InventoryIndex);
 
+            // Original v0.77 flow sends VSItemModList before BuyVisualItemAck.
             var ack = new BuyVisualItemThreadAnswer
             {
-                // Support is a catalog/business flag, not the client purchase-message
-                // discriminator. Sending it here made the client resolve unrelated item
-                // strings such as "Purchased Bfemil".
                 Type = 0,
                 TableIndex = purchase.ShopId,
                 CarId = purchase.CarId,
@@ -244,26 +250,13 @@ VALUES
         private static void NormalizeVisualCategories(MySqlConnection conn, ulong characterId, uint carId)
         {
             using (var cmd = new MySqlCommand(@"
-;WITH normalized AS
-(
-    SELECT v.Id,
-           v.InventoryIndex,
-           c.CategoryIndex AS RealCategory,
-           ROW_NUMBER() OVER
-           (
-               PARTITION BY c.CategoryIndex
-               ORDER BY v.InventoryIndex DESC, v.Id DESC
-           ) AS rn
-    FROM dbo.visual_items v
-    JOIN dbo.visual_item_catalog c ON c.ShopId=v.ShopId
-    WHERE v.CharacterId=@cid AND v.CarId=@carId
-      AND c.CategoryIndex > 0
-)
 UPDATE v
-SET CategoryIndex=n.RealCategory,
-    ItemState=CASE WHEN n.rn=1 THEN 1 ELSE 0 END
+SET CategoryIndex=c.CategoryIndex
 FROM dbo.visual_items v
-JOIN normalized n ON n.Id=v.Id;", conn))
+JOIN dbo.visual_item_catalog c ON c.ShopId=v.ShopId
+WHERE v.CharacterId=@cid AND v.CarId=@carId
+  AND c.CategoryIndex > 0
+  AND v.CategoryIndex<>c.CategoryIndex;", conn))
             {
                 cmd.Parameters.AddWithValue("@cid", characterId);
                 cmd.Parameters.AddWithValue("@carId", carId);
