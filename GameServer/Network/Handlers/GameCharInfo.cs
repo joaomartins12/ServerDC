@@ -127,7 +127,6 @@ namespace GameServer.Util
             return new RoomNotifyChangeAnswer
             {
                 Serial = serial,
-                Age = 0,
                 CarAttr = BuildCarAttr(character),
                 PlayerInfo = BuildPlayerInfo(serial, character)
             };
@@ -160,7 +159,7 @@ namespace GameServer.Util
             return result;
         }
 
-        private static uint? ResolveVisualPaintColor(Character character)
+        public static uint? ResolveVisualPaintColor(Character character)
         {
             if (character == null || character.ActiveCar == null || global::GameServer.GameServer.Instance.Database == null) return null;
             try
@@ -194,7 +193,7 @@ ORDER BY v.InventoryIndex DESC;", conn))
             return null;
         }
 
-        private static XiVisualItem BuildVisualItem(Character character)
+        public static XiVisualItem BuildVisualItem(Character character)
         {
             var visual = new XiVisualItem { PlateString = string.Empty };
             if (character == null || character.ActiveCar == null || global::GameServer.GameServer.Instance.Database == null) return visual;
@@ -233,11 +232,6 @@ ORDER BY v.InventoryIndex;", conn))
         {
             var value = unchecked((short)shopId);
 
-            // VisualItem.xlt is authoritative for the original retail slots. Its category
-            // indices line up with XiVisualItem: 2 Neon, 3 window color/tint, 4 bumper,
-            // 5 intercooler, 6 aero set, 7 spoiler, 8 tire, 9 plate, 10 flame, 11 decal.
-            // GrossTire (48) uses the same wheel slot. Paint/GrossPaint are carried by
-            // XiCarAttr/XiStrCarInfo color instead of XiVisualItem.
             switch (categoryIndex)
             {
                 case 1:
