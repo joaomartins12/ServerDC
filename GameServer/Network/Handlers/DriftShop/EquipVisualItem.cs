@@ -85,6 +85,8 @@ WHERE CharacterId=@cid AND InventoryIndex=@inven;", conn))
             row.Item.CarId = targetCarId;
             row.Item.ItemState = 1;
 
+            PlayerVisualSnapshotBuilder.ApplyActivePaint(character);
+
             var ack = new Packet((ushort)1206);
             ack.Writer.Write(inventoryIndex);
             ack.Writer.Write(previousIndex);
@@ -135,6 +137,8 @@ WHERE CharacterId=@cid AND InventoryIndex=@inven;", conn))
                 }
             }
 
+            PlayerVisualSnapshotBuilder.ApplyActivePaint(character);
+
             var ack = new Packet((ushort)1208);
             ack.Writer.Write(inventoryIndex);
             ack.Writer.Write(row.CarId);
@@ -181,6 +185,8 @@ WHERE CharacterId=@cid AND InventoryIndex=@inven;", conn))
                     }
                 }
             }
+
+            PlayerVisualSnapshotBuilder.ApplyActivePaint(character);
 
             var ack = new Packet((ushort)1212);
             ack.Writer.Write(shopId);
@@ -416,7 +422,8 @@ ORDER BY CASE WHEN Category=@category THEN 0 ELSE 1 END,
                 return;
 
             var character = sourceUser.ActiveCharacter;
-            var visualSnapshot = PlayerVisualSnapshotBuilder.BuildVisualItem(character);
+            PlayerVisualSnapshotBuilder.ApplyActivePaint(character);
+
             var ownerSent = false;
             var remoteSent = 0;
 
@@ -427,31 +434,60 @@ ORDER BY CASE WHEN Category=@category THEN 0 ELSE 1 END,
 
                 if (ReferenceEquals(client.User, sourceUser))
                 {
-                    client.Send(new VisualUpdateAnswer
-                    {
-                        Serial = sourceUser.VehicleSerial,
-                        Age = 0,
-                        CarId = character.ActiveCar.CarId,
-                        VisualState = 0,
-                        VisualItem = visualSnapshot
-                    }.CreatePacket());
+                    client.Send(BuildLocalVisualUpdate(sourceUser).CreatePacket());
                     ownerSent = true;
                     continue;
                 }
 
-                var remote = PlayerVisualSnapshotBuilder.BuildRoomNotifyChange(
-                    sourceUser.VehicleSerial, character);
-                client.Send(remote.CreatePacket());
+                // Retail packet 802 carries the 216-byte XiPlayerInfo, including the
+                // equipped XiVisualItem snapshot. This is the player identity/appearance
+                // channel used by the free-roam player manager. Packet 467 belongs to
+                // the Battle Zone room protocol and must not be used for world cosmetics.
+                client.Send(new PlayerInfoOldAnswer
+                {
+                    PlayerInfo = PlayerVisualSnapshotBuilder.BuildPlayerInfo(
+                        sourceUser.VehicleSerial, character)
+                }.CreatePacket());
                 remoteSent++;
             }
 
-            Log.Debug("Visual retail sync: CID={0} Serial={1} Owner1061={2} Remote467={3}",
+            Log.Debug("Visual retail sync: CID={0} Serial={1} Owner1061={2} Remote802={3}",
                 character.Id, sourceUser.VehicleSerial, ownerSent, remoteSent);
         }
 
         public static void Broadcast(User sourceUser)
         {
             Sync(sourceUser);
+        }
+
+        private static VisualUpdateAnswer BuildLocalVisualUpdate(User user)
+        {
+            var character = user.ActiveCharacter;
+            var vehicle = character.ActiveCar;
+            return new VisualUpdateAnswer
+            {
+                Serial = user.VehicleSerial,
+                Age = 0,
+                CarId = vehicle.CarId,
+                VisualState = 0,
+                CarInfo = new XiStrCarInfo
+                {
+                    CarID = vehicle.CarId,
+                    CarType = vehicle.CarType,
+                    BaseColor = vehicle.BaseColor,
+                    Grade = vehicle.Grade,
+                    SlotType = vehicle.SlotType,
+                    AuctionCnt = vehicle.AuctionCnt,
+                    Mitron = vehicle.Mitron,
+                    Kmh = vehicle.Kmh,
+                    Color = vehicle.Color,
+                    Color2 = vehicle.Color2,
+                    MitronCapacity = vehicle.MitronCapacity,
+                    MitronEfficiency = vehicle.MitronEfficiency,
+                    AuctionOn = vehicle.AuctionOn,
+                    SBBOn = vehicle.SBBOn
+                }
+            };
         }
     }
 }
