@@ -85,6 +85,11 @@ namespace GameServer
             }
             Log.Info("VShop Items loaded with {0:D} entries", VisualItems.Count);
 
+            // Keep a server-authoritative copy of every visual-shop id and price in SQL Server.
+            // Admin Server* overrides and visual stat bonuses are intentionally preserved by sync.
+            using (var visualShopConnection = Database.Connection)
+                VisualShopDatabase.EnsureSchemaAndSynchronize(visualShopConnection, VisualItems);
+
             Log.Info("Loading Quest Table");
             if (File.Exists("system/data/Quests.xml"))
             {
