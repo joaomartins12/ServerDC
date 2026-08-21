@@ -3,7 +3,6 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using Shared.Network;
-using Shared.Network.GameServer;
 using Shared.Objects;
 using Shared.Util;
 
@@ -11,7 +10,7 @@ namespace GameServer.Network.Handlers
 {
     public class PrivateChatMsg
     {
-        private const ushort WhisperChatType = 0x002A;
+        private const ushort PrivateChatMsgAck = 150;
 
         [Packet(Packets.CmdWhisper)]
         public static void Whisper(Packet packet)
@@ -127,28 +126,46 @@ namespace GameServer.Network.Handlers
                 return;
             }
 
-            // Retail v0.77a expects the whisper category (0x2A) followed by the chat
-            // payload itself. Do not prepend custom [Whisper From]/[Whisper To] labels;
-            // the client owns the native whisper presentation.
-            var recipientPacket = CreateNativeWhisperAck(message);
-            var senderEchoPacket = CreateNativeWhisperAck(message);
+            // DriftCity.exe packet 150 handler (sub_524F30) reads:
+            //   wchar Name[10]   @ +0x02
+            //   wchar Player[20] @ +0x16
+            //   uint  Direction   @ +0x3E
+            //   ushort Len        @ +0x42
+            //   wchar Message[]   @ +0x44
+            // Use the dedicated private-chat ACK instead of forcing whisper through
+            // ChatMsgAck/147. The client owns the native (From)/(To) presentation.
+            var recipientPacket = CreatePrivateChatAck(
+                senderCharacter.Name,
+                target.User.ActiveCharacter.Name,
+                0u,
+                message);
+            var senderEchoPacket = CreatePrivateChatAck(
+                target.User.ActiveCharacter.Name,
+                senderCharacter.Name,
+                1u,
+                message);
 
             target.Send(recipientPacket);
             packet.Sender.Send(senderEchoPacket);
             senderCharacter.LastMessageFrom = target.User.ActiveCharacter.Name;
             target.User.ActiveCharacter.LastMessageFrom = senderCharacter.Name;
 
-            WriteWhisperResearch("OUT147", packet.Sender.User.VehicleSerial, target.User.VehicleSerial,
+            WriteWhisperResearch("OUT150", packet.Sender.User.VehicleSerial, target.User.VehicleSerial,
                 senderCharacter.Name, target.User.ActiveCharacter.Name, message, recipientPacket,
-                "type=0x002A native retail ChatMsgAck raw-message");
+                "native PrivateChatMsgAck direction=0 recipient / 1 sender");
             Log.Debug("Whisper: {0} -> {1}: {2}", senderCharacter.Name, target.User.ActiveCharacter.Name, message);
         }
 
-        private static Packet CreateNativeWhisperAck(string text)
+        private static Packet CreatePrivateChatAck(string name, string player, uint direction, string message)
         {
-            var ack = new Packet(Packets.ChatMsgAck);
-            ack.Writer.Write(WhisperChatType);
-            ack.Writer.WriteUnicode(text ?? string.Empty);
+            var text = message ?? string.Empty;
+            var ack = new Packet(PrivateChatMsgAck);
+            ack.Writer.WriteUnicodeStatic(name ?? string.Empty, 10);
+            ack.Writer.WriteUnicodeStatic(player ?? string.Empty, 20);
+            ack.Writer.Write(direction);
+            ack.Writer.Write((ushort)text.Length);
+            if (text.Length > 0)
+                ack.Writer.Write(Encoding.Unicode.GetBytes(text));
             return ack;
         }
 
