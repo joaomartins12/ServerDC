@@ -233,8 +233,15 @@ ORDER BY v.InventoryIndex;", conn))
         {
             var value = unchecked((short)shopId);
             var normalizedCategory = Normalize(category); var normalizedCode = Normalize(itemCode);
-            if (ContainsAny(normalizedCode, normalizedCategory, "paint")) return; // paint is carried by XiCarAttr color, not XiVisualItem
-            if (ContainsAny(normalizedCode, normalizedCategory, "decalcolor", "stickercolor")) visual.DecalColor = value;
+            if (ContainsAny(normalizedCode, normalizedCategory, "paint")) return;
+            if (ContainsAny(normalizedCode, normalizedCategory, "windowtint", "windowtinting", "tint"))
+            {
+                // v0.77 keeps newer cosmetic slots in XiVisualItem.Reserve[]. The client
+                // XLT identifies WINDOWTINTING as a separate visual family; Reserve[0]
+                // is used consistently for it in the world/profile snapshot.
+                visual.Reserve[0] = value;
+            }
+            else if (ContainsAny(normalizedCode, normalizedCategory, "decalcolor", "stickercolor")) visual.DecalColor = value;
             else if (ContainsAny(normalizedCode, normalizedCategory, "neon")) visual.Neon = value;
             else if (ContainsAny(normalizedCode, normalizedCategory, "numplate", "numberplate", "licenseplate", "plate")) { visual.Plate = value; visual.PlateString = string.IsNullOrEmpty(data) ? string.Empty : data; }
             else if (ContainsAny(normalizedCode, normalizedCategory, "decal", "sticker") || normalizedCode.StartsWith("igd", System.StringComparison.Ordinal)) visual.Decal = value;
@@ -244,6 +251,7 @@ ORDER BY v.InventoryIndex;", conn))
             else if (ContainsAny(normalizedCode, normalizedCategory, "muffler", "flame")) visual.MufflerFlame = value;
             else if (ContainsAny(normalizedCode, normalizedCategory, "tire", "wheel", "rim")) visual.Wheel = value;
             else if (ContainsAny(normalizedCode, normalizedCategory, "aerowing", "boosterwing", "spoiler", "wing")) visual.Spoiler = value;
+            else if (ContainsAny(normalizedCode, normalizedCategory, "drinkadv")) { /* inventory consumable/helper: no world visual */ }
             else Log.Debug("Visual snapshot: unmapped visual ShopId={0} CategoryIndex={1} Category={2} ItemCode={3}", shopId, categoryIndex, category ?? string.Empty, itemCode ?? string.Empty);
         }
 
