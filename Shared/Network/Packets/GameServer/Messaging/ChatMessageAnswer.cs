@@ -5,48 +5,44 @@ using Shared.Util;
 namespace Shared.Network.GameServer
 {
     /// <summary>
-    /// sub_539050
+    /// Drift City v0.77a BS_PktChatMsgAck (packet 147).
+    ///
+    /// Native client layout:
+    ///   wchar_t m_Name[10];
+    ///   wchar_t m_Player[10];
+    ///   ushort  m_Len;
+    ///   wchar_t m_Message[m_Len];
+    ///
+    /// BinaryWriterExt.WriteUnicode writes the ushort length followed by the
+    /// UTF-16 message (including the terminating NUL on the wire), matching the
+    /// existing client packet convention.
     /// </summary>
     public class ChatMessageAnswer : OutPacket
     {
-        /// <summary>
-        /// Message Type
-        /// Referenced as m_Name
-        /// Types:
-        /// - channel = Channel Message
-        /// - debug - Debug Messages
-        /// </summary>
         public string MessageType;
-        
-        /// <summary>
-        /// The character name of the sender
-        /// Referenced as m_Player
-        /// </summary>
         public string SenderCharacterName;
-        
-        /// <summary>
-        /// The actual message
-        /// ???
-        /// </summary>
         public string Message = "MESSAGE";
-        
+
         public override Packet CreatePacket()
         {
             return base.CreatePacket(Packets.ChatMsgAck);
         }
-        
-        public override int ExpectedSize() => 2*(Message.Length+30);
+
+        public override int ExpectedSize() => 2 * (Message.Length + 22);
 
         public override byte[] GetBytes()
         {
             using (var ms = new MemoryStream())
+            using (var bs = new BinaryWriterExt(ms))
             {
-                using (var bs = new BinaryWriterExt(ms))
-                {
-                    bs.WriteUnicodeStatic(MessageType, 10);
-                    bs.WriteUnicodeStatic(SenderCharacterName, 18);
-                    bs.WriteUnicode(Message);
-                }
+                // BS_PktChatMsgAck::m_Name[10]
+                bs.WriteUnicodeStatic(MessageType, 10);
+
+                // BS_PktChatMsgAck::m_Player[10]
+                bs.WriteUnicodeStatic(SenderCharacterName, 10);
+
+                // BS_PktChatMsgAck::m_Len + trailing UTF-16 message
+                bs.WriteUnicode(Message);
                 return ms.ToArray();
             }
         }
