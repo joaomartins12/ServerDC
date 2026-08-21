@@ -127,6 +127,16 @@ namespace GameServer.Network.Handlers.Join
                     if (!IsCurrentSerialOwner(client) || client.User.ActiveCharacter == null)
                         return;
 
+                    // AreaServer replays/announces packet 541 after 250 ms. By this point
+                    // the local 3D vehicle should exist, so resend the full local car state
+                    // and then the world snapshot. The initial 1061 sent during character
+                    // loading can arrive before the world object exists and only updates the
+                    // garage/inventory-side car state.
+                    SendOwnWorldSnapshot(client);
+
+                    // Remote 467 snapshots are intentionally delayed for the same reason:
+                    // Cmd_RoomNotifyChange discards the update when the target serial has
+                    // not yet been instantiated by the movement/world manager.
                     SyncVisiblePlayers(client, areaId, "join-ready");
                 }
                 catch (Exception ex)
@@ -135,6 +145,55 @@ namespace GameServer.Network.Handlers.Join
                         serial, areaId, ex.Message);
                 }
             });
+        }
+
+        private static void SendOwnWorldSnapshot(Client client)
+        {
+            if (!IsCurrentSerialOwner(client) || client.User.ActiveCharacter == null ||
+                client.User.ActiveCharacter.ActiveCar == null)
+                return;
+
+            var character = client.User.ActiveCharacter;
+            var vehicle = character.ActiveCar;
+            var serial = client.User.VehicleSerial;
+
+            PlayerVisualSnapshotBuilder.ApplyActivePaint(character);
+
+            // 1061 installs the complete XiStrCarInfo for the local serial, including
+            // Color and Color2. The client handler explicitly rejects other serials.
+            client.Send(new VisualUpdateAnswer
+            {
+                Serial = serial,
+                Age = 0,
+                CarId = vehicle.CarId,
+                VisualState = 1,
+                CarInfo = new XiStrCarInfo
+                {
+                    CarID = vehicle.CarId,
+                    CarType = vehicle.CarType,
+                    BaseColor = vehicle.BaseColor,
+                    Grade = vehicle.Grade,
+                    SlotType = vehicle.SlotType,
+                    AuctionCnt = vehicle.AuctionCnt,
+                    Mitron = vehicle.Mitron,
+                    Kmh = vehicle.Kmh,
+                    Color = vehicle.Color,
+                    Color2 = vehicle.Color2,
+                    MitronCapacity = vehicle.MitronCapacity,
+                    MitronEfficiency = vehicle.MitronEfficiency,
+                    AuctionOn = vehicle.AuctionOn,
+                    SBBOn = vehicle.SBBOn
+                }
+            }.CreatePacket());
+
+            // 467 targets the already-spawned 3D vehicle and applies XiCarAttr together
+            // with XiPlayerInfo/XiVisualItem. This is the world-render step that 1061 alone
+            // cannot guarantee when it was received before packet 541 created the car.
+            client.Send(PlayerVisualSnapshotBuilder.BuildRoomNotifyChange(serial, character).CreatePacket());
+
+            Log.Debug(
+                "LiveArea self visual sync: Name={0} Serial={1} CarId={2} Color=0x{3:X6} Color2=0x{4:X8} -> 1061+467",
+                character.Name, serial, vehicle.CarId, vehicle.Color, vehicle.Color2);
         }
 
         private static bool TryGetState(ushort serial, out LiveAreaState state)
@@ -209,16 +268,16 @@ namespace GameServer.Network.Handlers.Join
             PlayerVisualSnapshotBuilder.ApplyActivePaint(character);
             var snapshot = PlayerVisualSnapshotBuilder.BuildPlayerInfo(serial, character);
 
-            // 802 establishes/refreshes the player's identity record.
+            // 802 establishes/refreshes the player's identity record. Retail iterates
+            // exactly 0xD8 (216) bytes per XiPlayerInfo record.
             recipient.Send(new PlayerInfoOldAnswer
             {
                 PacketId = PlayerInfoOldAnswer.PlayerInfoOldPacketId,
                 PlayerInfo = snapshot
             }.CreatePacket());
 
-            // 467 is the retail world-vehicle visual snapshot. The client resolves the
-            // target by serial and applies XiCarAttr + XiPlayerInfo to the existing car,
-            // which is what 809/805 could not do because they never carried paint color.
+            // 467 is the world-vehicle visual snapshot. Its corrected retail layout is
+            // DWORD Serial + WORD Age + 16-byte XiCarAttr + 216-byte XiPlayerInfo.
             recipient.Send(PlayerVisualSnapshotBuilder.BuildRoomNotifyChange(serial, character).CreatePacket());
         }
 
