@@ -211,15 +211,23 @@ ORDER BY v.InventoryIndex DESC;", conn))
             return ResolveVisualColor(character, "tint");
         }
 
+        private static uint PackTintRgb565(uint rgb)
+        {
+            var r = (rgb >> 16) & 0xFFu;
+            var g = (rgb >> 8) & 0xFFu;
+            var b = rgb & 0xFFu;
+            return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+        }
+
         public static void ApplyActivePaint(Character character)
         {
             if (character == null || character.ActiveCar == null || global::GameServer.GameServer.Instance.Database == null)
                 return;
 
             var paint = ResolveVisualPaintColor(character);
-            var tint = ResolveVisualTintColor(character);
+            var tintRgb = ResolveVisualTintColor(character);
             var color = paint ?? character.ActiveCar.BaseColor;
-            var color2 = tint ?? 0u;
+            var color2 = tintRgb.HasValue ? PackTintRgb565(tintRgb.Value) : 0u;
             var changed = character.ActiveCar.Color != color || character.ActiveCar.Color2 != color2;
 
             character.ActiveCar.Color = color;
@@ -240,9 +248,9 @@ ORDER BY v.InventoryIndex DESC;", conn))
             {
                 using (var conn = global::GameServer.GameServer.Instance.Database.Connection)
                     VehicleModel.Update(conn, character.ActiveCar);
-                Log.Info("Visual colors persisted to vehicle: CID={0} CarId={1} Color={2} Color2={3} Paint={4} Tint={5}",
-                    character.Id, character.ActiveCar.CarId, color, color2,
-                    paint.HasValue ? "visual" : "base", tint.HasValue ? "visual" : "default");
+                Log.Info("Visual colors persisted to vehicle: CID={0} CarId={1} Color={2} TintRGB={3} TintRGB565=0x{4:X4} Paint={5} Tint={6}",
+                    character.Id, character.ActiveCar.CarId, color, tintRgb ?? 0u, color2,
+                    paint.HasValue ? "visual" : "base", tintRgb.HasValue ? "visual" : "default");
             }
             catch (System.Exception ex)
             {
@@ -293,14 +301,16 @@ ORDER BY v.InventoryIndex;", conn))
             switch (categoryIndex)
             {
                 case 1:
-                case 3:
                 case 32:
-                    // Paint and Window Tint are packed RGB values in the generic Data
-                    // field. Retail VisualUpdate copies them through XiStrCarInfo.Color
-                    // and Color2 respectively; they are not XiVisualItem ids.
+                    // Paint is carried by XiStrCarInfo.Color.
                     return;
                 case 2:
                     visual.Neon = value;
+                    return;
+                case 3:
+                    // The retail visual slot still needs the Window Tint item id. The
+                    // selected RGB itself is carried separately through Color2 (RGB565).
+                    visual.DecalColor = value;
                     return;
                 case 4:
                     visual.AeroBumper = value;
@@ -332,8 +342,9 @@ ORDER BY v.InventoryIndex;", conn))
 
             var normalizedCategory = Normalize(category);
             var normalizedCode = Normalize(itemCode);
-            if (ContainsAny(normalizedCode, normalizedCategory, "paint", "windowtint")) return;
-            if (ContainsAny(normalizedCode, normalizedCategory, "airduct", "intercooler")) visual.AeroIntercooler = value;
+            if (ContainsAny(normalizedCode, normalizedCategory, "paint")) return;
+            if (ContainsAny(normalizedCode, normalizedCategory, "windowtint")) visual.DecalColor = value;
+            else if (ContainsAny(normalizedCode, normalizedCategory, "airduct", "intercooler")) visual.AeroIntercooler = value;
             else if (ContainsAny(normalizedCode, normalizedCategory, "bodykit", "bodyset", "aeroset", "aeroadv") || normalizedCode == "pcaero") visual.AeroSet = value;
             else if (ContainsAny(normalizedCode, normalizedCategory, "tire", "wheel", "rim")) visual.Wheel = value;
             else if (ContainsAny(normalizedCode, normalizedCategory, "aerowing", "boosterwing", "spoiler", "wing")) visual.Spoiler = value;
