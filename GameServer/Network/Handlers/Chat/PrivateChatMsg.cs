@@ -11,16 +11,6 @@ namespace GameServer.Network.Handlers
 {
     public class PrivateChatMsg
     {
-        /// <summary>
-        /// Packet 148, BS_PktWhisper in the v0.77a client:
-        ///   wchar_t m_Name[10];
-        ///   ushort  m_Len;
-        ///   wchar_t message[m_Len];
-        ///
-        /// m_Name is the target character name. The old implementation treated
-        /// it as a variable/null-terminated string and then searched the rest of
-        /// the packet for a plausible message prefix, which shifted the reader.
-        /// </summary>
         [Packet(Packets.CmdWhisper)]
         public static void Whisper(Packet packet)
         {
@@ -29,11 +19,19 @@ namespace GameServer.Network.Handlers
             var sender = packet.Sender.User.ActiveCharacter;
             string targetName;
             string message;
+            long messageOffset;
 
             try
             {
+                // Captured v0.77a packet 148 starts with the native Name[10], but the
+                // retail client inserts a per-message/private-chat envelope between the
+                // target name and the final UTF-16 payload. Do not assume m_Len follows
+                // Name[10] immediately. In the 2026-08-21 capture the payload was:
+                // Name[10] + 22 envelope bytes + byteLength(6) + "oi\0".
                 targetName = packet.Reader.ReadUnicodeStatic(10).Trim();
-                message = packet.Reader.ReadUnicodePrefixed();
+
+                if (!TryReadTrailingUnicodeMessage(packet.Reader.BaseStream, out message, out messageOffset))
+                    message = string.Empty;
             }
             catch (Exception ex)
             {
@@ -47,16 +45,13 @@ namespace GameServer.Network.Handlers
 
             sender.LastMessageFrom = targetName;
             WriteWhisperResearch("IN148", packet.Sender.User.VehicleSerial, 0,
-                sender.Name, targetName, message, packet, "native=Name[10]+Len+Message");
+                sender.Name, targetName, message, packet,
+                "captured-envelope trailingMessageOffset=" + messageOffset);
 
             if (!string.IsNullOrEmpty(message))
                 SendPrivate(packet, targetName, message);
         }
 
-        /// <summary>
-        /// Packet 149 contains the text for the already selected private-chat
-        /// target. The client does not repeat the target name in this packet.
-        /// </summary>
         [Packet(Packets.CmdPrivateChatMsg)]
         public static void Handle(Packet packet)
         {
@@ -65,10 +60,27 @@ namespace GameServer.Network.Handlers
             var sender = packet.Sender.User.ActiveCharacter;
             var targetName = sender.LastMessageFrom;
             string message;
+            long messageOffset;
 
             try
             {
-                message = packet.Reader.ReadUnicodePrefixed();
+                // Keep packet 149 tolerant too. Some client paths send the simple
+                // ushort-character-count form, others reuse the private envelope.
+                var stream = packet.Reader.BaseStream;
+                var original = stream.Position;
+                try
+                {
+                    message = packet.Reader.ReadUnicodePrefixed();
+                    if (stream.Position > stream.Length)
+                        throw new EndOfStreamException();
+                    messageOffset = original;
+                }
+                catch
+                {
+                    stream.Position = original;
+                    if (!TryReadTrailingUnicodeMessage(stream, out message, out messageOffset))
+                        message = string.Empty;
+                }
             }
             catch (Exception ex)
             {
@@ -85,10 +97,56 @@ namespace GameServer.Network.Handlers
             }
 
             WriteWhisperResearch("IN149", packet.Sender.User.VehicleSerial, 0,
-                sender.Name, targetName, message, packet, "native=Len+Message");
+                sender.Name, targetName, message, packet,
+                "messageOffset=" + messageOffset);
 
             if (!string.IsNullOrEmpty(message))
                 SendPrivate(packet, targetName, message);
+        }
+
+        private static bool TryReadTrailingUnicodeMessage(Stream stream, out string message, out long prefixOffset)
+        {
+            message = null;
+            prefixOffset = -1;
+            if (stream == null || !stream.CanSeek) return false;
+
+            var original = stream.Position;
+            try
+            {
+                var end = stream.Length;
+                if (end - original < 4) return false;
+
+                // Retail packet 148 uses a byte-length prefix for the final UTF-16
+                // payload. Search only for a candidate that ends exactly at packet end;
+                // this avoids interpreting the opaque private-chat envelope as text.
+                for (var pos = original; pos + 4 <= end; pos++)
+                {
+                    stream.Position = pos;
+                    var lo = stream.ReadByte();
+                    var hi = stream.ReadByte();
+                    if (lo < 0 || hi < 0) break;
+
+                    var byteLength = lo | (hi << 8);
+                    if (byteLength < 2 || (byteLength & 1) != 0) continue;
+                    if (pos + 2 + byteLength != end) continue;
+
+                    var bytes = new byte[byteLength];
+                    if (stream.Read(bytes, 0, bytes.Length) != bytes.Length) return false;
+
+                    var decoded = Encoding.Unicode.GetString(bytes).TrimEnd('\0');
+                    if (decoded.IndexOf('\0') >= 0) continue;
+
+                    message = decoded;
+                    prefixOffset = pos;
+                    return true;
+                }
+
+                return false;
+            }
+            finally
+            {
+                stream.Position = original;
+            }
         }
 
         private static void SendPrivate(Packet packet, string targetName, string message)
@@ -113,8 +171,6 @@ namespace GameServer.Network.Handlers
                 return;
             }
 
-            // The native visual response is packet 147 (BS_PktChatMsgAck):
-            // Name[10]="whisper", Player[10], Len, Message.
             var recipientPacket = new ChatMessageAnswer
             {
                 MessageType = "whisper",
@@ -122,8 +178,6 @@ namespace GameServer.Network.Handlers
                 Message = message ?? string.Empty
             }.CreatePacket();
 
-            // The sender receives the same native packet with the other player's
-            // name, so the client renders the outgoing whisper coherently too.
             var senderEchoPacket = new ChatMessageAnswer
             {
                 MessageType = "whisper",
@@ -140,7 +194,7 @@ namespace GameServer.Network.Handlers
             WriteWhisperResearch("OUT147", packet.Sender.User.VehicleSerial,
                 target.User.VehicleSerial, senderCharacter.Name,
                 target.User.ActiveCharacter.Name, message, recipientPacket,
-                "type=whisper native=Name[10]+Player[10]+Len+Message");
+                "type=whisper nativeAck=Name[10]+Player[10]+charLen+Message");
 
             Log.Debug("Whisper: {0} -> {1}: {2}",
                 senderCharacter.Name, target.User.ActiveCharacter.Name, message);
