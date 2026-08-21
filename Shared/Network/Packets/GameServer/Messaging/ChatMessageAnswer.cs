@@ -1,21 +1,21 @@
 ﻿using System.IO;
-using System.Text;
 using Shared.Network.AreaServer;
 using Shared.Util;
 
 namespace Shared.Network.GameServer
 {
     /// <summary>
-    /// Drift City v0.77a retail BS_PktChatMsgAck (packet 147).
+    /// Drift City v0.77a retail BS_PktChatMsgAck (packet 147 / sub_539050).
     ///
-    /// Captured wire layout:
+    /// Native layout after the packet id:
     ///   wchar_t m_Name[10];
-    ///   wchar_t m_Player[10];
-    ///   wchar_t m_Message[]; // NUL terminated, NO length prefix
+    ///   wchar_t m_Player[18];
+    ///   ushort  m_Len;
+    ///   wchar_t m_Message[m_Len];
     ///
-    /// The previous implementation used WriteUnicode(Message), which inserted a
-    /// ushort before the text. Retail clients interpreted that ushort as the first
-    /// character of the message, making whispers blank/garbled.
+    /// The client handler reads m_Name at +0x02, m_Player at +0x16 and
+    /// m_Message at +0x3C. Keep this serializer intact for normal/channel/server
+    /// chat; private whispers use the dedicated packet 150 path.
     /// </summary>
     public class ChatMessageAnswer : OutPacket
     {
@@ -28,7 +28,7 @@ namespace Shared.Network.GameServer
             return base.CreatePacket(Packets.ChatMsgAck);
         }
 
-        public override int ExpectedSize() => 42 + ((Message ?? string.Empty).Length + 1) * 2;
+        public override int ExpectedSize() => 2 * ((Message ?? string.Empty).Length + 30);
 
         public override byte[] GetBytes()
         {
@@ -36,12 +36,8 @@ namespace Shared.Network.GameServer
             using (var bs = new BinaryWriterExt(ms))
             {
                 bs.WriteUnicodeStatic(MessageType ?? string.Empty, 10);
-                bs.WriteUnicodeStatic(SenderCharacterName ?? string.Empty, 10);
-
-                // Retail packet 147 carries the message directly after the two
-                // fixed wchar arrays. Write the terminating UTF-16 NUL explicitly.
-                var text = Encoding.Unicode.GetBytes((Message ?? string.Empty) + "\0");
-                bs.Write(text);
+                bs.WriteUnicodeStatic(SenderCharacterName ?? string.Empty, 18);
+                bs.WriteUnicode(Message ?? string.Empty);
                 return ms.ToArray();
             }
         }
