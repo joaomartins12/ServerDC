@@ -12,27 +12,40 @@ using Shared.Util;
 namespace GameServer.Network.Handlers
 {
     /// <summary>
-    /// License/title protocol research and persistence bridge for v0.77a.
+    /// Drift City v0.77a license/title protocol.
     ///
-    /// Known protocol family:
-    /// 666 LicenseStatus / 667 LicenseStatusAck / 668 LCondStatusAck
-    /// 806 LicenseInfoRes
-    /// 811 GetLicenseInfo / 812 GetLicenseInfoAck
-    /// 813 GetLicenseCond / 814 GetLicenseCondAck
-    /// 815 SelectLicense / 816 SelectLicenseAck
-    /// 817 NewLicenseNoti
+    /// The packet layouts below were reconstructed from the actual v0.77a client handlers:
+    ///  806 = player serial (u16) + XiLicense (6 bytes)
+    ///  812 = reward money (u32) + count (u32) + XiLicense[count]
+    ///  814 = request key (u32) + count (u16) + reset/page (u16) + total (u32)
+    ///        + XiLicenseCondition[count]
+    ///  816 = XiLicense (6 bytes)
+    ///  817 = XiLicense (6 bytes)
     ///
-    /// The exact record layouts for 667/668/806/812/814/816 are not public in DCNC.
-    /// Until they are recovered, this handler keeps all requests observable and persists
-    /// safe state without fabricating client structures.
+    /// XiLicense is three u16 values. The first is definitely LicenseId. The client logs the
+    /// second value as its license state/index and carries the third through selection/player
+    /// state. We use 0 for the secondary state and 1 in the third field for the equipped title.
+    ///
+    /// XiLicenseCondition is u16 ConditionId + u32 ProgressValue.
     /// </summary>
     public static class LicenseProtocol
     {
+        private const ushort LicenseInfoRes = 806;
         private const ushort CmdGetLicenseInfo = 811;
+        private const ushort CmdGetLicenseInfoAck = 812;
         private const ushort CmdGetLicenseCond = 813;
+        private const ushort CmdGetLicenseCondAck = 814;
         private const ushort CmdSelectLicense = 815;
+        private const ushort CmdSelectLicenseAck = 816;
         private const ushort NewLicenseNotification = 817;
         private const int RookieLicenseId = 7000;
+
+        private sealed class LicenseConditionProgress
+        {
+            public ushort ConditionId;
+            public uint Progress;
+            public string Key;
+        }
 
         [Packet(CmdGetLicenseInfo)]
         public static void GetLicenseInfo(Packet packet)
@@ -41,37 +54,34 @@ namespace GameServer.Network.Handlers
             var character = packet.Sender?.User?.ActiveCharacter;
             if (character == null)
             {
-                WriteLog("GET_INFO no-character request=" + Hex(request), true);
+                Research("GET_INFO no-character request=" + Hex(request));
                 return;
             }
 
             try
             {
-                // IMPORTANT: Database.Connection belongs to GameServer. Do not dispose it here.
                 var connection = GameServer.Instance.Database.Connection;
                 EnsureRookie(connection, character);
 
                 var current = CharacterProgressModel.GetCurrentLicense(connection, character.Id);
                 var unlocked = CharacterProgressModel.GetUnlockedLicenses(connection, character.Id);
                 var catalogCount = GetCatalogCount(connection);
-                var rookie = GetLicenseCatalogSummary(connection, RookieLicenseId);
 
-                WriteLog(string.Format(CultureInfo.InvariantCulture,
-                    "GET_INFO cid={0} name={1} requestLen={2} request={3} requestU32={4} current={5} unlocked=[{6}] unlockedCount={7} catalogCount={8} rookie={9} ACK812=NOT_SENT_LAYOUT_UNKNOWN",
+                SendLicenseInfoAck(packet.Sender, current, unlocked, 0, "get-info");
+                SendEquippedLicenseInfo(packet.Sender, current, "get-info");
+
+                Research(string.Format(CultureInfo.InvariantCulture,
+                    "GET_INFO cid={0} name={1} request={2} current={3} unlocked=[{4}] catalogCount={5} -> 812+806",
                     character.Id,
                     character.Name,
-                    request.Length,
                     Hex(request),
-                    request.Length >= 4 ? BitConverter.ToUInt32(request, 0) : 0u,
                     current,
                     string.Join(",", unlocked),
-                    unlocked.Count,
-                    catalogCount,
-                    rookie));
+                    catalogCount));
             }
             catch (Exception ex)
             {
-                WriteLog("GET_INFO_ERROR cid=" + character.Id + " " + ex.GetType().Name + ": " + ex.Message, true);
+                Research("GET_INFO_ERROR cid=" + character.Id + " " + ex.GetType().Name + ": " + ex.Message);
             }
         }
 
@@ -82,7 +92,7 @@ namespace GameServer.Network.Handlers
             var character = packet.Sender?.User?.ActiveCharacter;
             if (character == null)
             {
-                WriteLog("GET_COND no-character request=" + Hex(request), true);
+                Research("GET_COND no-character request=" + Hex(request));
                 return;
             }
 
@@ -92,27 +102,25 @@ namespace GameServer.Network.Handlers
                 EnsureRookie(connection, character);
 
                 var current = CharacterProgressModel.GetCurrentLicense(connection, character.Id);
-                var unlocked = CharacterProgressModel.GetUnlockedLicenses(connection, character.Id);
-                var progressRows = CountProgressRows(connection, character.Id);
-                var requirementRows = GetRequirementCount(connection);
-                var rookieRequirements = GetLicenseRequirementSummary(connection, RookieLicenseId);
+                var requestKey = request.Length >= 4 ? BitConverter.ToUInt32(request, 0) : 0u;
+                var conditions = LoadConditionProgress(connection, character.Id, current);
 
-                WriteLog(string.Format(CultureInfo.InvariantCulture,
-                    "GET_COND cid={0} name={1} requestLen={2} request={3} requestU32={4} current={5} unlocked=[{6}] progressRows={7} catalogRequirements={8} rookieRequirements={9} ACK814=NOT_SENT_LAYOUT_UNKNOWN",
+                SendLicenseCondAck(packet.Sender, requestKey, conditions, "get-cond");
+
+                Research(string.Format(CultureInfo.InvariantCulture,
+                    "GET_COND cid={0} name={1} request={2} requestU32=0x{3:X8} current={4} conds={5} [{6}] -> 814",
                     character.Id,
                     character.Name,
-                    request.Length,
                     Hex(request),
-                    request.Length >= 4 ? BitConverter.ToUInt32(request, 0) : 0u,
+                    requestKey,
                     current,
-                    string.Join(",", unlocked),
-                    progressRows,
-                    requirementRows,
-                    rookieRequirements));
+                    conditions.Count,
+                    string.Join(",", conditions.Select(x => x.Key + "#" + x.ConditionId + "=" + x.Progress)),
+                    conditions.Count));
             }
             catch (Exception ex)
             {
-                WriteLog("GET_COND_ERROR cid=" + character.Id + " " + ex.GetType().Name + ": " + ex.Message, true);
+                Research("GET_COND_ERROR cid=" + character.Id + " " + ex.GetType().Name + ": " + ex.Message);
             }
         }
 
@@ -123,7 +131,7 @@ namespace GameServer.Network.Handlers
             var character = packet.Sender?.User?.ActiveCharacter;
             if (character == null)
             {
-                WriteLog("SELECT no-character request=" + Hex(request), true);
+                Research("SELECT no-character request=" + Hex(request));
                 return;
             }
 
@@ -135,38 +143,39 @@ namespace GameServer.Network.Handlers
 
                 var before = CharacterProgressModel.GetCurrentLicense(connection, character.Id);
                 var changed = false;
-                var owned = candidate >= 7000 && candidate < 8000 &&
-                            CharacterProgressModel.HasLicense(connection, character.Id, candidate);
 
-                if (owned)
+                if (candidate >= 7000 && candidate < 8000 &&
+                    CharacterProgressModel.HasLicense(connection, character.Id, candidate))
+                {
                     changed = CharacterProgressModel.SetCurrentLicense(connection, character.Id, candidate);
+                }
 
                 var after = CharacterProgressModel.GetCurrentLicense(connection, character.Id);
-                WriteLog(string.Format(CultureInfo.InvariantCulture,
-                    "SELECT cid={0} name={1} requestLen={2} request={3} candidate={4} owned={5} before={6} after={7} changed={8} ACK816=NOT_SENT_LAYOUT_UNKNOWN",
+                if (after <= 0) after = RookieLicenseId;
+
+                SendSelectLicenseAck(packet.Sender, after, "select");
+                SendEquippedLicenseInfo(packet.Sender, after, "select");
+
+                Research(string.Format(CultureInfo.InvariantCulture,
+                    "SELECT cid={0} name={1} request={2} candidate={3} before={4} after={5} changed={6} -> 816+806",
                     character.Id,
                     character.Name,
-                    request.Length,
                     Hex(request),
                     candidate,
-                    owned,
                     before,
                     after,
                     changed));
-
-                if (changed)
-                    SendCurrentLicenseNotification(packet.Sender, after, "select");
             }
             catch (Exception ex)
             {
-                WriteLog("SELECT_ERROR cid=" + character.Id + " " + ex.GetType().Name + ": " + ex.Message, true);
+                Research("SELECT_ERROR cid=" + character.Id + " " + ex.GetType().Name + ": " + ex.Message);
             }
         }
 
         /// <summary>
-        /// Called after the character is fully loaded. Guarantees Rookie ownership and
-        /// announces the current license through 817. 817 is a notification only; it is
-        /// not treated as a replacement for the missing state ACKs.
+        /// Called after the character is fully loaded. Guarantees Rookie ownership, sends
+        /// the complete owned-license list, applies the equipped title to the local player
+        /// object and finally emits the new-license notification expected by the client.
         /// </summary>
         public static void Bootstrap(Client client, Character character)
         {
@@ -179,54 +188,177 @@ namespace GameServer.Network.Handlers
 
                 var current = CharacterProgressModel.GetCurrentLicense(connection, character.Id);
                 var unlocked = CharacterProgressModel.GetUnlockedLicenses(connection, character.Id);
-                var catalogCount = GetCatalogCount(connection);
-                var rookie = GetLicenseCatalogSummary(connection, RookieLicenseId);
-                var rookieRequirements = GetLicenseRequirementSummary(connection, RookieLicenseId);
+                if (current <= 0) current = RookieLicenseId;
 
+                SendLicenseInfoAck(client, current, unlocked, 0, "login");
+                SendEquippedLicenseInfo(client, current, "login");
                 SendCurrentLicenseNotification(client, current, "login");
-                WriteLog(string.Format(CultureInfo.InvariantCulture,
-                    "BOOTSTRAP cid={0} name={1} serial={2} current={3} unlocked=[{4}] unlockedCount={5} catalogCount={6} rookie={7} rookieRequirements={8}",
+
+                Research(string.Format(CultureInfo.InvariantCulture,
+                    "BOOTSTRAP cid={0} name={1} serial={2} current={3} unlocked=[{4}] -> 812+806+817",
                     character.Id,
                     character.Name,
                     client.User == null ? 0 : client.User.VehicleSerial,
                     current,
-                    string.Join(",", unlocked),
-                    unlocked.Count,
-                    catalogCount,
-                    rookie,
-                    rookieRequirements));
+                    string.Join(",", unlocked)));
             }
             catch (Exception ex)
             {
-                WriteLog("BOOTSTRAP_ERROR cid=" + character.Id + " " + ex.GetType().Name + ": " + ex.Message, true);
+                Research("BOOTSTRAP_ERROR cid=" + character.Id + " " + ex.GetType().Name + ": " + ex.Message);
             }
         }
 
         private static void EnsureRookie(MySqlConnection connection, Character character)
         {
-            var hadRookie = CharacterProgressModel.HasLicense(connection, character.Id, RookieLicenseId);
-            if (!hadRookie)
+            if (!CharacterProgressModel.HasLicense(connection, character.Id, RookieLicenseId))
             {
                 CharacterProgressModel.UnlockLicense(connection, character.Id, RookieLicenseId, 0);
-                WriteLog("ENSURE_ROOKIE unlocked cid=" + character.Id + " license=" + RookieLicenseId);
+                Research("UNLOCK_DEFAULT cid=" + character.Id + " license=" + RookieLicenseId);
             }
 
             var current = CharacterProgressModel.GetCurrentLicense(connection, character.Id);
             if (current <= 0 || !CharacterProgressModel.HasLicense(connection, character.Id, current))
             {
                 CharacterProgressModel.SetCurrentLicense(connection, character.Id, RookieLicenseId);
-                WriteLog("ENSURE_ROOKIE equipped-default cid=" + character.Id + " previous=" + current + " current=" + RookieLicenseId);
+                Research("EQUIP_DEFAULT cid=" + character.Id + " license=" + RookieLicenseId);
             }
+        }
+
+        private static void WriteXiLicense(Packet packet, int licenseId, bool equipped)
+        {
+            packet.Writer.Write((ushort)licenseId);
+            packet.Writer.Write((ushort)0);
+            packet.Writer.Write((ushort)(equipped ? 1 : 0));
+        }
+
+        private static void SendLicenseInfoAck(Client client, int currentLicenseId,
+            IList<int> unlocked, uint rewardMoney, string reason)
+        {
+            if (client == null) return;
+
+            var list = (unlocked ?? new List<int>())
+                .Where(x => x >= 7000 && x < 8000)
+                .Distinct()
+                .OrderBy(x => x)
+                .ToList();
+
+            if (!list.Contains(RookieLicenseId)) list.Insert(0, RookieLicenseId);
+
+            var ack = new Packet(CmdGetLicenseInfoAck);
+            ack.Writer.Write(rewardMoney);
+            ack.Writer.Write((uint)list.Count);
+            foreach (var licenseId in list)
+                WriteXiLicense(ack, licenseId, licenseId == currentLicenseId);
+
+            client.Send(ack);
+            Research("OUT 812 GetLicenseInfoAck reward=" + rewardMoney +
+                " count=" + list.Count + " current=" + currentLicenseId +
+                " entries=[" + string.Join(",", list) + "] reason=" + reason);
+        }
+
+        private static void SendLicenseCondAck(Client client, uint requestKey,
+            IList<LicenseConditionProgress> conditions, string reason)
+        {
+            if (client == null) return;
+            var list = conditions == null ? new List<LicenseConditionProgress>() : conditions.ToList();
+
+            var ack = new Packet(CmdGetLicenseCondAck);
+            ack.Writer.Write(requestKey);
+            ack.Writer.Write((ushort)list.Count);
+            ack.Writer.Write((ushort)0); // reset/first page
+            ack.Writer.Write((uint)list.Count);
+
+            foreach (var condition in list)
+            {
+                ack.Writer.Write(condition.ConditionId);
+                ack.Writer.Write(condition.Progress);
+            }
+
+            client.Send(ack);
+            Research("OUT 814 GetLicenseCondAck request=0x" + requestKey.ToString("X8") +
+                " count=" + list.Count + " total=" + list.Count + " reason=" + reason);
+        }
+
+        private static void SendSelectLicenseAck(Client client, int licenseId, string reason)
+        {
+            if (client == null || licenseId <= 0) return;
+            var ack = new Packet(CmdSelectLicenseAck);
+            WriteXiLicense(ack, licenseId, true);
+            client.Send(ack);
+            Research("OUT 816 SelectLicenseAck license=" + licenseId + " reason=" + reason);
+        }
+
+        private static void SendEquippedLicenseInfo(Client client, int licenseId, string reason)
+        {
+            if (client == null || client.User == null || licenseId <= 0) return;
+
+            var serial = client.User.VehicleSerial;
+            if (serial <= 0 || serial > ushort.MaxValue)
+            {
+                Research("OUT 806 SKIP invalid-serial=" + serial + " license=" + licenseId + " reason=" + reason);
+                return;
+            }
+
+            var packet = new Packet(LicenseInfoRes);
+            packet.Writer.Write((ushort)serial);
+            WriteXiLicense(packet, licenseId, true);
+            client.Send(packet);
+
+            Research("OUT 806 LicenseInfoRes serial=" + serial + " license=" + licenseId + " reason=" + reason);
         }
 
         private static void SendCurrentLicenseNotification(Client client, int licenseId, string reason)
         {
             if (client == null || licenseId <= 0) return;
 
+            // The v0.77a handler returns 8 bytes total: 2-byte packet id + one 6-byte
+            // XiLicense record. Sending only a 32-bit license id was four bytes too short.
             var notification = new Packet(NewLicenseNotification);
-            notification.Writer.Write(licenseId);
+            WriteXiLicense(notification, licenseId, true);
             client.Send(notification);
-            WriteLog("OUT 817 NewLicenseNoti license=" + licenseId + " reason=" + reason + " payloadU32=" + licenseId);
+            Research("OUT 817 NewLicenseNoti license=" + licenseId + " reason=" + reason);
+        }
+
+        private static List<LicenseConditionProgress> LoadConditionProgress(
+            MySqlConnection connection, ulong cid, int licenseId)
+        {
+            var result = new List<LicenseConditionProgress>();
+            using (var command = new MySqlCommand(@"
+SELECT
+    r.RequirementKey,
+    CASE WHEN c.SourceRow IS NULL OR c.SourceRow < 3 THEN 0 ELSE c.SourceRow - 3 END AS ConditionId,
+    COALESCE(p.ProgressValue, 0) AS ProgressValue
+FROM dbo.license_requirements r
+LEFT JOIN dbo.license_condition_catalog c
+    ON c.ConditionKey = r.RequirementKey
+LEFT JOIN dbo.character_progress p
+    ON p.CID = @cid AND p.ProgressKey = r.RequirementKey
+WHERE r.LicenseId = @license
+ORDER BY r.Slot ASC;", connection))
+            {
+                command.Parameters.AddWithValue("@cid", cid);
+                command.Parameters.AddWithValue("@license", licenseId);
+
+                using (var reader = command.ExecuteReader())
+                {
+                    while (reader.Read())
+                    {
+                        var conditionId = Convert.ToInt32(reader["ConditionId"], CultureInfo.InvariantCulture);
+                        var progress = Convert.ToInt64(reader["ProgressValue"], CultureInfo.InvariantCulture);
+                        if (conditionId < 0 || conditionId > ushort.MaxValue) continue;
+                        if (progress < 0) progress = 0;
+                        if (progress > uint.MaxValue) progress = uint.MaxValue;
+
+                        result.Add(new LicenseConditionProgress
+                        {
+                            ConditionId = (ushort)conditionId,
+                            Progress = (uint)progress,
+                            Key = Convert.ToString(reader["RequirementKey"], CultureInfo.InvariantCulture) ?? string.Empty
+                        });
+                    }
+                }
+            }
+            return result;
         }
 
         private static int FindLicenseId(byte[] request)
@@ -260,104 +392,15 @@ ELSE SELECT COUNT(1) FROM dbo.license_catalog;", connection))
                 return Convert.ToInt32(command.ExecuteScalar(), CultureInfo.InvariantCulture);
         }
 
-        private static int GetRequirementCount(MySqlConnection connection)
-        {
-            using (var command = new MySqlCommand(@"
-IF OBJECT_ID(N'dbo.license_requirements', N'U') IS NULL SELECT CAST(0 AS INT)
-ELSE SELECT COUNT(1) FROM dbo.license_requirements;", connection))
-                return Convert.ToInt32(command.ExecuteScalar(), CultureInfo.InvariantCulture);
-        }
-
-        private static int CountProgressRows(MySqlConnection connection, ulong cid)
-        {
-            using (var command = new MySqlCommand(
-                "SELECT COUNT(1) FROM dbo.character_progress WHERE CID=@cid", connection))
-            {
-                command.Parameters.AddWithValue("@cid", cid);
-                return Convert.ToInt32(command.ExecuteScalar(), CultureInfo.InvariantCulture);
-            }
-        }
-
-        private static string GetLicenseCatalogSummary(MySqlConnection connection, int licenseId)
-        {
-            try
-            {
-                using (var command = new MySqlCommand(@"
-IF OBJECT_ID(N'dbo.license_catalog', N'U') IS NULL
-BEGIN
-    SELECT CAST(NULL AS NVARCHAR(256)) AS Name, CAST(NULL AS NVARCHAR(128)) AS Category, CAST(NULL AS NVARCHAR(32)) AS Grade;
-END
-ELSE
-BEGIN
-    SELECT TOP 1 Name, Category, Grade FROM dbo.license_catalog WHERE LicenseId=@id;
-END", connection))
-                {
-                    command.Parameters.AddWithValue("@id", licenseId);
-                    using (var reader = command.ExecuteReader())
-                    {
-                        if (!reader.Read()) return "<missing>";
-                        var name = reader.IsDBNull(0) ? "?" : Convert.ToString(reader.GetValue(0), CultureInfo.InvariantCulture);
-                        var category = reader.IsDBNull(1) ? "?" : Convert.ToString(reader.GetValue(1), CultureInfo.InvariantCulture);
-                        var grade = reader.IsDBNull(2) ? "?" : Convert.ToString(reader.GetValue(2), CultureInfo.InvariantCulture);
-                        return name + "/cat=" + category + "/grade=" + grade;
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                return "<catalog-error:" + ex.GetType().Name + ">";
-            }
-        }
-
-        private static string GetLicenseRequirementSummary(MySqlConnection connection, int licenseId)
-        {
-            try
-            {
-                using (var command = new MySqlCommand(@"
-IF OBJECT_ID(N'dbo.license_requirements', N'U') IS NULL
-BEGIN
-    SELECT CAST(NULL AS NVARCHAR(128)) AS RequirementKey, CAST(NULL AS BIGINT) AS RequirementValue WHERE 1=0;
-END
-ELSE
-BEGIN
-    SELECT RequirementKey, RequirementValue FROM dbo.license_requirements WHERE LicenseId=@id ORDER BY Slot;
-END", connection))
-                {
-                    command.Parameters.AddWithValue("@id", licenseId);
-                    var values = new List<string>();
-                    using (var reader = command.ExecuteReader())
-                    {
-                        while (reader.Read())
-                        {
-                            var key = reader.IsDBNull(0) ? "?" : Convert.ToString(reader.GetValue(0), CultureInfo.InvariantCulture);
-                            var value = reader.IsDBNull(1) ? "?" : Convert.ToString(reader.GetValue(1), CultureInfo.InvariantCulture);
-                            values.Add(key + ":" + value);
-                        }
-                    }
-                    return values.Count == 0 ? "<none>" : string.Join(";", values);
-                }
-            }
-            catch (Exception ex)
-            {
-                return "<requirements-error:" + ex.GetType().Name + ">";
-            }
-        }
-
         private static string Hex(byte[] data)
         {
             if (data == null || data.Length == 0) return "<empty>";
             return BitConverter.ToString(data).Replace('-', ' ');
         }
 
-        private static void WriteLog(string text, bool warning = false)
+        private static void Research(string text)
         {
-            // Always mirror license research into the normal server log so PacketCapture
-            // ZIPs contain the protocol state without depending on process working folder.
-            if (warning)
-                Log.Warning("LicenseProtocol: {0}", text);
-            else
-                Log.Debug("LicenseProtocol: {0}", text);
-
+            Log.Info("LicenseProtocol: {0}", text);
             try
             {
                 var dir = Path.Combine("Logs", "Research");
