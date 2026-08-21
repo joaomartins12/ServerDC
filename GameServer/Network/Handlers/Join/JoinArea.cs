@@ -13,6 +13,7 @@ namespace GameServer.Network.Handlers.Join
     public class JoinArea
     {
         private const ushort LicenseInfoRes = 806;
+        private const ushort SetVisualItemRes = 805;
         private const int RookieLicenseId = 7000;
         private const int JoinResyncDelayMs = 750;
 
@@ -72,8 +73,6 @@ namespace GameServer.Network.Handlers.Join
             Log.Debug("LiveArea: JOIN Name={0} Serial={1} AreaId={2} License={3}",
                 character.Name, serial, joinAreaPacket.AreaId, license);
 
-            // Initial identity is sent before the AreaServer creates the remote 3D car.
-            // Do not dirty-toggle here; just populate the identity cache.
             SyncVisiblePlayers(packet.Sender, joinAreaPacket.AreaId, "join");
             QueueJoinResync(serial, joinAreaPacket.AreaId);
 
@@ -129,10 +128,6 @@ namespace GameServer.Network.Handlers.Join
                     if (!IsCurrentSerialOwner(client) || client.User.ActiveCharacter == null)
                         return;
 
-                    // At this point AreaServer has already replayed packet 541 and the
-                    // remote vehicle object exists. Force one visual difference followed
-                    // immediately by the real XiPlayerInfo so the retail manager takes its
-                    // rebuild path instead of treating an identical cached 809 as a no-op.
                     SyncVisiblePlayers(client, areaId, "join-ready");
                 }
                 catch (Exception ex)
@@ -198,7 +193,7 @@ namespace GameServer.Network.Handlers.Join
             SendLicenseInfo(b, aSerial, aState.LicenseId);
 
             Log.Debug(
-                "LiveArea identity sync[{0}]: {1}(serial={2},area={3},license={4}) <-> {5}(serial={6},area={7},license={8}) -> 802+809{9}+806",
+                "LiveArea identity sync[{0}]: {1}(serial={2},area={3},license={4}) <-> {5}(serial={6},area={7},license={8}) -> 802+809+805{9}+806",
                 reason,
                 a.User.ActiveCharacter.Name,
                 aSerial,
@@ -208,7 +203,7 @@ namespace GameServer.Network.Handlers.Join
                 bSerial,
                 bState.AreaId,
                 bState.LicenseId,
-                forceVisualTransition ? "(reset+real)" : string.Empty);
+                forceVisualTransition ? "(post-spawn invalidate)" : string.Empty);
         }
 
         private static void SendPlayerSnapshot(Client recipient, ushort serial, Character character, bool forceVisualTransition)
@@ -224,22 +219,34 @@ namespace GameServer.Network.Handlers.Join
                 PlayerInfo = snapshot
             }.CreatePacket());
 
-            if (forceVisualTransition)
-            {
-                var reset = PlayerVisualSnapshotBuilder.BuildPlayerInfo(serial, character);
-                reset.VisualItem = new XiVisualItem { PlateString = string.Empty };
-                recipient.Send(new PlayerInfoOldAnswer
-                {
-                    PacketId = PlayerInfoOldAnswer.PlayerInfoLivePacketId,
-                    PlayerInfo = reset
-                }.CreatePacket());
-            }
-
             recipient.Send(new PlayerInfoOldAnswer
             {
                 PacketId = PlayerInfoOldAnswer.PlayerInfoLivePacketId,
                 PlayerInfo = snapshot
             }.CreatePacket());
+
+            // DriftCity.exe handler directly following PlayerInfo resolves packet 805 as
+            // a 16-byte SetVisualItem command. Mode 4 looks the world vehicle up by the
+            // serial at +4, sets its render-dirty byte (+0x43E0) and resets the pending
+            // rebuild state (+0x41E8). This is the missing bridge between XiPlayerInfo
+            // being correct and the already-spawned remote 3D car actually rebuilding.
+            if (forceVisualTransition)
+                SendRemoteVisualInvalidate(recipient, serial);
+        }
+
+        public static void SendRemoteVisualInvalidate(Client recipient, ushort serial)
+        {
+            if (recipient == null || serial == 0) return;
+
+            var visual = new Packet(SetVisualItemRes);
+            visual.Writer.Write((ushort)0); // +0x02
+            visual.Writer.Write(serial);    // +0x04 target vehicle serial
+            visual.Writer.Write((ushort)0); // +0x06
+            visual.Writer.Write(0u);        // +0x08
+            visual.Writer.Write(4u);        // +0x0C mode 4 = invalidate one vehicle
+            recipient.Send(visual);
+
+            Log.Debug("Remote visual invalidate: TargetSerial={0} Packet=805 Mode=4 Size=16", serial);
         }
 
         private static int GetCurrentLicense(ulong cid)
