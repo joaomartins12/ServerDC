@@ -62,7 +62,15 @@ namespace GameServer.Network.Handlers.Join
 
             var ack = new LoadCharThreadAnswer
             {
-                ServerId = 0,
+                // Retail Cmd_LoadCharAck (124) stores this first DWORD in the game
+                // singleton and the vehicle-performance calculator refuses to run while
+                // it is zero. The old emulator always sent 0 here, leaving Maximum
+                // Speed / Time to reach / Crash Damage / Boost Time at zero even though
+                // StatUpdate contained the correct point totals.
+                //
+                // This server is the first/only local shard, so use the canonical
+                // non-zero server id expected by the retail initialization path.
+                ServerId = 1,
                 ServerStartTime = 0,
                 Character = character,
                 Vehicles = vehicles.ToArray(),
