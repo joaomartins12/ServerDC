@@ -126,14 +126,6 @@ namespace GameServer.Network.Handlers
                 return;
             }
 
-            // DriftCity.exe packet 150 handler (sub_524F30) reads:
-            //   wchar Name[10]   @ +0x02
-            //   wchar Player[20] @ +0x16
-            //   uint  Direction   @ +0x3E
-            //   ushort Len        @ +0x42
-            //   wchar Message[]   @ +0x44
-            // Use the dedicated private-chat ACK instead of forcing whisper through
-            // ChatMsgAck/147. The client owns the native (From)/(To) presentation.
             var recipientPacket = CreatePrivateChatAck(
                 senderCharacter.Name,
                 target.User.ActiveCharacter.Name,
@@ -152,20 +144,25 @@ namespace GameServer.Network.Handlers
 
             WriteWhisperResearch("OUT150", packet.Sender.User.VehicleSerial, target.User.VehicleSerial,
                 senderCharacter.Name, target.User.ActiveCharacter.Name, message, recipientPacket,
-                "native PrivateChatMsgAck direction=0 recipient / 1 sender");
+                "native PrivateChatMsgAck direction=0 recipient / 1 sender; len=utf16-bytes-including-nul");
             Log.Debug("Whisper: {0} -> {1}: {2}", senderCharacter.Name, target.User.ActiveCharacter.Name, message);
         }
 
         private static Packet CreatePrivateChatAck(string name, string player, uint direction, string message)
         {
             var text = message ?? string.Empty;
+            var encoded = Encoding.Unicode.GetBytes(text + "\0");
+
             var ack = new Packet(PrivateChatMsgAck);
             ack.Writer.WriteUnicodeStatic(name ?? string.Empty, 10);
             ack.Writer.WriteUnicodeStatic(player ?? string.Empty, 20);
             ack.Writer.Write(direction);
-            ack.Writer.Write((ushort)text.Length);
-            if (text.Length > 0)
-                ack.Writer.Write(Encoding.Unicode.GetBytes(text));
+
+            // Retail CmdWhisper/148 uses a UTF-16 BYTE length including the trailing
+            // NUL. PrivateChatMsgAck/150 consumes the same convention. Writing the
+            // character count made the client read beyond the payload and render '????'.
+            ack.Writer.Write((ushort)encoded.Length);
+            ack.Writer.Write(encoded);
             return ack;
         }
 
