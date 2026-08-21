@@ -14,19 +14,16 @@ namespace GameServer.Network.Handlers
     /// <summary>
     /// Drift City v0.77a license/title protocol.
     ///
-    /// The packet layouts below were reconstructed from the actual v0.77a client handlers:
-    ///  806 = player serial (u16) + XiLicense (6 bytes)
-    ///  812 = reward money (u32) + count (u32) + XiLicense[count]
-    ///  814 = request key (u32) + count (u16) + reset/page (u16) + total (u32)
-    ///        + XiLicenseCondition[count]
-    ///  816 = XiLicense (6 bytes)
-    ///  817 = XiLicense (6 bytes)
+    /// Packet layouts reconstructed from the actual v0.77a client:
+    /// 806 = player serial (u16) + XiLicense (6 bytes)
+    /// 812 = reward money (u32) + count (u32) + XiLicense[count]
+    /// 814 = request key (u32) + count (u16) + page/reset (u16) + total (u32)
+    ///       + XiLicenseCondition[count]
+    /// 816 = XiLicense (6 bytes)
+    /// 817 = XiLicense (6 bytes)
     ///
-    /// XiLicense is three u16 values. The first is definitely LicenseId. The client logs the
-    /// second value as its license state/index and carries the third through selection/player
-    /// state. We use 0 for the secondary state and 1 in the third field for the equipped title.
-    ///
-    /// XiLicenseCondition is u16 ConditionId + u32 ProgressValue.
+    /// XiLicense = LicenseId(u16), State(u16), Equipped(u16).
+    /// XiLicenseCondition = ConditionId(u16), ProgressValue(u32).
     /// </summary>
     public static class LicenseProtocol
     {
@@ -72,12 +69,8 @@ namespace GameServer.Network.Handlers
 
                 Research(string.Format(CultureInfo.InvariantCulture,
                     "GET_INFO cid={0} name={1} request={2} current={3} unlocked=[{4}] catalogCount={5} -> 812+806",
-                    character.Id,
-                    character.Name,
-                    Hex(request),
-                    current,
-                    string.Join(",", unlocked),
-                    catalogCount));
+                    character.Id, character.Name, Hex(request), current,
+                    string.Join(",", unlocked), catalogCount));
             }
             catch (Exception ex)
             {
@@ -109,14 +102,9 @@ namespace GameServer.Network.Handlers
 
                 Research(string.Format(CultureInfo.InvariantCulture,
                     "GET_COND cid={0} name={1} request={2} requestU32=0x{3:X8} current={4} conds={5} [{6}] -> 814",
-                    character.Id,
-                    character.Name,
-                    Hex(request),
-                    requestKey,
-                    current,
+                    character.Id, character.Name, Hex(request), requestKey, current,
                     conditions.Count,
-                    string.Join(",", conditions.Select(x => x.Key + "#" + x.ConditionId + "=" + x.Progress)),
-                    conditions.Count));
+                    string.Join(",", conditions.Select(x => x.Key + "#" + x.ConditionId + "=" + x.Progress))));
             }
             catch (Exception ex)
             {
@@ -158,13 +146,7 @@ namespace GameServer.Network.Handlers
 
                 Research(string.Format(CultureInfo.InvariantCulture,
                     "SELECT cid={0} name={1} request={2} candidate={3} before={4} after={5} changed={6} -> 816+806",
-                    character.Id,
-                    character.Name,
-                    Hex(request),
-                    candidate,
-                    before,
-                    after,
-                    changed));
+                    character.Id, character.Name, Hex(request), candidate, before, after, changed));
             }
             catch (Exception ex)
             {
@@ -173,9 +155,9 @@ namespace GameServer.Network.Handlers
         }
 
         /// <summary>
-        /// Called after the character is fully loaded. Guarantees Rookie ownership, sends
-        /// the complete owned-license list, applies the equipped title to the local player
-        /// object and finally emits the new-license notification expected by the client.
+        /// Restores complete license state after the character is loaded.
+        /// 812 marks ownership, 816 applies the currently equipped title locally,
+        /// 806 applies it to the player object and 817 notifies the client of ownership.
         /// </summary>
         public static void Bootstrap(Client client, Character character)
         {
@@ -188,14 +170,23 @@ namespace GameServer.Network.Handlers
 
                 var current = CharacterProgressModel.GetCurrentLicense(connection, character.Id);
                 var unlocked = CharacterProgressModel.GetUnlockedLicenses(connection, character.Id);
-                if (current <= 0) current = RookieLicenseId;
+                if (current <= 0 || !unlocked.Contains(current))
+                {
+                    current = RookieLicenseId;
+                    CharacterProgressModel.SetCurrentLicense(connection, character.Id, current);
+                }
 
                 SendLicenseInfoAck(client, current, unlocked, 0, "login");
+
+                // Critical: the v0.77a client only actually equips/restores the local title
+                // after processing packet 816. Packet 806 alone updates player license data
+                // but does not perform the local Equip License transition.
+                SendSelectLicenseAck(client, current, "login-restore");
                 SendEquippedLicenseInfo(client, current, "login");
                 SendCurrentLicenseNotification(client, current, "login");
 
                 Research(string.Format(CultureInfo.InvariantCulture,
-                    "BOOTSTRAP cid={0} name={1} serial={2} current={3} unlocked=[{4}] -> 812+806+817",
+                    "BOOTSTRAP cid={0} name={1} serial={2} current={3} unlocked=[{4}] -> 812+816+806+817",
                     character.Id,
                     character.Name,
                     client.User == null ? 0 : client.User.VehicleSerial,
@@ -210,9 +201,11 @@ namespace GameServer.Network.Handlers
 
         private static void EnsureRookie(MySqlConnection connection, Character character)
         {
+            CharacterModel.EnsureDefaultLicense(connection, character.Id);
+
             if (!CharacterProgressModel.HasLicense(connection, character.Id, RookieLicenseId))
             {
-                CharacterProgressModel.UnlockLicense(connection, character.Id, RookieLicenseId, 0);
+                CharacterProgressModel.UnlockLicense(connection, character.Id, RookieLicenseId, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
                 Research("UNLOCK_DEFAULT cid=" + character.Id + " license=" + RookieLicenseId);
             }
 
@@ -265,7 +258,7 @@ namespace GameServer.Network.Handlers
             var ack = new Packet(CmdGetLicenseCondAck);
             ack.Writer.Write(requestKey);
             ack.Writer.Write((ushort)list.Count);
-            ack.Writer.Write((ushort)0); // reset/first page
+            ack.Writer.Write((ushort)0);
             ack.Writer.Write((uint)list.Count);
 
             foreach (var condition in list)
@@ -311,8 +304,6 @@ namespace GameServer.Network.Handlers
         {
             if (client == null || licenseId <= 0) return;
 
-            // The v0.77a handler returns 8 bytes total: 2-byte packet id + one 6-byte
-            // XiLicense record. Sending only a 32-bit license id was four bytes too short.
             var notification = new Packet(NewLicenseNotification);
             WriteXiLicense(notification, licenseId, true);
             client.Send(notification);
