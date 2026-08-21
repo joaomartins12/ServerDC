@@ -3,8 +3,14 @@ using Shared.Util;
 namespace Shared.Objects
 {
     /// <summary>
-    /// Drift City v0.77a XiPlayerInfo record. Packet 802 iterates these records with
+    /// Drift City v0.77a XiPlayerInfo record. Packet 802/809 iterate records with
     /// an exact 0xD8 (216-byte) stride.
+    ///
+    /// The retail 802 handler copies the first 0x96 (150) bytes into its live
+    /// player structure. Those 150 bytes are: 90 bytes of identity/crew data,
+    /// a 0x38 (56-byte) XiVisualItem and a 4-byte UseTime. The remaining 66 bytes
+    /// are opaque tail data. Keeping this boundary exact is important because the
+    /// old 50-byte XiVisualItem shifted every field after visual offset +0x20.
     /// </summary>
     public class XiPlayerInfo : BinaryWriterExt.ISerializable
     {
@@ -30,25 +36,6 @@ namespace Shared.Objects
             VisualItem = new XiVisualItem();
         }
 
-        /*
-        struct XiPlayerInfo
-        {
-          wchar_t Cname[13];
-          unsigned __int16 Serial;
-          unsigned __int16 Age;
-          __int64 Cid;
-          unsigned __int16 Level;
-          unsigned int Exp;
-          __int64 TeamId;
-          __int64 TeamMarkId;
-          wchar_t TeamName[14];
-          unsigned __int16 TeamNLevel;
-          XiVisualItem VisualItem;
-          float UseTime;
-          // retail record continues with 72 undocumented bytes
-        };
-        */
-
         public void Serialize(BinaryWriterExt writer)
         {
             writer.WriteUnicodeStatic(Character.Name, 13, true); // 26
@@ -57,10 +44,7 @@ namespace Shared.Objects
             writer.Write(Character.Id);                         // 8
             writer.Write(Character.Level);                      // 2
 
-            // IMPORTANT: retail XiPlayerInfo::Exp is uint32. The previous serializer
-            // wrote the 64-bit BaseExp field, shifting Team/VisualItem/UseTime by four
-            // bytes while still padding the record to 216. Packet 802 therefore looked
-            // superficially the right size but its visual identity fields were misaligned.
+            // Retail XiPlayerInfo::Exp is uint32.
             var exp = Character.ExperienceInfo.CurExp;
             if (exp < 0) exp = 0;
             writer.Write(exp > uint.MaxValue ? uint.MaxValue : (uint)exp); // 4
@@ -70,11 +54,12 @@ namespace Shared.Objects
             else
                 Character.Crew.SerializeShort(writer);           // 46
 
-            writer.Write(VisualItem ?? new XiVisualItem());      // 50
+            // Offset 0x5A (90), exact retail XiVisualItem size 0x38 (56).
+            writer.Write(VisualItem ?? new XiVisualItem());      // 56
             writer.Write(UseTime);                               // 4
 
-            // 144 bytes of known fields + 72 unknown = exact 216-byte retail stride.
-            writer.Write(new byte[72]);
+            // Known retail prefix is 0x96 (150) bytes. 150 + 66 = 216.
+            writer.Write(new byte[66]);
         }
     }
 }
