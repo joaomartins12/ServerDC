@@ -196,6 +196,38 @@ ORDER BY v.InventoryIndex DESC;", conn))
             return null;
         }
 
+        public static void ApplyActivePaint(Character character)
+        {
+            if (character == null || character.ActiveCar == null || global::GameServer.GameServer.Instance.Database == null)
+                return;
+
+            var paint = ResolveVisualPaintColor(character);
+            var color = paint ?? character.ActiveCar.BaseColor;
+            if (character.ActiveCar.Color == color)
+                return;
+
+            character.ActiveCar.Color = color;
+            if (character.GarageVehicles != null)
+            {
+                foreach (var vehicle in character.GarageVehicles)
+                    if (vehicle != null && vehicle.CarId == character.ActiveCar.CarId)
+                        vehicle.Color = color;
+            }
+
+            try
+            {
+                using (var conn = global::GameServer.GameServer.Instance.Database.Connection)
+                    VehicleModel.Update(conn, character.ActiveCar);
+                Log.Info("Visual paint persisted to vehicle: CID={0} CarId={1} Color={2} Source={3}",
+                    character.Id, character.ActiveCar.CarId, color, paint.HasValue ? "visual" : "base");
+            }
+            catch (System.Exception ex)
+            {
+                Log.Warning("Visual paint vehicle persistence failed: CID={0} CarId={1} Error={2}",
+                    character.Id, character.ActiveCar.CarId, ex.Message);
+            }
+        }
+
         public static XiVisualItem BuildVisualItem(Character character)
         {
             var visual = new XiVisualItem { PlateString = string.Empty };
