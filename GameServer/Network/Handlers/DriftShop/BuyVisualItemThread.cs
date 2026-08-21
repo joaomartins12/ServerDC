@@ -94,6 +94,11 @@ namespace GameServer.Network.Handlers
                     break;
             }
 
+            // The retail server sends the visual-item modification/list update as part of
+            // the purchase flow. Without this the row exists in SQL but the current client
+            // session continues to believe it owns no visual item until a relog.
+            GameServer.Network.Handlers.Join.VisualItemList.SendCurrent(packet);
+
             var ack = new BuyVisualItemThreadAnswer
             {
                 Type = purchase.Support,
