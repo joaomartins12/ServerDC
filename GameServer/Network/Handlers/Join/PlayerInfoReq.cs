@@ -1,4 +1,5 @@
 using GameServer.Util;
+using Shared.Models;
 using Shared.Network;
 using Shared.Network.GameServer;
 using Shared.Util;
@@ -7,6 +8,9 @@ namespace GameServer.Network.Handlers.Join
 {
     public class PlayerInfoReq
     {
+        private const ushort LicenseInfoRes = 806;
+        private const int RookieLicenseId = 7000;
+
         [Packet(Packets.CmdPlayerInfoReq)]
         public static void Handle(Packet packet)
         {
@@ -34,19 +38,37 @@ namespace GameServer.Network.Handlers.Join
 
             // 801 is a player-info lookup. Do not send RoomNotifyChange (467) here:
             // that packet mutates the vehicle rendered in the world and uses a different
-            // car-body namespace than Character.ActiveCar.CarType. The previous attempt
-            // caused the requested player's car to become a tank briefly.
+            // car-body namespace than Character.ActiveCar.CarType.
             var playerInfo = PlayerVisualSnapshotBuilder.BuildPlayerInfo(serial, character);
             packet.Sender.Send(new PlayerInfoOldAnswer
             {
                 PlayerInfo = playerInfo
             }.CreatePacket());
 
+            // Packet 806 is the v0.77a per-player license state:
+            //   Serial(u16) + XiLicense { LicenseId(u16), State(u16), Equipped(u16) }.
+            // Bootstrap only sends 806 for the local player. A remote client therefore
+            // needs the target's 806 immediately after 802, once it has created/updated
+            // the player identified by this serial.
+            var currentLicense = CharacterProgressModel.GetCurrentLicense(
+                GameServer.Instance.Database.Connection,
+                character.Id);
+            if (currentLicense <= 0)
+                currentLicense = RookieLicenseId;
+
+            var licenseInfo = new Packet(LicenseInfoRes);
+            licenseInfo.Writer.Write(serial);
+            licenseInfo.Writer.Write((ushort)currentLicense);
+            licenseInfo.Writer.Write((ushort)0);
+            licenseInfo.Writer.Write((ushort)1);
+            packet.Sender.Send(licenseInfo);
+
             Log.Debug(
-                "PlayerInfoReq: Serial={0} Name={1} CarType={2} -> 802 only",
+                "PlayerInfoReq: Serial={0} Name={1} CarType={2} License={3} -> 802+806",
                 serial,
                 character.Name,
-                character.ActiveCar == null ? 0u : character.ActiveCar.CarType);
+                character.ActiveCar == null ? 0u : character.ActiveCar.CarType,
+                currentLicense);
         }
     }
 }
