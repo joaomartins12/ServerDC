@@ -127,13 +127,12 @@ namespace GameServer.Network.Handlers.Join
                     if (!IsCurrentSerialOwner(client) || client.User.ActiveCharacter == null)
                         return;
 
-                    // AreaServer replays/announces packet 541 after 250 ms. By this point
-                    // the local 3D vehicle should exist, so resend the full local car state.
+                    // Packet 541 creates/announces free-roam vehicles through AreaServer.
+                    // Once those objects exist, repeat the local-only 1061 snapshot and the
+                    // remote PlayerInfo cache. Do not send Cmd_RoomNotifyChange (467): its
+                    // retail handler is gated by Room/Battle state and is not a free-roam
+                    // vehicle refresh packet.
                     SendOwnWorldSnapshot(client);
-
-                    // Repeat remote identity + live visual + world attribute snapshots after
-                    // packet 541 has instantiated the other vehicles. Sending these only at
-                    // JoinArea time races the world manager and leaves default remote cars.
                     SyncVisiblePlayers(client, areaId, "join-ready");
                 }
                 catch (Exception ex)
@@ -182,10 +181,8 @@ namespace GameServer.Network.Handlers.Join
                 }
             }.CreatePacket());
 
-            client.Send(PlayerVisualSnapshotBuilder.BuildRoomNotifyChange(serial, character).CreatePacket());
-
             Log.Debug(
-                "LiveArea self visual sync: Name={0} Serial={1} CarId={2} Color=0x{3:X6} Color2=0x{4:X8} -> 1061+467",
+                "LiveArea self visual sync: Name={0} Serial={1} CarId={2} Color=0x{3:X6} Color2=0x{4:X8} -> 1061",
                 character.Name, serial, vehicle.CarId, effectiveColor, vehicle.Color2);
         }
 
@@ -242,7 +239,7 @@ namespace GameServer.Network.Handlers.Join
             SendLicenseInfo(b, aSerial, aState.LicenseId);
 
             Log.Debug(
-                "LiveArea identity sync[{0}]: {1}(serial={2},area={3},license={4}) <-> {5}(serial={6},area={7},license={8}) -> 802+809+467+806",
+                "LiveArea identity sync[{0}]: {1}(serial={2},area={3},license={4}) <-> {5}(serial={6},area={7},license={8}) -> 802+809+806",
                 reason,
                 a.User.ActiveCharacter.Name,
                 aSerial,
@@ -261,25 +258,20 @@ namespace GameServer.Network.Handlers.Join
             PlayerVisualSnapshotBuilder.ApplyActivePaint(character);
             var snapshot = PlayerVisualSnapshotBuilder.BuildPlayerInfo(serial, character);
 
-            // 802 establishes identity/discovery metadata.
+            // 802 establishes identity/discovery metadata. 809 feeds the live
+            // XiPlayerInfo cache used by the free-roam player manager. Both carry the
+            // same retail 0xD8 record; neither is a Room packet.
             recipient.Send(new PlayerInfoOldAnswer
             {
                 PacketId = PlayerInfoOldAnswer.PlayerInfoOldPacketId,
                 PlayerInfo = snapshot
             }.CreatePacket());
 
-            // 809 updates the live XiPlayerInfo/XiVisualItem cache used by already-spawned
-            // remote cars. This carries body kit/aero/wheel/neon/decal state that 467 alone
-            // was not reliably applying in free-roam.
             recipient.Send(new PlayerInfoOldAnswer
             {
                 PacketId = PlayerInfoOldAnswer.PlayerInfoLivePacketId,
                 PlayerInfo = snapshot
             }.CreatePacket());
-
-            // 467 carries the world car attributes including current paint/tint and the
-            // same player snapshot, after the remote vehicle exists.
-            recipient.Send(PlayerVisualSnapshotBuilder.BuildRoomNotifyChange(serial, character).CreatePacket());
         }
 
         private static int GetCurrentLicense(ulong cid)
