@@ -8,8 +8,9 @@ namespace Shared.Network.GameServer
     /// <summary>
     /// VisualItemListAck (1201). Retail v0.77a uses an 8-byte payload header
     /// (ListUpdate + ItemNum), followed by exactly ItemNum 120-byte XiStrMyVSItem
-    /// records. ListUpdate 0x40000 tells the client to clear its current visual
-    /// inventory before inserting the supplied records.
+    /// records. Including the 2-byte packet id, wire-buffer size is 10 + 120*N.
+    /// ListUpdate 0x40000 tells the client to clear its current visual inventory
+    /// before inserting the supplied records.
     /// </summary>
     public class VisualItemListAnswer : OutPacket
     {
@@ -23,7 +24,7 @@ namespace Shared.Network.GameServer
 
         public override int ExpectedSize()
         {
-            return 12 + (120 * Items.Count);
+            return 10 + (120 * Items.Count);
         }
 
         public override byte[] GetBytes()
