@@ -207,12 +207,13 @@ IF NOT EXISTS (
     SELECT 1 FROM dbo.character_licenses WHERE CID=@cid AND LicenseId=@license
 )
 BEGIN
-    INSERT INTO dbo.character_licenses (CID, LicenseId, UnlockedAt)
-    VALUES (@cid, @license, SYSUTCDATETIME());
+    INSERT INTO dbo.character_licenses (CID, LicenseId, UnlockedDate, IsNew)
+    VALUES (@cid, @license, @time, 1);
 END;", dbconn))
             {
                 insert.Parameters.AddWithValue("@cid", cid);
                 insert.Parameters.AddWithValue("@license", DefaultLicenseId);
+                insert.Parameters.AddWithValue("@time", DateTimeOffset.UtcNow.ToUnixTimeSeconds());
                 insert.ExecuteNonQuery();
             }
         }
