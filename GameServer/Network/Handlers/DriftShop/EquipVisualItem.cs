@@ -239,7 +239,7 @@ WHERE CharacterId=@cid AND InventoryIndex=@inven;", conn))
             {
                 var row = LoadByInventory(conn, characterId, inventoryIndex);
                 if (row == null) return;
-                Send(packet, new[] { row.Item }, ModAddOrUpdate, "inventory=" + inventoryIndex);
+                Send(packet.Sender, new[] { row.Item }, ModAddOrUpdate, "inventory=" + inventoryIndex);
             }
         }
 
@@ -266,17 +266,50 @@ ORDER BY InventoryIndex;", conn))
             }
 
             if (items.Count == 0) return;
-            Send(packet, items, ModAddOrUpdate, "car=" + carId + " category=" + categoryIndex);
+            Send(packet.Sender, items, ModAddOrUpdate, "car=" + carId + " category=" + categoryIndex);
+        }
+
+        /// <summary>
+        /// Replays every visual-inventory row associated with one car. This is used
+        /// immediately after 1061 has installed a new XiStrCarInfo (notably paint color).
+        /// The retail 1202 callback then invalidates/reapplies visual materials against
+        /// the already-updated car state instead of refreshing against the old color.
+        /// </summary>
+        public static void SendCar(Client recipient, ulong characterId, uint carId)
+        {
+            if (recipient == null || carId == 0) return;
+
+            var items = new List<InventoryVisualItem>();
+            using (var conn = global::GameServer.GameServer.Instance.Database.Connection)
+            using (var cmd = new MySqlCommand(@"
+SELECT CarId,ItemState,ShopId,InventoryIndex,Data,Period,UpdateTime,CreateTime,CategoryIndex
+FROM dbo.visual_items
+WHERE CharacterId=@cid AND CarId=@carId
+ORDER BY InventoryIndex;", conn))
+            {
+                cmd.Parameters.AddWithValue("@cid", characterId);
+                cmd.Parameters.AddWithValue("@carId", carId);
+                using (var r = cmd.ExecuteReader())
+                {
+                    while (r.Read())
+                        items.Add(ReadRow(r).Item);
+                }
+            }
+
+            if (items.Count == 0) return;
+            Send(recipient, items, ModAddOrUpdate, "post-carinfo car=" + carId);
         }
 
         public static void SendDelete(Packet packet, InventoryVisualItem item)
         {
             if (item == null) return;
-            Send(packet, new[] { item }, ModDelete, "delete inventory=" + item.InvenIdx);
+            Send(packet.Sender, new[] { item }, ModDelete, "delete inventory=" + item.InvenIdx);
         }
 
-        private static void Send(Packet requestPacket, IEnumerable<InventoryVisualItem> items, int modType, string context)
+        private static void Send(Client recipient, IEnumerable<InventoryVisualItem> items, int modType, string context)
         {
+            if (recipient == null) return;
+
             var list = new List<InventoryVisualItem>(items);
             if (list.Count == 0) return;
 
@@ -287,7 +320,7 @@ ORDER BY InventoryIndex;", conn))
                 ack.Writer.Write(item);
                 ack.Writer.Write(modType);
             }
-            requestPacket.Sender.Send(ack);
+            recipient.Send(ack);
 
             Log.Debug("VSItemModList 1202: Count={0} ModType={1} {2}",
                 list.Count, modType, context ?? string.Empty);
@@ -425,6 +458,7 @@ ORDER BY CASE WHEN Category=@category THEN 0 ELSE 1 END,
             PlayerVisualSnapshotBuilder.ApplyActivePaint(character);
 
             var ownerSent = false;
+            var ownerPostRefresh = false;
             var remoteSent = 0;
 
             foreach (var client in global::GameServer.GameServer.Instance.Server.GetClients())
@@ -434,25 +468,31 @@ ORDER BY CASE WHEN Category=@category THEN 0 ELSE 1 END,
 
                 if (ReferenceEquals(client.User, sourceUser))
                 {
+                    // 1061 writes the new XiStrCarInfo/Color. A second 1202 pass is
+                    // intentionally AFTER it: 1202 executes the client's visual material
+                    // callbacks, so paint/tint are reapplied against the new car state.
                     client.Send(BuildLocalVisualUpdate(sourceUser).CreatePacket());
+                    VisualShopProtocolSync.SendCar(client, character.Id, character.ActiveCar.CarId);
                     ownerSent = true;
+                    ownerPostRefresh = true;
                     continue;
                 }
 
-                // Retail packet 802 carries the 216-byte XiPlayerInfo, including the
-                // equipped XiVisualItem snapshot. This is the player identity/appearance
-                // channel used by the free-roam player manager. Packet 467 belongs to
-                // the Battle Zone room protocol and must not be used for world cosmetics.
+                // PlayerInfoRes 809 updates the retail player-info collection used by
+                // free-roam. Initial remote creation is ordered separately by AreaServer
+                // so the identity/visual snapshot exists before the first 541 replay.
                 client.Send(new PlayerInfoOldAnswer
                 {
+                    PacketId = PlayerInfoOldAnswer.PlayerInfoLivePacketId,
                     PlayerInfo = PlayerVisualSnapshotBuilder.BuildPlayerInfo(
                         sourceUser.VehicleSerial, character)
                 }.CreatePacket());
                 remoteSent++;
             }
 
-            Log.Debug("Visual retail sync: CID={0} Serial={1} Owner1061={2} Remote802={3}",
-                character.Id, sourceUser.VehicleSerial, ownerSent, remoteSent);
+            Log.Debug(
+                "Visual retail sync: CID={0} Serial={1} Owner1061={2} OwnerPost1202={3} Remote809={4}",
+                character.Id, sourceUser.VehicleSerial, ownerSent, ownerPostRefresh, remoteSent);
         }
 
         public static void Broadcast(User sourceUser)
@@ -469,7 +509,7 @@ ORDER BY CASE WHEN Category=@category THEN 0 ELSE 1 END,
                 Serial = user.VehicleSerial,
                 Age = 0,
                 CarId = vehicle.CarId,
-                VisualState = 0,
+                VisualState = 1,
                 CarInfo = new XiStrCarInfo
                 {
                     CarID = vehicle.CarId,
