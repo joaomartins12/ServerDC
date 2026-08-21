@@ -31,25 +31,21 @@ namespace GameServer.Network.Handlers.Join
                 packet.Sender.KillConnection("Character for CmdPlayerInfoReq not found");
 #else
                 packet.Sender.SendError("Character not loaded!");
-                packet.Sender.Send(new PlayerInfoOldAnswer().CreatePacket());
+                packet.Sender.Send(new PlayerInfoOldAnswer
+                {
+                    PacketId = PlayerInfoOldAnswer.PlayerInfoOldPacketId
+                }.CreatePacket());
 #endif
                 return;
             }
 
-            // 801 is a player-info lookup. Do not send RoomNotifyChange (467) here:
-            // that packet mutates the vehicle rendered in the world and uses a different
-            // car-body namespace than Character.ActiveCar.CarType.
             var playerInfo = PlayerVisualSnapshotBuilder.BuildPlayerInfo(serial, character);
             packet.Sender.Send(new PlayerInfoOldAnswer
             {
+                PacketId = PlayerInfoOldAnswer.PlayerInfoOldPacketId,
                 PlayerInfo = playerInfo
             }.CreatePacket());
 
-            // Packet 806 is the v0.77a per-player license state:
-            //   Serial(u16) + XiLicense { LicenseId(u16), State(u16), Equipped(u16) }.
-            // Bootstrap only sends 806 for the local player. A remote client therefore
-            // needs the target's 806 immediately after 802, once it has created/updated
-            // the player identified by this serial.
             var currentLicense = CharacterProgressModel.GetCurrentLicense(
                 GameServer.Instance.Database.Connection,
                 character.Id);
