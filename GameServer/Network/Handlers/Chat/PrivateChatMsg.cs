@@ -144,7 +144,7 @@ namespace GameServer.Network.Handlers
 
             WriteWhisperResearch("OUT150", packet.Sender.User.VehicleSerial, target.User.VehicleSerial,
                 senderCharacter.Name, target.User.ActiveCharacter.Name, message, recipientPacket,
-                "native PrivateChatMsgAck direction=0 recipient / 1 sender; len=utf16-bytes-including-nul");
+                "native PrivateChatMsgAck direction=0 recipient / 1 sender; len=characters; message=NUL-terminated");
             Log.Debug("Whisper: {0} -> {1}: {2}", senderCharacter.Name, target.User.ActiveCharacter.Name, message);
         }
 
@@ -158,10 +158,10 @@ namespace GameServer.Network.Handlers
             ack.Writer.WriteUnicodeStatic(player ?? string.Empty, 20);
             ack.Writer.Write(direction);
 
-            // Retail CmdWhisper/148 uses a UTF-16 BYTE length including the trailing
-            // NUL. PrivateChatMsgAck/150 consumes the same convention. Writing the
-            // character count made the client read beyond the payload and render '????'.
-            ack.Writer.Write((ushort)encoded.Length);
+            // DriftCity.exe sub_524F30 reads Message at +0x44 as a NUL-terminated
+            // UTF-16 string, while Len at +0x42 is the character count used in its
+            // expected packet-size calculation. Keep Len=text.Length and include NUL.
+            ack.Writer.Write((ushort)text.Length);
             ack.Writer.Write(encoded);
             return ack;
         }
