@@ -31,6 +31,7 @@ namespace GameServer
                 throw new Exception("Server is already running.");
 
             var watch = System.Diagnostics.Stopwatch.StartNew();
+            var executableDirectory = AppDomain.CurrentDomain.BaseDirectory;
 
             int x, y, width, height;
             Win32.GetWindowPosition(out x, out y, out width, out height);
@@ -89,13 +90,12 @@ namespace GameServer
             {
                 VisualShopDatabase.EnsureSchemaAndSynchronize(visualShopConnection, VisualItems);
 
-                // Client XLT files are the authoritative source for this client build.
-                // They override the converted XML source fields but never overwrite Server*
-                // admin overrides in dbo.visual_item_catalog.
+                // Client XLT files live in an Importer folder next to GameServer.exe.
+                // AppDomain.BaseDirectory is captured before NavigateToRoot() changes CWD.
                 VShopClientXltImporter.ImportIfPresent(
                     visualShopConnection,
-                    "system/data/Init/VShopItem.xlt",
-                    "system/data/Init/VisualItem.xlt");
+                    Path.Combine(executableDirectory, "Importer", "VShopItem.xlt"),
+                    Path.Combine(executableDirectory, "Importer", "VisualItem.xlt"));
             }
 
             Log.Info("Loading Quest Table");
