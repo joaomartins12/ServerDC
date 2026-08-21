@@ -50,6 +50,23 @@ namespace GameServer.Network.Handlers.Join
 
             lock (PresenceSync)
             {
+                // A logout/relogin allocates a new VehicleSerial. Never keep an older
+                // LiveArea entry for the same character, otherwise the heartbeat can
+                // revive stale identities after the player has already left.
+                var stale = new List<ushort>();
+                foreach (var pair in LiveAreas)
+                {
+                    if (pair.Key != serial &&
+                        string.Equals(pair.Value.Name, character.Name, StringComparison.OrdinalIgnoreCase))
+                        stale.Add(pair.Key);
+                }
+                foreach (var staleSerial in stale)
+                {
+                    LiveAreas.Remove(staleSerial);
+                    Log.Debug("LiveArea: PURGE_STALE Name={0} OldSerial={1} NewSerial={2}",
+                        character.Name, staleSerial, serial);
+                }
+
                 LiveAreas[serial] = new LiveAreaState
                 {
                     AreaId = joinAreaPacket.AreaId,
@@ -61,13 +78,7 @@ namespace GameServer.Network.Handlers.Join
             Log.Debug("LiveArea: JOIN Name={0} Serial={1} AreaId={2} License={3}",
                 character.Name, serial, joinAreaPacket.AreaId, license);
 
-            // Only synchronize players that are confirmed to be in the SAME area.
-            // The previous code sent 802/806 for every connected GameServer client,
-            // including players in other maps, which can create stale remote entities.
             SyncVisiblePlayers(packet.Sender, joinAreaPacket.AreaId, "join");
-
-            // Push the exact AreaId to online friends immediately so Friend List does
-            // not briefly render a persisted City value through the wrong location table.
             global::GameServer.Network.Handlers.Social.FriendList.PushLiveUpdate(character.Name);
         }
 
@@ -110,20 +121,27 @@ namespace GameServer.Network.Handlers.Join
                 return LiveAreas.TryGetValue(serial, out state);
         }
 
+        private static bool IsCurrentSerialOwner(Client client)
+        {
+            if (client?.User == null || client.User.VehicleSerial == 0) return false;
+            Shared.Objects.User active;
+            return DefaultServer.ActiveSerials.TryGetValue(client.User.VehicleSerial, out active) &&
+                   ReferenceEquals(active, client.User);
+        }
+
         private static void SyncVisiblePlayers(Client joiningClient, int areaId, string reason)
         {
-            if (joiningClient?.User?.ActiveCharacter == null || joiningClient.User.VehicleSerial == 0)
+            if (!IsCurrentSerialOwner(joiningClient) || joiningClient.User.ActiveCharacter == null)
                 return;
 
-            var joiningCharacter = joiningClient.User.ActiveCharacter;
             var joiningSerial = joiningClient.User.VehicleSerial;
             LiveAreaState joiningState;
             if (!TryGetState(joiningSerial, out joiningState)) return;
 
             foreach (var other in GameServer.Instance.Server.GetClients())
             {
-                if (other == null || other == joiningClient ||
-                    other.User?.ActiveCharacter == null || other.User.VehicleSerial == 0)
+                if (other == null || other == joiningClient || !IsCurrentSerialOwner(other) ||
+                    other.User.ActiveCharacter == null)
                     continue;
 
                 LiveAreaState otherState;
@@ -141,7 +159,7 @@ namespace GameServer.Network.Handlers.Join
                 var clients = new List<Client>();
                 foreach (var client in GameServer.Instance.Server.GetClients())
                 {
-                    if (client?.User?.ActiveCharacter != null && client.User.VehicleSerial != 0)
+                    if (IsCurrentSerialOwner(client) && client.User.ActiveCharacter != null)
                         clients.Add(client);
                 }
 
@@ -170,7 +188,8 @@ namespace GameServer.Network.Handlers.Join
         private static void SendIdentityPair(Client a, LiveAreaState aState,
             Client b, LiveAreaState bState, string reason)
         {
-            if (a?.User?.ActiveCharacter == null || b?.User?.ActiveCharacter == null) return;
+            if (!IsCurrentSerialOwner(a) || !IsCurrentSerialOwner(b) ||
+                a.User.ActiveCharacter == null || b.User.ActiveCharacter == null) return;
 
             var aSerial = a.User.VehicleSerial;
             var bSerial = b.User.VehicleSerial;
