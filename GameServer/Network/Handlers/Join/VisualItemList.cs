@@ -1,4 +1,3 @@
-using System.Collections.Generic;
 using GameServer.Util;
 using Shared.Network;
 using Shared.Network.GameServer;
@@ -15,6 +14,13 @@ namespace GameServer.Network.Handlers.Join
             SendCurrent(packet);
         }
 
+        /// <summary>
+        /// Rebuilds the Visual Shop inventory from persistent server state.
+        /// 1201 is the authoritative inventory/equipped snapshot; 1061 restores the
+        /// active car's persisted paint/tint. Do not replay the same rows through 1202:
+        /// 1202 is a modification stream and replaying every equipped item after a shop
+        /// preview makes the client keep transient preview state as if it were committed.
+        /// </summary>
         public static void SendCurrent(Packet packet)
         {
             var user = packet.Sender.User;
@@ -47,12 +53,7 @@ namespace GameServer.Network.Handlers.Join
 
             Log.Debug("VisualItemListAck authoritative: CID={0} Count={1}", character.Id, answer.Items.Count);
             packet.Sender.Send(answer.CreatePacket());
-
-            // 1201 is the authoritative inventory state. Reset the car-info snapshot from
-            // persisted/equipped data and then replay ONLY ItemState=1 rows. Replaying every
-            // owned row caused v0.77a to restore preview/unequipped cosmetics locally.
             SendInitialLocalVisualRefresh(packet, user, character);
-            SendPostCarInfoVisualRefresh(packet, character, answer.Items);
         }
 
         private static void SendInitialLocalVisualRefresh(Packet packet, User user, Character character)
@@ -91,48 +92,8 @@ namespace GameServer.Network.Handlers.Join
 
             packet.Sender.Send(refresh.CreatePacket());
             Log.Debug(
-                "Initial visual refresh authoritative: CID={0} Serial={1} CarId={2} Color={3} -> 1201+1061",
-                character.Id, user.VehicleSerial, vehicle.CarId,
-                vehicle.Color != 0 ? vehicle.Color : vehicle.BaseColor);
-        }
-
-        private static void SendPostCarInfoVisualRefresh(Packet packet, Character character,
-            IEnumerable<InventoryVisualItem> inventory)
-        {
-            if (packet == null || packet.Sender == null || character == null || character.ActiveCar == null)
-                return;
-
-            var activeCarId = character.ActiveCar.CarId;
-            var rows = new List<InventoryVisualItem>();
-            foreach (var item in inventory)
-            {
-                // IMPORTANT: 1202 is a live visual callback, not merely an inventory dump.
-                // Only equipped rows are allowed to participate in this replay. ItemState=0
-                // rows stay visible in 1201 inventory but must never be reapplied to the car.
-                if (item != null && item.CarId == activeCarId && item.ItemState == 1)
-                    rows.Add(item);
-            }
-
-            if (rows.Count == 0)
-            {
-                Log.Debug(
-                    "Initial visual post-refresh: CID={0} CarId={1} EquippedCount=0 (no 1202 replay)",
-                    character.Id, activeCarId);
-                return;
-            }
-
-            var delta = new Packet((ushort)1202);
-            delta.Writer.Write(rows.Count);
-            foreach (var item in rows)
-            {
-                delta.Writer.Write(item);
-                delta.Writer.Write(0); // add/update active equipped row
-            }
-            packet.Sender.Send(delta);
-
-            Log.Debug(
-                "Initial visual post-refresh: CID={0} CarId={1} EquippedCount={2} -> 1061+1202",
-                character.Id, activeCarId, rows.Count);
+                "Visual inventory authoritative refresh: CID={0} Serial={1} CarId={2} Color=0x{3:X6} -> 1201+1061",
+                character.Id, user.VehicleSerial, vehicle.CarId, vehicle.Color);
         }
     }
 }
