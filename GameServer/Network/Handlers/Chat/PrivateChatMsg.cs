@@ -10,11 +10,9 @@ namespace GameServer.Network.Handlers
 {
     public class PrivateChatMsg
     {
-        // Drift City v0.77a uses packet 148 in both directions for the normal
-        // whisper feature. Packet 150 is Cmd_PrivateChatMsgAck and belongs to
-        // the separate "Private" chat presentation; using 150 is what caused
-        // (Private)(Player) and click targets such as *Private / *Priv.
         private const ushort WhisperPacketId = 148;
+        private const uint WhisperModeTo = 0;
+        private const uint WhisperModeFrom = 1;
 
         [Packet(Packets.CmdWhisper)]
         public static void Whisper(Packet packet)
@@ -30,12 +28,6 @@ namespace GameServer.Network.Handlers
 
             try
             {
-                // Retail packet 148 layout (body, i.e. after packet id):
-                //   wchar_t Name[20]   @ +0x00
-                //   uint32   Mode      @ +0x28
-                //   uint16   ByteLen   @ +0x2C
-                //   wchar_t  Message[] @ +0x2E
-                // ByteLen includes the terminating UTF-16 NUL.
                 targetName = packet.Reader.ReadUnicodeStatic(20).Trim();
                 clientMode = packet.Reader.ReadUInt32();
                 byteLength = packet.Reader.ReadUInt16();
@@ -70,8 +62,6 @@ namespace GameServer.Network.Handlers
         [Packet(Packets.CmdPrivateChatMsg)]
         public static void Handle(Packet packet)
         {
-            // Keep the old command path available for clients/UI flows that issue 149,
-            // but deliver the resulting message using the real whisper packet 148.
             if (packet.Sender?.User?.ActiveCharacter == null)
                 return;
 
@@ -167,16 +157,18 @@ namespace GameServer.Network.Handlers
                 return;
             }
 
-            // The remote name is the only name packet 148 needs. The client handler
-            // (0x521870) routes it through its native "whisper" category, with the
-            // built-in red color 0xFFFF0000.
-            //
-            // ModeOnWire=1 is intentional: the retail handler increments this value
-            // before passing it to the chat renderer. Renderer mode 2 builds the native
-            // clickable target string "*PlayerName ". This is the piece packet 150
-            // could never reproduce correctly.
-            var recipientPacket = CreateWhisperAck(senderCharacter.Name, message);
-            var senderEchoPacket = CreateWhisperAck(target.User.ActiveCharacter.Name, message);
+            // Recipient must enter the client's "from" branch, while the sender echo
+            // must enter the complementary "to" branch. Sending mode 1 to both sides
+            // made both lines render as "Whispering from".
+            var recipientPacket = CreateWhisperAck(
+                senderCharacter.Name,
+                WhisperModeFrom,
+                message);
+
+            var senderEchoPacket = CreateWhisperAck(
+                target.User.ActiveCharacter.Name,
+                WhisperModeTo,
+                message);
 
             target.Send(recipientPacket);
             sourcePacket.Sender.Send(senderEchoPacket);
@@ -184,23 +176,28 @@ namespace GameServer.Network.Handlers
             senderCharacter.LastMessageFrom = target.User.ActiveCharacter.Name;
             target.User.ActiveCharacter.LastMessageFrom = senderCharacter.Name;
 
-            WriteWhisperResearch("OUT148", sourcePacket.Sender.User.VehicleSerial,
+            WriteWhisperResearch("OUT148_FROM", sourcePacket.Sender.User.VehicleSerial,
                 target.User.VehicleSerial, senderCharacter.Name,
                 target.User.ActiveCharacter.Name, message, recipientPacket,
-                "native Cmd_Whisper server->client Name[20], modeOnWire=1 -> rendererMode=2, UTF16 byte length incl NUL");
+                "recipient remoteName=sender modeOnWire=1 -> native FROM branch");
+
+            WriteWhisperResearch("OUT148_TO", sourcePacket.Sender.User.VehicleSerial,
+                target.User.VehicleSerial, senderCharacter.Name,
+                target.User.ActiveCharacter.Name, message, senderEchoPacket,
+                "sender echo remoteName=target modeOnWire=0 -> native TO branch");
 
             Log.Debug("Whisper: {0} -> {1}: {2}",
                 senderCharacter.Name, target.User.ActiveCharacter.Name, message);
         }
 
-        private static Packet CreateWhisperAck(string remotePlayerName, string message)
+        private static Packet CreateWhisperAck(string remotePlayerName, uint modeOnWire, string message)
         {
             var text = message ?? string.Empty;
             var encoded = Encoding.Unicode.GetBytes(text + "\0");
 
             var ack = new Packet(WhisperPacketId);
             ack.Writer.WriteUnicodeStatic(remotePlayerName ?? string.Empty, 20);
-            ack.Writer.Write(1u); // handler +1 => renderer mode 2 (clickable whisper target)
+            ack.Writer.Write(modeOnWire);
             ack.Writer.Write((ushort)encoded.Length);
             ack.Writer.Write(encoded);
             return ack;
