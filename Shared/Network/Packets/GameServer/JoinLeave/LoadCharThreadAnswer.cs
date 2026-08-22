@@ -23,12 +23,6 @@ namespace Shared.Network.GameServer
 
         public override int ExpectedSize() => (50 * Vehicles.Length - 1) + 385;
 
-        private static uint GetClientColor(Vehicle vehicle)
-        {
-            if (vehicle == null) return 0;
-            return vehicle.Color != 0 ? vehicle.Color : vehicle.BaseColor;
-        }
-
         public override byte[] GetBytes()
         {
             using (var ms = new MemoryStream())
@@ -41,22 +35,23 @@ namespace Shared.Network.GameServer
                 foreach (var vehicle in Vehicles)
                 {
                     var car = vehicle ?? new Vehicle();
-                    var clientColor = GetClientColor(car);
+                    var customColor = car.Color != 0 ? car.Color : car.BaseColor;
 
                     bs.Write(car.CarId);
                     bs.Write(car.CarType);
 
-                    // v0.77a seeds its garage/world render cache from the first colour
-                    // DWORD in XiStrCarInfo. Keep the persistent BaseColor untouched in
-                    // the model/DB, but put the current effective paint on the wire here.
-                    bs.Write(clientColor);
+                    // Retail XiStrCarInfo keeps the vehicle's original/base colour and
+                    // the custom paint in two distinct DWORDs. Feeding the RGB paint into
+                    // BaseColor made the world body use an invalid base state while visual
+                    // parts consumed Color, producing mixed white/custom-colour cars.
+                    bs.Write(car.BaseColor);
 
                     bs.Write(car.Grade);
                     bs.Write(car.SlotType);
                     bs.Write(car.AuctionCnt);
                     bs.Write(car.Mitron);
                     bs.Write(car.Kmh);
-                    bs.Write(clientColor);
+                    bs.Write(customColor);
                     bs.Write(car.Color2);
                     bs.Write(car.MitronCapacity);
                     bs.Write(car.MitronEfficiency);
