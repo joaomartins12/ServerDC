@@ -96,10 +96,11 @@ namespace GameServer.Network.Handlers.Join
             PlayerVisualSnapshotBuilder.ApplyActivePaint(character);
             var vehicle = character.ActiveCar;
             var effectiveColor = vehicle.Color != 0 ? vehicle.Color : vehicle.BaseColor;
+            var age = WorldSessionAge.Get(character.Id, 1);
             recipient.Send(new VisualUpdateAnswer
             {
                 Serial = user.VehicleSerial,
-                Age = 0,
+                Age = age,
                 CarId = vehicle.CarId,
                 VisualState = 1,
                 CarInfo = new XiStrCarInfo
@@ -122,8 +123,8 @@ namespace GameServer.Network.Handlers.Join
             }.CreatePacket());
 
             Log.Debug(
-                "Local visual update[{0}]: CID={1} Serial={2} CarId={3} BaseColor=0x{4:X6} Color=0x{5:X6} Color2=0x{6:X8} -> 1061",
-                reason ?? string.Empty, character.Id, user.VehicleSerial, vehicle.CarId,
+                "Local visual update[{0}]: CID={1} Serial={2} Age={3} CarId={4} BaseColor=0x{5:X6} Color=0x{6:X6} Color2=0x{7:X8} -> 1061",
+                reason ?? string.Empty, character.Id, user.VehicleSerial, age, vehicle.CarId,
                 vehicle.BaseColor, effectiveColor, vehicle.Color2);
         }
     }
