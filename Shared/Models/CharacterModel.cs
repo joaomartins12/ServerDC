@@ -14,6 +14,7 @@ namespace Shared.Models
     public static class CharacterModel
     {
         private const int DefaultLicenseId = 7000;
+        private const int LevelOneNextExp = 100;
 
         public static Character GetCharacter(MySqlConnection dbconn, DbDataReader reader)
         {
@@ -31,6 +32,8 @@ namespace Shared.Models
             character.ExperienceInfo.BaseExp = Convert.ToInt32(reader["BaseExp"]);
             character.ExperienceInfo.CurExp = Convert.ToInt32(reader["CurExp"]);
             character.ExperienceInfo.NextExp = Convert.ToInt32(reader["NextExp"]);
+            NormalizeExperience(character);
+
             character.TotalDistance = Convert.ToInt32(reader["Mileage"]);
             character.City = Convert.ToInt32(reader["City"]);
             character.ActiveVehicleId = Convert.ToUInt32(reader["CurrentCarID"]);
@@ -46,6 +49,8 @@ namespace Shared.Models
 
         public static int WriteCharacter(Character character, UpdateCommand cmd)
         {
+            NormalizeExperience(character);
+
             cmd.Set("Name", character.Name);
             cmd.Set("CreationDate", character.CreationDate);
             cmd.Set("Mito", character.MitoMoney);
@@ -85,6 +90,11 @@ namespace Shared.Models
                 if (!reader.Read()) return null;
                 character = GetCharacter(dbconn, reader);
             }
+
+            // Repair again after the reader is closed and persist it. GetCharacter already
+            // normalized the live object, while this makes a corrupt DB row self-healing on login.
+            EnsureCharacterExperience(dbconn, character);
+
             character.GarageVehicles = VehicleModel.Retrieve(dbconn, character.Id);
             character.ActiveCar = character.GarageVehicles.Find(vehicle => vehicle.CarId == character.ActiveVehicleId);
             character.Crew = CrewModel.Retrieve(dbconn, character.CrewId);
@@ -105,6 +115,9 @@ namespace Shared.Models
                 if (!reader.Read()) return null;
                 character = GetCharacter(dbconn, reader);
             }
+
+            EnsureCharacterExperience(dbconn, character);
+
             character.GarageVehicles = VehicleModel.Retrieve(dbconn, character.Id);
             character.ActiveCar = character.GarageVehicles.Find(vehicle => vehicle.CarId == character.ActiveVehicleId);
             character.Crew = CrewModel.Retrieve(dbconn, character.CrewId);
@@ -163,6 +176,11 @@ namespace Shared.Models
 
         public static void CreateCharacter(MySqlConnection dbconn, ref Character character)
         {
+            // New characters must start with a valid LevelServer interval. Previously the
+            // INSERT relied on DB defaults, then CharacterModel.Update wrote the in-memory
+            // 0/0 ExpInfo over NextExp=100 after starter-car creation.
+            NormalizeExperience(character);
+
             using (var cmd = new InsertCommand("INSERT INTO `Characters` {0}", dbconn))
             {
                 cmd.Set("UID", character.Uid);
@@ -172,6 +190,9 @@ namespace Shared.Models
                 cmd.Set("City", character.City);
                 cmd.Set("CreationDate", DateTimeOffset.Now.ToUnixTimeSeconds());
                 cmd.Set("Level", character.Level);
+                cmd.Set("BaseExp", character.ExperienceInfo.BaseExp);
+                cmd.Set("CurExp", character.ExperienceInfo.CurExp);
+                cmd.Set("NextExp", character.ExperienceInfo.NextExp);
                 cmd.Set("GarageLevel", character.GarageLevel);
                 cmd.Set("InventoryLevel", character.InventoryLevel);
                 cmd.Set("posState", character.PosState);
@@ -185,6 +206,86 @@ namespace Shared.Models
             }
 
             EnsureDefaultLicense(dbconn, character.Id);
+        }
+
+        /// <summary>
+        /// Startup repair for the legacy character-creation bug. It intentionally targets
+        /// only the unambiguous level-one invalid interval; higher levels require the
+        /// LevelServer table and must not be guessed here.
+        /// </summary>
+        public static int RepairInvalidExperienceRows(MySqlConnection dbconn)
+        {
+            if (dbconn == null) return 0;
+            using (var cmd = new MySqlCommand(@"
+UPDATE dbo.characters
+SET Level=1,
+    BaseExp=0,
+    CurExp=CASE WHEN ISNULL(CurExp,0)>=0 AND ISNULL(CurExp,0)<@next THEN ISNULL(CurExp,0) ELSE 0 END,
+    NextExp=@next
+WHERE ISNULL(Level,0)<=1
+  AND (ISNULL(NextExp,0)<=ISNULL(BaseExp,0)
+       OR ISNULL(NextExp,0)<=ISNULL(CurExp,0)
+       OR ISNULL(NextExp,0)<=0
+       OR ISNULL(BaseExp,0)<0
+       OR ISNULL(CurExp,0)<0);", dbconn))
+            {
+                cmd.Parameters.AddWithValue("@next", LevelOneNextExp);
+                var repaired = cmd.ExecuteNonQuery();
+                if (repaired > 0)
+                    Log.Warning("Character EXP repair: restored {0} invalid level-one row(s) to Base=0 Next=100.", repaired);
+                return repaired;
+            }
+        }
+
+        private static bool NormalizeExperience(Character character)
+        {
+            if (character == null || character.ExperienceInfo == null) return false;
+            var changed = false;
+
+            if (character.Level < 1)
+            {
+                character.Level = 1;
+                changed = true;
+            }
+
+            if (character.Level == 1 &&
+                (character.ExperienceInfo.NextExp <= character.ExperienceInfo.BaseExp ||
+                 character.ExperienceInfo.NextExp <= character.ExperienceInfo.CurExp ||
+                 character.ExperienceInfo.NextExp <= 0 ||
+                 character.ExperienceInfo.BaseExp < 0 ||
+                 character.ExperienceInfo.CurExp < 0))
+            {
+                character.ExperienceInfo.BaseExp = 0;
+                if (character.ExperienceInfo.CurExp < 0 || character.ExperienceInfo.CurExp >= LevelOneNextExp)
+                    character.ExperienceInfo.CurExp = 0;
+                character.ExperienceInfo.NextExp = LevelOneNextExp;
+                changed = true;
+            }
+
+            return changed;
+        }
+
+        private static void EnsureCharacterExperience(MySqlConnection dbconn, Character character)
+        {
+            if (dbconn == null || character == null || character.Id == 0) return;
+            if (!NormalizeExperience(character)) return;
+
+            using (var cmd = new MySqlCommand(@"
+UPDATE dbo.characters
+SET Level=@level, BaseExp=@base, CurExp=@cur, NextExp=@next
+WHERE CID=@cid;", dbconn))
+            {
+                cmd.Parameters.AddWithValue("@level", character.Level);
+                cmd.Parameters.AddWithValue("@base", character.ExperienceInfo.BaseExp);
+                cmd.Parameters.AddWithValue("@cur", character.ExperienceInfo.CurExp);
+                cmd.Parameters.AddWithValue("@next", character.ExperienceInfo.NextExp);
+                cmd.Parameters.AddWithValue("@cid", character.Id);
+                cmd.ExecuteNonQuery();
+            }
+
+            Log.Warning("Character EXP repaired on load: CID={0} Name={1} Level={2} Base={3} Cur={4} Next={5}",
+                character.Id, character.Name ?? string.Empty, character.Level,
+                character.ExperienceInfo.BaseExp, character.ExperienceInfo.CurExp, character.ExperienceInfo.NextExp);
         }
 
         public static void EnsureDefaultLicense(MySqlConnection dbconn, ulong cid)
