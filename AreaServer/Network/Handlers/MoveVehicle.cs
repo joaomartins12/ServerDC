@@ -182,13 +182,14 @@ namespace AreaServer.Network.Handlers
             var remaining = (int)Math.Max(0, stream.Length - stream.Position);
             var movement = packet.Reader.ReadBytes(remaining);
 
-            // Retail Cmd_MoveVehicle layout in DriftCity.exe v0.77a:
-            // packet+0 id:u16, packet+2 Serial:u16, packet+4 XiCarAttr.
-            // Because 'movement' is captured after Serial has already been consumed,
-            // XiCarAttr starts at movement+0: Sort:u16, Body:u16, Color:u32,
-            // Color2:u32, State:u32. sub_54D8A0 passes packet+4 directly to
-            // sub_4C8BB0, which compares/reapplies Body/Color/Color2 to the remote car.
-            // Replace only authoritative Body/Color/Color2 and preserve Sort/State.
+            // Retail Cmd_MoveVehicle contains the render car-attribute block directly
+            // after the two bytes that precede Sort/Body in this post-serial body:
+            // movement+2 Sort:u16, +4 Body:u16, +6 Color:u32, +10 Color2:u32,
+            // +14 State:u32. This was confirmed both in the v0.77a apply routine
+            // (sub_54D8A0 -> sub_4C8BB0) and in captured client 541 packets. A client
+            // whose own render was created with stale/default paint naturally emits the
+            // same stale values, so AreaServer replaces only Body/Color/Color2 from the
+            // authoritative vehicle row before caching and relaying the movement.
             PatchAuthoritativeCarAttr(packet.Sender, vehicleSerial, movement);
 
             int areaId;
@@ -248,7 +249,7 @@ namespace AreaServer.Network.Handlers
 
         private static void PatchAuthoritativeCarAttr(Client source, ushort serial, byte[] movement)
         {
-            if (source?.User?.ActiveCharacter == null || movement == null || movement.Length < 16)
+            if (source?.User?.ActiveCharacter == null || movement == null || movement.Length < 18)
                 return;
 
             var activeCarId = source.User.ActiveCharacter.ActiveVehicleId;
@@ -314,13 +315,14 @@ namespace AreaServer.Network.Handlers
 
         private static void WriteCarAttr(byte[] movement, VisualAttrState state)
         {
-            if (movement == null || movement.Length < 16 || state == null) return;
+            if (movement == null || movement.Length < 18 || state == null) return;
 
-            // XiCarAttr starts at movement[0] after CmdMoveVehicle.Serial was consumed.
-            // [0..1] Sort and [12..15] State remain client-owned.
-            Buffer.BlockCopy(BitConverter.GetBytes(state.Body), 0, movement, 2, 2);
-            Buffer.BlockCopy(BitConverter.GetBytes(state.Color), 0, movement, 4, 4);
-            Buffer.BlockCopy(BitConverter.GetBytes(state.Color2), 0, movement, 8, 4);
+            // movement[0..1] are not part of XiCarAttr. Preserve them.
+            // +2/+3 Sort is client-owned and is normally zero for player cars.
+            Buffer.BlockCopy(BitConverter.GetBytes(state.Body), 0, movement, 4, 2);
+            Buffer.BlockCopy(BitConverter.GetBytes(state.Color), 0, movement, 6, 4);
+            Buffer.BlockCopy(BitConverter.GetBytes(state.Color2), 0, movement, 10, 4);
+            // movement[14..17] is the retail State dword; preserve the client's value.
         }
 
         private static void RecordRelay(ushort sourceSerial, ushort targetSerial)
