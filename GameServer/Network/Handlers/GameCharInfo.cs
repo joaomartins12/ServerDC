@@ -118,6 +118,11 @@ namespace GameServer.Util
 {
     public static class PlayerVisualSnapshotBuilder
     {
+        private static readonly object VisualIndexSync = new object();
+        private static System.Collections.Generic.Dictionary<int, int> _visualIndexByShopId;
+        private static readonly System.Collections.Generic.HashSet<int> MissingVisualIndexWarnings =
+            new System.Collections.Generic.HashSet<int>();
+
         public static XiPlayerInfo BuildPlayerInfo(ushort serial, Character character)
         {
             return new XiPlayerInfo(serial, character) { Age = 0, VisualItem = BuildVisualItem(character), UseTime = 0.0f };
@@ -288,7 +293,13 @@ ORDER BY v.InventoryIndex;", conn))
                             var category = r.IsDBNull(2) ? string.Empty : System.Convert.ToString(r[2]);
                             var itemCode = r.IsDBNull(3) ? string.Empty : System.Convert.ToString(r[3]);
                             var data = r.IsDBNull(4) ? string.Empty : System.Convert.ToString(r[4]);
-                            ApplyVisual(visual, shopId, categoryIndex, category, itemCode, data);
+                            var visualIndex = ResolveVisualIndex(shopId);
+
+                            Log.Debug(
+                                "Visual snapshot item: ShopId={0} VisualIndex={1} CategoryIndex={2} Category={3} ItemCode={4}",
+                                shopId, visualIndex, categoryIndex, category ?? string.Empty, itemCode ?? string.Empty);
+
+                            ApplyVisual(visual, shopId, visualIndex, categoryIndex, category, itemCode, data);
                         }
                     }
                 }
@@ -298,15 +309,122 @@ ORDER BY v.InventoryIndex;", conn))
         }
 
         /// <summary>
+        /// Retail keeps the VShop/Table id and the render-facing VisualItem index as two
+        /// different identifiers. TableIdx/dwId is used by the shop/inventory packets,
+        /// while XiVisualItem receives VisualItem.xlt's "index" field. The original
+        /// ZoneServer source confirms FillItemStruct(categoryIndex, index, ...) semantics.
+        /// </summary>
+        private static int ResolveVisualIndex(int shopId)
+        {
+            EnsureVisualIndexMap();
+
+            int visualIndex;
+            if (_visualIndexByShopId != null && _visualIndexByShopId.TryGetValue(shopId, out visualIndex))
+                return visualIndex;
+
+            lock (VisualIndexSync)
+            {
+                if (MissingVisualIndexWarnings.Add(shopId))
+                {
+                    Log.Warning(
+                        "Visual render index missing for ShopId={0}; falling back to ShopId. Check Importer/VisualItem.xlt.",
+                        shopId);
+                }
+            }
+            return shopId;
+        }
+
+        private static void EnsureVisualIndexMap()
+        {
+            if (_visualIndexByShopId != null) return;
+
+            lock (VisualIndexSync)
+            {
+                if (_visualIndexByShopId != null) return;
+
+                var map = new System.Collections.Generic.Dictionary<int, int>();
+                var path = System.IO.Path.Combine(
+                    System.AppDomain.CurrentDomain.BaseDirectory,
+                    "Importer",
+                    "VisualItem.xlt");
+
+                try
+                {
+                    if (!System.IO.File.Exists(path))
+                    {
+                        Log.Warning("Visual render index map unavailable: {0} was not found.", path);
+                        _visualIndexByShopId = map;
+                        return;
+                    }
+
+                    var lines = System.IO.File.ReadAllLines(path, System.Text.Encoding.Unicode);
+                    var headerLine = -1;
+                    var idColumn = -1;
+                    var indexColumn = -1;
+
+                    for (var i = 0; i < lines.Length; i++)
+                    {
+                        if (!lines[i].StartsWith("Category\tcategory index\tindex\titem_id\tid\t", System.StringComparison.Ordinal))
+                            continue;
+
+                        headerLine = i;
+                        var headers = lines[i].Split('\t');
+                        for (var c = 0; c < headers.Length; c++)
+                        {
+                            var header = (headers[c] ?? string.Empty).Trim();
+                            if (header.Equals("id", System.StringComparison.OrdinalIgnoreCase)) idColumn = c;
+                            else if (header.Equals("index", System.StringComparison.OrdinalIgnoreCase)) indexColumn = c;
+                        }
+                        break;
+                    }
+
+                    if (headerLine < 0 || idColumn < 0 || indexColumn < 0)
+                    {
+                        Log.Warning("Visual render index map: expected VisualItem.xlt header was not found in {0}.", path);
+                        _visualIndexByShopId = map;
+                        return;
+                    }
+
+                    for (var i = headerLine + 1; i < lines.Length; i++)
+                    {
+                        if (string.IsNullOrWhiteSpace(lines[i])) continue;
+                        var values = lines[i].Split('\t');
+                        if (idColumn >= values.Length || indexColumn >= values.Length) continue;
+
+                        int id;
+                        int index;
+                        if (!int.TryParse(values[idColumn].Trim().Trim('"'),
+                                System.Globalization.NumberStyles.Integer,
+                                System.Globalization.CultureInfo.InvariantCulture, out id) ||
+                            !int.TryParse(values[indexColumn].Trim().Trim('"'),
+                                System.Globalization.NumberStyles.Integer,
+                                System.Globalization.CultureInfo.InvariantCulture, out index))
+                            continue;
+
+                        map[id] = index;
+                    }
+
+                    Log.Info("Visual render index map loaded: {0} VisualItem.xlt ids mapped to retail render indexes.", map.Count);
+                }
+                catch (System.Exception ex)
+                {
+                    Log.Warning("Visual render index map load failed: {0}", ex.Message);
+                }
+
+                _visualIndexByShopId = map;
+            }
+        }
+
+        /// <summary>
         /// Applies VisualItem.xlt's real category dispatcher (sub_54CC80) to the
         /// 0x38-byte XiVisualItem. Categories not present in the retail jump table are
         /// intentionally not forced into a guessed slot. In particular category 3
         /// (window tint in our imported data) and category 32 (paint) are no-ops here;
         /// their RGB values belong to XiStrCarInfo Color2/Color respectively.
         /// </summary>
-        private static void ApplyVisual(XiVisualItem visual, int shopId, int categoryIndex, string category, string itemCode, string data)
+        private static void ApplyVisual(XiVisualItem visual, int shopId, int visualIndex, int categoryIndex, string category, string itemCode, string data)
         {
-            var value = unchecked((ushort)shopId);
+            var value = unchecked((ushort)visualIndex);
             uint numericData;
             var hasNumericData = TryParseVisualData(data, out numericData);
 
@@ -362,8 +480,8 @@ ORDER BY v.InventoryIndex;", conn))
                     return;
             }
 
-            Log.Debug("Visual snapshot: retail category has no XiVisualItem slot ShopId={0} CategoryIndex={1} Category={2} ItemCode={3}",
-                shopId, categoryIndex, category ?? string.Empty, itemCode ?? string.Empty);
+            Log.Debug("Visual snapshot: retail category has no XiVisualItem slot ShopId={0} VisualIndex={1} CategoryIndex={2} Category={3} ItemCode={4}",
+                shopId, visualIndex, categoryIndex, category ?? string.Empty, itemCode ?? string.Empty);
         }
 
         private static bool TryParseVisualData(string data, out uint value)
