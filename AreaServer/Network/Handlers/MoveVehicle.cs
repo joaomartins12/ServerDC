@@ -28,7 +28,6 @@ namespace AreaServer.Network.Handlers
             public uint CarId;
             public ushort Body;
             public uint Color;
-            public uint Color2;
             public DateTime RefreshedUtc;
         }
 
@@ -182,14 +181,13 @@ namespace AreaServer.Network.Handlers
             var remaining = (int)Math.Max(0, stream.Length - stream.Position);
             var movement = packet.Reader.ReadBytes(remaining);
 
-            // Retail Cmd_MoveVehicle contains the render car-attribute block directly
-            // after the two bytes that precede Sort/Body in this post-serial body:
-            // movement+2 Sort:u16, +4 Body:u16, +6 Color:u32, +10 Color2:u32,
-            // +14 State:u32. This was confirmed both in the v0.77a apply routine
-            // (sub_54D8A0 -> sub_4C8BB0) and in captured client 541 packets. A client
-            // whose own render was created with stale/default paint naturally emits the
-            // same stale values, so AreaServer replaces only Body/Color/Color2 from the
-            // authoritative vehicle row before caching and relaying the movement.
+            // Retail XiCarMove is: Serial:u16, Age:u16, XiCarAttr:8 bytes,
+            // GlobalTime:i32, position, velocity, progress and tail data.
+            // After Serial has been consumed above, movement therefore begins with:
+            // +0 Age:u16, +2 Sort:u16, +4 Body:u16, +6 Color:u32, +10 GlobalTime:i32.
+            // XiCarAttr has no Color2 field. Writing at +10 corrupts GlobalTime and can
+            // cause the client to discard the visual/movement update, leaving default paint.
+            // Patch only the authoritative Body and Color and preserve every timing byte.
             PatchAuthoritativeCarAttr(packet.Sender, vehicleSerial, movement);
 
             int areaId;
@@ -249,7 +247,7 @@ namespace AreaServer.Network.Handlers
 
         private static void PatchAuthoritativeCarAttr(Client source, ushort serial, byte[] movement)
         {
-            if (source?.User?.ActiveCharacter == null || movement == null || movement.Length < 18)
+            if (source?.User?.ActiveCharacter == null || movement == null || movement.Length < 14)
                 return;
 
             var activeCarId = source.User.ActiveCharacter.ActiveVehicleId;
@@ -282,12 +280,11 @@ namespace AreaServer.Network.Handlers
                     CarId = activeCarId,
                     Body = unchecked((ushort)vehicle.CarType),
                     Color = effectiveColor,
-                    Color2 = vehicle.Color2,
                     RefreshedUtc = now
                 };
 
                 var changed = state == null || state.CarId != refreshed.CarId || state.Body != refreshed.Body ||
-                              state.Color != refreshed.Color || state.Color2 != refreshed.Color2;
+                              state.Color != refreshed.Color;
 
                 lock (Sync)
                     VisualAttrs[serial] = refreshed;
@@ -297,13 +294,12 @@ namespace AreaServer.Network.Handlers
                 if (changed)
                 {
                     Log.Info(
-                        "Area authoritative 541 visual: Name={0} Serial={1} CarId={2} Body={3} Color=0x{4:X6} Color2=0x{5:X8}",
+                        "Area authoritative 541 visual: Name={0} Serial={1} CarId={2} Body={3} Color=0x{4:X6} (GlobalTime preserved)",
                         source.User.ActiveCharacter.Name,
                         serial,
                         refreshed.CarId,
                         refreshed.Body,
-                        refreshed.Color,
-                        refreshed.Color2);
+                        refreshed.Color);
                 }
             }
             catch (Exception ex)
@@ -315,14 +311,12 @@ namespace AreaServer.Network.Handlers
 
         private static void WriteCarAttr(byte[] movement, VisualAttrState state)
         {
-            if (movement == null || movement.Length < 18 || state == null) return;
+            if (movement == null || movement.Length < 10 || state == null) return;
 
-            // movement[0..1] are not part of XiCarAttr. Preserve them.
-            // +2/+3 Sort is client-owned and is normally zero for player cars.
+            // movement[0..1] = Age, +2/+3 = Sort, +4/+5 = Body, +6..+9 = Color.
+            // GlobalTime begins at +10 and must remain byte-for-byte client-authored.
             Buffer.BlockCopy(BitConverter.GetBytes(state.Body), 0, movement, 4, 2);
             Buffer.BlockCopy(BitConverter.GetBytes(state.Color), 0, movement, 6, 4);
-            Buffer.BlockCopy(BitConverter.GetBytes(state.Color2), 0, movement, 10, 4);
-            // movement[14..17] is the retail State dword; preserve the client's value.
         }
 
         private static void RecordRelay(ushort sourceSerial, ushort targetSerial)
