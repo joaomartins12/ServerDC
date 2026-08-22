@@ -14,6 +14,7 @@ namespace GameServer.Network.Handlers.Social
     /// Retail ids in this family are:
     /// 228 PartyPreCheck -> 229 PartyPreCheckAck -> 240 PartyInvite
     /// 238 FriendRequest -> 239 FriendRequestAck
+    /// 811 GetLicenseInfo -> 812 GetLicenseInfoAck (+ 806 target LicenseInfoRes)
     ///
     /// The old server only implemented 232 FriendAddByName, so right-click Add Friend
     /// never reached that code path. Target resolution here deliberately accepts serial,
@@ -29,6 +30,10 @@ namespace GameServer.Network.Handlers.Social
         private const ushort CmdPartyReject = 241;
         private const ushort CmdPartyJoin = 242;
         private const ushort CmdPartyJoinResult = 243;
+        private const ushort CmdGetLicenseInfo = 811;
+        private const ushort CmdGetLicenseInfoAck = 812;
+        private const ushort LicenseInfoRes = 806;
+        private const int RookieLicenseId = 7000;
 
         private static readonly object PartySync = new object();
         private static readonly Dictionary<ushort, ushort> PendingPartyInvites =
@@ -59,8 +64,6 @@ namespace GameServer.Network.Handlers.Social
                     AddFriendIfMissing(conn, targetCharacter.Id, source.Id);
                 }
 
-                // Echo the retail request body in the 239 ACK. This preserves whichever
-                // target key variant (serial/CID/name) the client used for this UI path.
                 var ack = new Packet(CmdFriendRequestAck);
                 ack.Writer.Write(payload ?? new byte[0]);
                 packet.Sender.Send(ack);
@@ -95,9 +98,6 @@ namespace GameServer.Network.Handlers.Social
                 return;
             }
 
-            // 229 mirrors the request target key. The actual invitation delivered to the
-            // target must identify the inviter instead, so patch the same retail-sized body
-            // from target identity to source identity instead of inventing a new layout.
             var precheckAck = new Packet(CmdPartyPreCheckAck);
             precheckAck.Writer.Write(payload ?? new byte[0]);
             packet.Sender.Send(precheckAck);
@@ -159,9 +159,6 @@ namespace GameServer.Network.Handlers.Social
 
             var body = ReadRemaining(packet);
 
-            // 243 is the retail join-result event. Preserve the client's accepted body and
-            // send it to both peers; this lets the client consume its native party transition
-            // without fabricating Room/Battle packets.
             var toInviter = new Packet(CmdPartyJoinResult);
             toInviter.Writer.Write(body ?? new byte[0]);
             inviter.Send(toInviter);
@@ -175,12 +172,81 @@ namespace GameServer.Network.Handlers.Social
                 packet.Sender.User?.ActiveCharacter?.Name ?? "?", joinerSerial);
         }
 
+        /// <summary>
+        /// The existing 811 implementation returns the requester's own licenses. The
+        /// right-click player menu sends a target identity in the request, so this handler
+        /// resolves that target and returns the target's unlocked/equipped licenses.
+        /// This class is compiled after LicenseProtocol and therefore intentionally replaces
+        /// the older 811 parser in DefaultServer's last-parser-wins registration.
+        /// </summary>
+        [Packet(CmdGetLicenseInfo)]
+        public static void GetPlayerLicenseInfo(Packet packet)
+        {
+            var requester = packet.Sender?.User?.ActiveCharacter;
+            if (requester == null) return;
+
+            var payload = ReadRemaining(packet);
+            var targetClient = ResolveTarget(payload, packet.Sender);
+            var target = targetClient?.User?.ActiveCharacter ?? requester;
+            var targetSerial = targetClient?.User == null
+                ? packet.Sender.User.VehicleSerial
+                : targetClient.User.VehicleSerial;
+
+            try
+            {
+                using (var conn = GameServer.Instance.Database.Connection)
+                {
+                    CharacterModel.EnsureDefaultLicense(conn, target.Id);
+                    if (!CharacterProgressModel.HasLicense(conn, target.Id, RookieLicenseId))
+                        CharacterProgressModel.UnlockLicense(conn, target.Id, RookieLicenseId,
+                            DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+
+                    var current = CharacterProgressModel.GetCurrentLicense(conn, target.Id);
+                    if (current <= 0) current = RookieLicenseId;
+                    var unlocked = CharacterProgressModel.GetUnlockedLicenses(conn, target.Id)
+                        .Where(x => x >= 7000 && x < 8000)
+                        .Distinct()
+                        .OrderBy(x => x)
+                        .ToList();
+                    if (!unlocked.Contains(RookieLicenseId)) unlocked.Insert(0, RookieLicenseId);
+
+                    var ack = new Packet(CmdGetLicenseInfoAck);
+                    ack.Writer.Write((uint)0);
+                    ack.Writer.Write((uint)unlocked.Count);
+                    foreach (var licenseId in unlocked)
+                    {
+                        ack.Writer.Write((ushort)licenseId);
+                        ack.Writer.Write((ushort)0);
+                        ack.Writer.Write((ushort)(licenseId == current ? 1 : 0));
+                    }
+                    packet.Sender.Send(ack);
+
+                    if (targetSerial != 0)
+                    {
+                        var equipped = new Packet(LicenseInfoRes);
+                        equipped.Writer.Write((ushort)targetSerial);
+                        equipped.Writer.Write((ushort)current);
+                        equipped.Writer.Write((ushort)0);
+                        equipped.Writer.Write((ushort)1);
+                        packet.Sender.Send(equipped);
+                    }
+
+                    Log.Info("Player license quick-action: requester={0} target={1} serial={2} current={3} unlocked=[{4}] payload={5}",
+                        requester.Name, target.Name, targetSerial, current,
+                        string.Join(",", unlocked), Hex(payload));
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Warning("Player license quick-action failed: requester={0} target={1}: {2}",
+                    requester.Name, target.Name, ex.Message);
+            }
+        }
+
         internal static Client ResolveTarget(byte[] payload, Client source)
         {
             if (payload == null) payload = new byte[0];
 
-            // Serial is the primary world-player identity. Search every aligned and
-            // unaligned u16 offset because some client structs prepend a mode/result byte.
             for (var offset = 0; offset + 2 <= payload.Length; offset++)
             {
                 var serial = BitConverter.ToUInt16(payload, offset);
@@ -189,7 +255,6 @@ namespace GameServer.Network.Handlers.Social
                 if (client?.User?.ActiveCharacter != null) return client;
             }
 
-            // Some menus use CID instead of serial.
             foreach (var candidate in GameServer.Instance.Server.GetClients())
             {
                 var character = candidate?.User?.ActiveCharacter;
@@ -198,7 +263,6 @@ namespace GameServer.Network.Handlers.Social
                 if (IndexOf(payload, cid) >= 0) return candidate;
             }
 
-            // Finally accept a fixed UTF-16 character name embedded in the body.
             foreach (var candidate in GameServer.Instance.Server.GetClients())
             {
                 var character = candidate?.User?.ActiveCharacter;
