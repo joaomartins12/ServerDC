@@ -453,7 +453,19 @@ ORDER BY v.InventoryIndex;", conn))
                     visual.Slot10 = value;
                     return;
                 case 6:
-                    visual.Slot12 = value;
+                    if (value != 0)
+                    {
+                        visual.Slot12 = value;
+                        return;
+                    }
+
+                    ushort aeroSetIndex;
+                    if (TryParseAeroSetIndex(data, out aeroSetIndex))
+                    {
+                        visual.Slot12 = aeroSetIndex;
+                        Log.Debug("Visual AeroSet resolved from item data: ShopId={0} Data={1} AeroSetIndex={2}",
+                            shopId, data ?? string.Empty, aeroSetIndex);
+                    }
                     return;
                 case 7:
                     // DriftCity.exe 0x54CD22 has the same zero-index fallback used by
@@ -496,6 +508,27 @@ ORDER BY v.InventoryIndex;", conn))
 
             Log.Debug("Visual snapshot: retail category has no XiVisualItem slot ShopId={0} VisualIndex={1} CategoryIndex={2} Category={3} ItemCode={4}",
                 shopId, visualIndex, categoryIndex, category ?? string.Empty, itemCode ?? string.Empty);
+        }
+
+        private static bool TryParseAeroSetIndex(string data, out ushort value)
+        {
+            value = 0;
+            if (string.IsNullOrWhiteSpace(data)) return false;
+
+            // Retail pc_Aero instance data is car-specific. Captures from v0.77a use
+            // e.g. 054110464 for CarType 54 and 028110037 for CarType 28. The final
+            // three decimal digits are the AeroSet/render index consumed by Slot12.
+            var text = data.Trim();
+            if (text.Length < 3) return false;
+            var suffix = text.Substring(text.Length - 3);
+
+            ushort parsed;
+            if (!ushort.TryParse(suffix, System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture, out parsed) || parsed == 0)
+                return false;
+
+            value = parsed;
+            return true;
         }
 
         private static bool TryParseVisualData(string data, out uint value)
