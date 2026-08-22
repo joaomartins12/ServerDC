@@ -148,21 +148,26 @@ namespace Shared.Util
                 var dir = string.Equals(direction, "OUT", StringComparison.OrdinalIgnoreCase) ? "OUT" : "IN";
                 var packetName = GetPacketName(id);
 
-                // Keep a compact one-line packet index for every packet. Full payload
-                // .txt/.bin captures are research mode only and are enabled explicitly
-                // through DefaultServer.DumpIncoming / DumpOutgoing.
-                var capturePayload = dir == "OUT" ? DefaultServer.DumpOutgoing : DefaultServer.DumpIncoming;
+                // Raw packet binaries are always retained in background for protocol
+                // research/debugging. The expensive human-readable HEX .txt capture stays
+                // opt-in through DumpIncoming / DumpOutgoing so normal logs remain clean.
+                var captureTextDump = dir == "OUT" ? DefaultServer.DumpOutgoing : DefaultServer.DumpIncoming;
+                var fileBase = sequence.ToString("D6") + "_" + now.ToString("HH-mm-ss.fff") +
+                               "_ID" + id.ToString("D4") + "_" + SafeFileName(packetName);
+                var dirRoot = Path.Combine(_packetRoot, dir);
+                var binPath = Path.Combine(dirRoot, fileBase + ".bin");
 
                 lock (FileLock)
                 {
-                    if (capturePayload)
-                    {
-                        var fileBase = sequence.ToString("D6") + "_" + now.ToString("HH-mm-ss.fff") +
-                                       "_ID" + id.ToString("D4") + "_" + SafeFileName(packetName);
-                        var dirRoot = Path.Combine(_packetRoot, dir);
-                        var txtPath = Path.Combine(dirRoot, fileBase + ".txt");
-                        var binPath = Path.Combine(dirRoot, fileBase + ".bin");
+                    Directory.CreateDirectory(dirRoot);
 
+                    // Always preserve the exact on-wire packet bytes. Nothing is printed
+                    // to the console here; these files are only for later packet analysis.
+                    File.WriteAllBytes(binPath, wireBytes);
+
+                    if (captureTextDump)
+                    {
+                        var txtPath = Path.Combine(dirRoot, fileBase + ".txt");
                         var body = new StringBuilder();
                         body.AppendLine("DRIFT CITY PACKET CAPTURE");
                         body.AppendLine("=========================");
@@ -181,10 +186,7 @@ namespace Shared.Util
                         body.AppendLine("HEX DUMP");
                         body.AppendLine("--------");
                         body.AppendLine(BinaryWriterExt.HexDump(wireBytes));
-
-                        Directory.CreateDirectory(dirRoot);
                         File.WriteAllText(txtPath, body.ToString(), Encoding.UTF8);
-                        File.WriteAllBytes(binPath, wireBytes);
                     }
 
                     using (var writer = new StreamWriter(_packetSessionLog, true, Encoding.UTF8))
