@@ -40,11 +40,14 @@ namespace Shared.Network.GameServer
                     bs.Write(car.CarId);
                     bs.Write(car.CarType);
 
-                    // Retail XiStrCarInfo keeps the vehicle's original/base colour and
-                    // the custom paint in two distinct DWORDs. Feeding the RGB paint into
-                    // BaseColor made the world body use an invalid base state while visual
-                    // parts consumed Color, producing mixed white/custom-colour cars.
-                    bs.Write(car.BaseColor);
+                    // Retail keeps BaseColor and Color separate, but a zero BaseColor is
+                    // not a useful material seed. Some imported/legacy vehicle rows have
+                    // never had their original base colour populated. In that case use
+                    // the effective persisted paint as the initial base so the client
+                    // does not construct a white/default body before the later visual
+                    // update. When a real BaseColor exists it remains untouched.
+                    var clientBaseColor = car.BaseColor != 0 ? car.BaseColor : customColor;
+                    bs.Write(clientBaseColor);
 
                     bs.Write(car.Grade);
                     bs.Write(car.SlotType);
