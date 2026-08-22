@@ -2,6 +2,7 @@ using GameServer.Util;
 using Shared.Models;
 using Shared.Network;
 using Shared.Network.GameServer;
+using Shared.Objects;
 using Shared.Util;
 
 namespace GameServer.Network.Handlers.Join
@@ -30,6 +31,13 @@ namespace GameServer.Network.Handlers.Join
         [Packet(Packets.CmdJoinChannel)]
         public static void Handle(Packet packet)
         {
+            var character = packet.Sender.User == null ? null : packet.Sender.User.ActiveCharacter;
+            if (character == null)
+            {
+                packet.Sender.SendError("no_active_character");
+                return;
+            }
+
             var serial = AllocateSerial();
             DefaultServer.ActiveSerials[serial] = packet.Sender.User;
             packet.Sender.User.VehicleSerial = serial;
@@ -40,12 +48,17 @@ namespace GameServer.Network.Handlers.Join
                 return;
             }
 
+            // Retail starts every world/channel incarnation with a non-zero generation.
+            // Appearance changes advance the same value; stale packets from an earlier
+            // incarnation therefore cannot cull the current player object.
+            var sessionAge = WorldSessionAge.Begin(character.Id);
+
             packet.Sender.Send(new JoinChannelAnswer()
             {
                 ChannelName = "speeding",
-                CharacterName = packet.Sender.User.ActiveCharacter.Name,
+                CharacterName = character.Name,
                 Serial = (short)serial,
-                SessionAge = 0,
+                SessionAge = sessionAge,
             }.CreatePacket());
 
             packet.Sender.Send(new WeatherAnswer()
@@ -58,18 +71,18 @@ namespace GameServer.Network.Handlers.Join
             // session, so its 1061 is deliberately suppressed. Now the serial is live:
             // install the persisted car colour/tint first, then make the retail 1201
             // handler rebuild the equipped XiVisualItem on top of that car state.
-            var character = packet.Sender.User.ActiveCharacter;
-            if (character != null && character.ActiveCar != null)
+            if (character.ActiveCar != null)
             {
                 PlayerVisualSnapshotBuilder.ApplyActivePaint(character);
                 VisualItemList.SendLocalVisualUpdate(packet.Sender, packet.Sender.User, character, "join-channel");
                 var visualInventory = VisualItemList.BuildAnswer(character);
                 packet.Sender.Send(visualInventory.CreatePacket());
                 Log.Debug(
-                    "JoinChannel visual bootstrap: CID={0} Serial={1} CarId={2} Count={3} -> 1061+1201",
-                    character.Id, serial, character.ActiveCar.CarId, visualInventory.Items.Count);
+                    "JoinChannel visual bootstrap: CID={0} Serial={1} Age={2} CarId={3} Count={4} -> 1061+1201",
+                    character.Id, serial, sessionAge, character.ActiveCar.CarId, visualInventory.Items.Count);
             }
 
+            BonusUpdateService.SendCurrent(packet.Sender, "join-channel");
             packet.Sender.SendChatMessage($"Server powered by DCNC (v{Shared.Util.Version.GetVersion()}) - GigaToni");
         }
     }
