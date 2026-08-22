@@ -62,6 +62,7 @@ namespace GameServer.Util
             public uint InventoryIndex;
             public int CategoryIndex;
             public int Support;
+            // Actual retail period in days, NOT the 0..4 client selector.
             public int Period;
             public CurrencyType Currency;
             public int Price;
@@ -98,6 +99,11 @@ namespace GameServer.Util
             public int BonusMito90;
             public int BonusMito365;
             public int BonusMito0;
+            public int? Period7;
+            public int? Period30;
+            public int? Period90;
+            public int? Period365;
+            public int? Period0;
         }
 
         public static void EnsureSchemaAndSynchronize(MySqlConnection conn, IList<VShopItemList.VShopItem> items)
@@ -139,6 +145,14 @@ BEGIN
         SourceMileage90dPrice INT NULL,
         SourceMileage365dPrice INT NULL,
         SourceMileage0dPrice INT NULL,
+
+        -- These are the actual day values from VShopItem.xlt. The packet sends a
+        -- selector (1=7D,2=30D,...) but the inventory/ACK stores the resolved value.
+        SourcePeriod7d INT NULL,
+        SourcePeriod30d INT NULL,
+        SourcePeriod90d INT NULL,
+        SourcePeriod365d INT NULL,
+        SourcePeriod0d INT NULL,
 
         ServerMitoPrice INT NULL,
         ServerMito7dPrice INT NULL,
@@ -203,7 +217,7 @@ BEGIN
     CREATE INDEX IX_visual_items_Equipped ON dbo.visual_items(CharacterId, CarId, CategoryIndex, ItemState);
 END;
 
--- Migration for databases created by the first visual-shop schema revision.
+-- Migration for databases created by older visual-shop schema revisions.
 IF COL_LENGTH('dbo.visual_item_catalog','SourceMileage7dPrice') IS NULL ALTER TABLE dbo.visual_item_catalog ADD SourceMileage7dPrice INT NULL;
 IF COL_LENGTH('dbo.visual_item_catalog','SourceMileage30dPrice') IS NULL ALTER TABLE dbo.visual_item_catalog ADD SourceMileage30dPrice INT NULL;
 IF COL_LENGTH('dbo.visual_item_catalog','SourceMileage90dPrice') IS NULL ALTER TABLE dbo.visual_item_catalog ADD SourceMileage90dPrice INT NULL;
@@ -214,6 +228,11 @@ IF COL_LENGTH('dbo.visual_item_catalog','ServerMileage30dPrice') IS NULL ALTER T
 IF COL_LENGTH('dbo.visual_item_catalog','ServerMileage90dPrice') IS NULL ALTER TABLE dbo.visual_item_catalog ADD ServerMileage90dPrice INT NULL;
 IF COL_LENGTH('dbo.visual_item_catalog','ServerMileage365dPrice') IS NULL ALTER TABLE dbo.visual_item_catalog ADD ServerMileage365dPrice INT NULL;
 IF COL_LENGTH('dbo.visual_item_catalog','ServerMileage0dPrice') IS NULL ALTER TABLE dbo.visual_item_catalog ADD ServerMileage0dPrice INT NULL;
+IF COL_LENGTH('dbo.visual_item_catalog','SourcePeriod7d') IS NULL ALTER TABLE dbo.visual_item_catalog ADD SourcePeriod7d INT NULL;
+IF COL_LENGTH('dbo.visual_item_catalog','SourcePeriod30d') IS NULL ALTER TABLE dbo.visual_item_catalog ADD SourcePeriod30d INT NULL;
+IF COL_LENGTH('dbo.visual_item_catalog','SourcePeriod90d') IS NULL ALTER TABLE dbo.visual_item_catalog ADD SourcePeriod90d INT NULL;
+IF COL_LENGTH('dbo.visual_item_catalog','SourcePeriod365d') IS NULL ALTER TABLE dbo.visual_item_catalog ADD SourcePeriod365d INT NULL;
+IF COL_LENGTH('dbo.visual_item_catalog','SourcePeriod0d') IS NULL ALTER TABLE dbo.visual_item_catalog ADD SourcePeriod0d INT NULL;
 IF COL_LENGTH('dbo.visual_item_catalog','SourceBonusMito7d') IS NULL ALTER TABLE dbo.visual_item_catalog ADD SourceBonusMito7d INT NOT NULL CONSTRAINT DF_vcatalog_SourceBonusMito7_m DEFAULT (0);
 IF COL_LENGTH('dbo.visual_item_catalog','SourceBonusMito30d') IS NULL ALTER TABLE dbo.visual_item_catalog ADD SourceBonusMito30d INT NOT NULL CONSTRAINT DF_vcatalog_SourceBonusMito30_m DEFAULT (0);
 IF COL_LENGTH('dbo.visual_item_catalog','SourceBonusMito90d') IS NULL ALTER TABLE dbo.visual_item_catalog ADD SourceBonusMito90d INT NOT NULL CONSTRAINT DF_vcatalog_SourceBonusMito90_m DEFAULT (0);
@@ -246,6 +265,8 @@ IF COL_LENGTH('dbo.visual_item_catalog','ServerBonusAssist') IS NULL ALTER TABLE
                 if (!int.TryParse(item.UniqueId, NumberStyles.Integer, CultureInfo.InvariantCulture, out shopId))
                     continue;
 
+                // Converted XML is the fallback catalog. Actual period-day columns are
+                // intentionally not touched here; authoritative XLT import fills them later.
                 const string sql = @"
 IF EXISTS (SELECT 1 FROM dbo.visual_item_catalog WHERE ShopId=@shopId)
 BEGIN
@@ -326,10 +347,10 @@ END;";
         }
 
         public static PurchaseResult Purchase(MySqlConnection conn, ulong characterId, uint carId, uint shopId,
-            int period, bool useMileage, long clientCash, string data)
+            int periodSelector, bool useMileage, long clientCash, string data)
         {
-            var result = new PurchaseResult { ShopId = shopId, CarId = carId, Period = period };
-            if (period < 0 || period > 5)
+            var result = new PurchaseResult { ShopId = shopId, CarId = carId, Period = 0 };
+            if (periodSelector < 0 || periodSelector > 5)
             {
                 result.Error = "invalid_period";
                 return result;
@@ -356,12 +377,15 @@ END;";
                     CurrencyType currency;
                     int price;
                     int bonusMito;
-                    if (!TryResolvePrice(catalog, period, useMileage, out currency, out price, out bonusMito))
+                    int actualPeriod;
+                    if (!TryResolvePurchaseTerms(catalog, periodSelector, useMileage,
+                        out currency, out price, out bonusMito, out actualPeriod))
                         return FailAndRollback(tx, result, "visual_price_not_configured");
 
                     result.Currency = currency;
                     result.Price = price;
                     result.BonusMito = bonusMito;
+                    result.Period = actualPeriod;
 
                     long mito;
                     long hancoin;
@@ -376,7 +400,7 @@ END;";
 
                     var inventoryIndex = NextInventoryIndex(conn, tx, characterId);
                     var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-                    var expire = CalculateExpireTime(now, period);
+                    var expire = CalculateExpireTime(now, actualPeriod);
 
                     if (equipable)
                     {
@@ -401,14 +425,14 @@ VALUES
 SELECT CAST(SCOPE_IDENTITY() AS BIGINT);", conn, tx))
                     {
                         insert.Parameters.AddWithValue("@cid", characterId);
-                        insert.Parameters.AddWithValue("@carId", carId);
+                        insert.Parameters.AddWithValue("@carId", equipable ? carId : 0u);
                         insert.Parameters.AddWithValue("@shopId", shopId);
                         insert.Parameters.AddWithValue("@inven", inventoryIndex);
                         insert.Parameters.AddWithValue("@category", catalog.CategoryIndex);
                         insert.Parameters.AddWithValue("@support", catalog.Support);
                         insert.Parameters.AddWithValue("@state", equipable ? 1 : 0);
                         insert.Parameters.AddWithValue("@data", string.IsNullOrEmpty(data) ? (object)DBNull.Value : data);
-                        insert.Parameters.AddWithValue("@period", period);
+                        insert.Parameters.AddWithValue("@period", actualPeriod);
                         insert.Parameters.AddWithValue("@now", now);
                         insert.Parameters.AddWithValue("@expire", expire);
                         insert.Parameters.AddWithValue("@currency", (int)currency);
@@ -436,8 +460,9 @@ WHERE CID=@cid;", conn, tx))
                     result.InventoryIndex = inventoryIndex;
                     result.Equipped = equipable;
 
-                    Log.Info("VisualShop purchase: CID={0} ShopId={1} CarId={2} Category={3} InvenIdx={4} Currency={5} Price={6} ClientCash={7} Period={8} Equipped={9}",
-                        characterId, shopId, carId, catalog.CategoryIndex, inventoryIndex, currency, price, clientCash, period, equipable);
+                    Log.Info("VisualShop purchase: CID={0} ShopId={1} CarId={2} Category={3} InvenIdx={4} Currency={5} Price={6} ClientCash={7} PeriodSelector={8} PeriodDays={9} Equipped={10}",
+                        characterId, shopId, carId, catalog.CategoryIndex, inventoryIndex, currency, price, clientCash,
+                        periodSelector, actualPeriod, equipable);
                     return result;
                 }
                 catch (Exception ex)
@@ -507,6 +532,53 @@ WHERE v.CharacterId=@cid AND v.CarId=@carId AND v.ItemState=1
             return result;
         }
 
+        /// <summary>
+        /// Repairs rows created by the old implementation, where Period stored the client
+        /// selector (1/2/3/4) even though ExpireTime had already been calculated in days.
+        /// Called after XLT import so the authoritative Period columns are available.
+        /// </summary>
+        public static void RepairLegacyPeriods(MySqlConnection conn)
+        {
+            if (conn == null) return;
+            const string sql = @"
+UPDATE v
+SET
+    Period = CASE v.Period
+        WHEN 1 THEN COALESCE(c.SourcePeriod7d,7)
+        WHEN 2 THEN COALESCE(c.SourcePeriod30d,30)
+        WHEN 3 THEN CASE
+            WHEN COALESCE(c.SourceMito90dPrice,c.SourceHancoin90dPrice,c.SourceMileage90dPrice) IS NOT NULL
+                THEN COALESCE(c.SourcePeriod90d,90)
+            ELSE COALESCE(c.SourcePeriod365d,365)
+        END
+        WHEN 4 THEN COALESCE(c.SourcePeriod0d,0)
+        ELSE v.Period END,
+    ExpireTime = CASE v.Period
+        WHEN 1 THEN v.CreateTime + CONVERT(BIGINT,COALESCE(c.SourcePeriod7d,7))*86400
+        WHEN 2 THEN v.CreateTime + CONVERT(BIGINT,COALESCE(c.SourcePeriod30d,30))*86400
+        WHEN 3 THEN v.CreateTime + CONVERT(BIGINT,CASE
+            WHEN COALESCE(c.SourceMito90dPrice,c.SourceHancoin90dPrice,c.SourceMileage90dPrice) IS NOT NULL
+                THEN COALESCE(c.SourcePeriod90d,90)
+            ELSE COALESCE(c.SourcePeriod365d,365)
+        END)*86400
+        WHEN 4 THEN CASE WHEN COALESCE(c.SourcePeriod0d,0)>0
+            THEN v.CreateTime + CONVERT(BIGINT,c.SourcePeriod0d)*86400 ELSE 0 END
+        ELSE v.ExpireTime END
+FROM dbo.visual_items v
+JOIN dbo.visual_item_catalog c ON c.ShopId=v.ShopId
+WHERE
+    (v.Period=1 AND v.ExpireTime BETWEEN v.CreateTime+6*86400 AND v.CreateTime+8*86400)
+ OR (v.Period=2 AND v.ExpireTime BETWEEN v.CreateTime+29*86400 AND v.CreateTime+31*86400)
+ OR (v.Period=3 AND v.ExpireTime BETWEEN v.CreateTime+89*86400 AND v.CreateTime+91*86400)
+ OR (v.Period=4 AND v.ExpireTime=0);";
+            using (var cmd = new MySqlCommand(sql, conn))
+            {
+                var repaired = cmd.ExecuteNonQuery();
+                if (repaired > 0)
+                    Log.Info("VisualShop repaired {0} legacy inventory period row(s).", repaired);
+            }
+        }
+
         private static VisualInventoryRow ReadInventoryRow(IDataRecord r)
         {
             return new VisualInventoryRow
@@ -544,7 +616,8 @@ SELECT ShopId,CategoryIndex,Support,UseMito,UseHancoin,UseMileage,
  COALESCE(ServerMileage7dPrice,SourceMileage7dPrice),COALESCE(ServerMileage30dPrice,SourceMileage30dPrice),
  COALESCE(ServerMileage90dPrice,SourceMileage90dPrice),COALESCE(ServerMileage365dPrice,SourceMileage365dPrice),
  COALESCE(ServerMileage0dPrice,SourceMileage0dPrice),
- SourceBonusMito7d,SourceBonusMito30d,SourceBonusMito90d,SourceBonusMito365d,SourceBonusMito0d
+ SourceBonusMito7d,SourceBonusMito30d,SourceBonusMito90d,SourceBonusMito365d,SourceBonusMito0d,
+ SourcePeriod7d,SourcePeriod30d,SourcePeriod90d,SourcePeriod365d,SourcePeriod0d
 FROM dbo.visual_item_catalog WITH (UPDLOCK,HOLDLOCK)
 WHERE ShopId=@shopId;";
             using (var cmd = new MySqlCommand(sql, conn, tx))
@@ -560,52 +633,98 @@ WHERE ShopId=@shopId;";
                         MitoPrice = NullableInt(r,6), Mito7 = NullableInt(r,7), Mito30 = NullableInt(r,8), Mito90 = NullableInt(r,9), Mito365 = NullableInt(r,10), Mito0 = NullableInt(r,11),
                         Hc7 = NullableInt(r,12), Hc30 = NullableInt(r,13), Hc90 = NullableInt(r,14), Hc365 = NullableInt(r,15), Hc0 = NullableInt(r,16),
                         Mileage7 = NullableInt(r,17), Mileage30 = NullableInt(r,18), Mileage90 = NullableInt(r,19), Mileage365 = NullableInt(r,20), Mileage0 = NullableInt(r,21),
-                        BonusMito7 = Convert.ToInt32(r[22]), BonusMito30 = Convert.ToInt32(r[23]), BonusMito90 = Convert.ToInt32(r[24]), BonusMito365 = Convert.ToInt32(r[25]), BonusMito0 = Convert.ToInt32(r[26])
+                        BonusMito7 = Convert.ToInt32(r[22]), BonusMito30 = Convert.ToInt32(r[23]), BonusMito90 = Convert.ToInt32(r[24]), BonusMito365 = Convert.ToInt32(r[25]), BonusMito0 = Convert.ToInt32(r[26]),
+                        Period7 = NullableInt(r,27), Period30 = NullableInt(r,28), Period90 = NullableInt(r,29), Period365 = NullableInt(r,30), Period0 = NullableInt(r,31)
                     };
                 }
             }
         }
 
-        private static bool TryResolvePrice(CatalogRow row, int period, bool requestedMileage, out CurrencyType currency, out int price, out int bonusMito)
+        private static bool TryResolvePurchaseTerms(CatalogRow row, int requestedSelector, bool requestedMileage,
+            out CurrencyType currency, out int price, out int bonusMito, out int actualPeriod)
         {
             currency = requestedMileage ? CurrencyType.Mileage : (row.UseHancoin ? CurrencyType.Hancoin : CurrencyType.Mito);
             price = 0;
             bonusMito = 0;
+            actualPeriod = 0;
+
             if (requestedMileage && !row.UseMileage) return false;
             if (!requestedMileage && currency == CurrencyType.Hancoin && !row.UseHancoin) return false;
             if (!requestedMileage && currency == CurrencyType.Mito && !row.UseMito) return false;
 
+            // Retail forces the 0D/permanent slot when a Hancoin item defines a 0D price.
+            // Robo-B Box is one such row: the client can send selector 0, while price lives
+            // in $Price 0D. Treat that exactly like the original server's PeriodIdx=4 path.
+            var selector = requestedSelector;
+            if (currency == CurrencyType.Hancoin && row.Hc0.HasValue && row.Hc0.Value > 0)
+                selector = 4;
+
             int? selected = null;
+            var used365 = false;
             switch (currency)
             {
                 case CurrencyType.Mito:
-                    if (period == 0) selected = row.MitoPrice;
-                    else if (period == 1) selected = row.Mito7;
-                    else if (period == 2) selected = row.Mito30;
-                    else if (period == 3) selected = row.Mito90 ?? row.Mito365;
-                    else if (period == 4) selected = row.Mito0;
-                    else if (period == 5) selected = row.MitoPrice ?? row.Mito0;
+                    if (selector == 0) selected = row.MitoPrice;
+                    else if (selector == 1) selected = row.Mito7;
+                    else if (selector == 2) selected = row.Mito30;
+                    else if (selector == 3)
+                    {
+                        selected = row.Mito90;
+                        if (!selected.HasValue) { selected = row.Mito365; used365 = true; }
+                    }
+                    else if (selector == 4) selected = row.Mito0;
+                    else if (selector == 5) selected = row.MitoPrice ?? row.Mito0;
                     break;
                 case CurrencyType.Hancoin:
-                    if (period == 1) selected = row.Hc7;
-                    else if (period == 2) selected = row.Hc30;
-                    else if (period == 3) selected = row.Hc90 ?? row.Hc365;
-                    else if (period == 4 || period == 5) selected = row.Hc0;
+                    if (selector == 0) selected = row.Hc0;
+                    else if (selector == 1) selected = row.Hc7;
+                    else if (selector == 2) selected = row.Hc30;
+                    else if (selector == 3)
+                    {
+                        selected = row.Hc90;
+                        if (!selected.HasValue) { selected = row.Hc365; used365 = true; }
+                    }
+                    else if (selector == 4 || selector == 5) selected = row.Hc0;
                     break;
                 case CurrencyType.Mileage:
-                    if (period == 1) selected = row.Mileage7;
-                    else if (period == 2) selected = row.Mileage30;
-                    else if (period == 3) selected = row.Mileage90 ?? row.Mileage365;
-                    else if (period == 4 || period == 5) selected = row.Mileage0;
+                    if (selector == 0) selected = row.Mileage0;
+                    else if (selector == 1) selected = row.Mileage7;
+                    else if (selector == 2) selected = row.Mileage30;
+                    else if (selector == 3)
+                    {
+                        selected = row.Mileage90;
+                        if (!selected.HasValue) { selected = row.Mileage365; used365 = true; }
+                    }
+                    else if (selector == 4 || selector == 5) selected = row.Mileage0;
                     break;
             }
+
             if (!selected.HasValue || selected.Value < 0) return false;
             price = selected.Value;
-            if (period == 1) bonusMito = row.BonusMito7;
-            else if (period == 2) bonusMito = row.BonusMito30;
-            else if (period == 3) bonusMito = row.BonusMito90;
-            else if (period == 4 || period == 5) bonusMito = row.BonusMito0;
+
+            if (selector == 1) bonusMito = row.BonusMito7;
+            else if (selector == 2) bonusMito = row.BonusMito30;
+            else if (selector == 3) bonusMito = used365 ? row.BonusMito365 : row.BonusMito90;
+            else if (selector == 4 || selector == 5) bonusMito = row.BonusMito0;
+
+            actualPeriod = ResolveActualPeriod(row, selector, used365);
             return true;
+        }
+
+        private static int ResolveActualPeriod(CatalogRow row, int selector, bool used365)
+        {
+            int? period = null;
+            if (selector == 1) period = row.Period7;
+            else if (selector == 2) period = row.Period30;
+            else if (selector == 3) period = used365 ? row.Period365 : row.Period90;
+            else if (selector == 4 || selector == 5) period = row.Period0;
+            else return 0;
+
+            if (period.HasValue && period.Value >= 0) return period.Value;
+            if (selector == 1) return 7;
+            if (selector == 2) return 30;
+            if (selector == 3) return used365 ? 365 : 90;
+            return 0;
         }
 
         private static bool OwnsCar(MySqlConnection conn, MySqlTransaction tx, ulong characterId, uint carId)
@@ -646,15 +765,18 @@ WHERE ShopId=@shopId;";
 
         public static bool IsEquipableCategory(int categoryIndex)
         {
-            return categoryIndex > 0 && categoryIndex != 16 && categoryIndex != 19 && categoryIndex != 22;
+            // v0.77a's IsEnableEquip accepts the original car-visual range 1..13.
+            // Later client data adds direct paint/roof/tire/duct slots. Everything else
+            // (notably category 33 UseItem boxes) is an inventory/service purchase and
+            // must not require CarId or auto-equip itself onto a vehicle.
+            if (categoryIndex >= 1 && categoryIndex <= 13) return true;
+            return categoryIndex == 32 || categoryIndex == 47 || categoryIndex == 48 ||
+                   categoryIndex == 52 || categoryIndex == 57;
         }
 
-        private static long CalculateExpireTime(long now, int period)
+        private static long CalculateExpireTime(long now, int actualPeriodDays)
         {
-            if (period == 1) return now + (7L * 86400L);
-            if (period == 2) return now + (30L * 86400L);
-            if (period == 3) return now + (90L * 86400L);
-            return 0;
+            return actualPeriodDays > 0 ? now + ((long)actualPeriodDays * 86400L) : 0L;
         }
 
         private static PurchaseResult FailAndRollback(MySqlTransaction tx, PurchaseResult result, string error)
