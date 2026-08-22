@@ -20,7 +20,6 @@ namespace Shared.Network
 
         private bool _connected;
         private ushort _packetLength, _packetId;
-        private ushort _lastSentPacketId;
 
         public User User;
 
@@ -177,34 +176,7 @@ namespace Shared.Network
 
         public void Send(Packet packet)
         {
-            if (packet == null) return;
-
-            // The legacy VisualShopWorldSync path still calls SendCar immediately after
-            // a local 1061. That produces a full 1202 replay of every equipped visual row
-            // after the actual retail modification event has already been processed. The
-            // v0.77a client then layers mesh state on top of the freshly rebuilt car, which
-            // is exactly the residual body-kit/aero behaviour seen in live tests.
-            //
-            // Legitimate 1202 modification callbacks occur before 1061; only the obsolete
-            // full replay occurs immediately after it, so this ordering is deterministic.
-            if (packet.Id == 1202 && _lastSentPacketId == Packets.VisualUpdateAck)
-            {
-                Log.Debug("Suppressing obsolete post-1061 VSItemModList replay for {0}.", CharacterName);
-                return;
-            }
-
-            // The same legacy path then sends RoomNotifyChange(467) for the owner. 467 is
-            // a Room/Battle handler and is not a free-roam visual refresh. Suppress only
-            // this exact post-1061 ordering; genuine room traffic is otherwise untouched.
-            if (packet.Id == Packets.RoomNotifyChangeAck && _lastSentPacketId == Packets.VisualUpdateAck)
-            {
-                Log.Debug("Suppressing room-only post-1061 packet 467 for free-roam visual sync ({0}).", CharacterName);
-                return;
-            }
-
             var buffer = packet.Writer.GetBuffer();
-            NormalizeRetailVisualUpdate(packet.Id, buffer);
-
             var bufferLength = buffer.Length;
             var length = (ushort)(bufferLength + 2);
 
@@ -246,97 +218,7 @@ namespace Shared.Network
             catch (Exception ex)
             {
                 KillConnection(ex);
-                return;
             }
-
-            _lastSentPacketId = packet.Id;
-
-            // Retail free-roam keeps XiPlayerInfo (802/809) and the instantiated world
-            // vehicle as separate pieces of state. Packet 809 refreshes the logical
-            // XiPlayerInfo/XiVisualItem cache, but mesh-based cosmetics on an already
-            // spawned remote car are not rebuilt merely because that cache changed.
-            //
-            // Cmd_RemoveVehicle (550) is the retail invalidation path for a remote world
-            // vehicle. Its handler consumes exactly 60 bytes and, for a non-local serial,
-            // only needs Serial(+0x02) and Age(+0x06) to invalidate the existing object.
-            // Sending the correctly-sized 550 immediately after an 809 lets the next 541
-            // materialize the remote car again from the newly installed player-info cache.
-            TryInvalidateRemoteVehiclesAfterPlayerInfo(packet.Id, buffer);
-        }
-
-        private void NormalizeRetailVisualUpdate(ushort packetId, byte[] buffer)
-        {
-            if (packetId != Packets.VisualUpdateAck || buffer == null || buffer.Length < 61 ||
-                User == null || User.ActiveCharacter == null || User.ActiveCharacter.ActiveCar == null)
-                return;
-
-            var vehicle = User.ActiveCharacter.ActiveCar;
-            var packetCarId = BitConverter.ToUInt32(buffer, 6);
-            if (packetCarId != vehicle.CarId) return;
-
-            var effectiveColor = vehicle.Color != 0 ? vehicle.Color : vehicle.BaseColor;
-
-            // 1061 exact offsets including packet id:
-            // +0x11 XiStrCarInfo.BaseColor, +0x2B Color, +0x2F Color2.
-            Buffer.BlockCopy(BitConverter.GetBytes(vehicle.BaseColor), 0, buffer, 0x11, 4);
-            Buffer.BlockCopy(BitConverter.GetBytes(effectiveColor), 0, buffer, 0x2B, 4);
-            Buffer.BlockCopy(BitConverter.GetBytes(vehicle.Color2), 0, buffer, 0x2F, 4);
-        }
-
-        private void TryInvalidateRemoteVehiclesAfterPlayerInfo(ushort packetId, byte[] buffer)
-        {
-            const ushort PlayerInfoLivePacketId = 809;
-            const int PlayerInfoStride = 216;
-            const int HeaderSize = 6; // id(u16) + count(u32)
-            const int NameSize = 26;  // wchar Name[13]
-
-            if (packetId != PlayerInfoLivePacketId || buffer == null || buffer.Length < HeaderSize)
-                return;
-
-            int count;
-            try
-            {
-                count = BitConverter.ToInt32(buffer, 2);
-            }
-            catch
-            {
-                return;
-            }
-
-            if (count <= 0 || count > 64) return;
-
-            for (var i = 0; i < count; i++)
-            {
-                var record = HeaderSize + (i * PlayerInfoStride);
-                if (record < 0 || record + PlayerInfoStride > buffer.Length) break;
-
-                var serial = BitConverter.ToUInt16(buffer, record + NameSize);
-                var age = BitConverter.ToUInt16(buffer, record + NameSize + 2);
-                if (serial == 0) continue;
-                if (User != null && serial == User.VehicleSerial) continue;
-
-                Send(BuildRetailRemoveVehicle(serial, age));
-                Log.Debug(
-                    "Remote visual rebuild invalidate: Viewer={0} TargetSerial={1} Age={2} -> 809+550; next 541 recreates world vehicle",
-                    CharacterName, serial, age);
-            }
-        }
-
-        /// <summary>
-        /// Drift City v0.77a Cmd_RemoveVehicle (550) is exactly 60 bytes including the
-        /// packet id. The remote handler reads Serial at +0x02 and Age at +0x06; the
-        /// remaining retail structure is not consulted by the remote invalidation branch.
-        /// Keep the complete wire size nevertheless, because the client handler returns
-        /// 0x3C and short historical packets were malformed.
-        /// </summary>
-        public static Packet BuildRetailRemoveVehicle(ushort serial, ushort age = 0)
-        {
-            var remove = new Packet(Packets.CmdRemoveVehicle);
-            remove.Writer.Write(serial);       // +0x02
-            remove.Writer.Write((ushort)0);    // +0x04 opaque/reserved
-            remove.Writer.Write(age);          // +0x06
-            remove.Writer.Write(new byte[52]); // +0x08 .. +0x3B
-            return remove;
         }
 
         public void SendError(string format, params object[] args)
@@ -385,9 +267,10 @@ namespace Shared.Network
             {
                 try
                 {
-                    var remove = BuildRetailRemoveVehicle(departingSerial);
+                    var remove = new Packet(Packets.CmdRemoveVehicle);
+                    remove.Writer.Write(departingSerial);
                     _parent.Broadcast(remove, this);
-                    Log.Debug("Area disconnect remove: Name={0} Serial={1} Port={2} -> retail packet 550/60-byte broadcast",
+                    Log.Debug("Area disconnect remove: Name={0} Serial={1} Port={2} -> packet 550 broadcast",
                         departingName, departingSerial, localPort);
                 }
                 catch (Exception ex)
