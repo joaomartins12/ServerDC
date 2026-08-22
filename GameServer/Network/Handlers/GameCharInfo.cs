@@ -142,19 +142,21 @@ namespace GameServer.Util
 
         public static RoomNotifyChangeAnswer BuildRoomNotifyChange(ushort serial, Character character)
         {
+            ApplyActivePaint(character);
             return new RoomNotifyChangeAnswer
             {
                 Serial = serial,
                 Age = 0,
-                CarAttr = BuildCarAttr(character),
+                CarAttr = BuildCarAttr(character == null ? null : character.ActiveCar),
                 PlayerInfo = BuildPlayerInfo(serial, character)
             };
         }
 
         public static XiCarAttr BuildCarAttr(Character character)
         {
-            return BuildCarAttr(character == null ? null : character.ActiveCar,
-                character == null || character.ActiveCar == null ? (uint?)null : ResolveRetailCarAttrColor(character));
+            if (character == null || character.ActiveCar == null) return new XiCarAttr();
+            ApplyActivePaint(character);
+            return BuildCarAttr(character.ActiveCar, character.ActiveCar.Color);
         }
 
         public static XiCarAttr BuildCarAttr(Vehicle vehicle)
@@ -175,6 +177,8 @@ namespace GameServer.Util
             result.___u0.__s1.lvalSortBody = unchecked((int)(uint)packed);
             result.___u0.__s1.lvalColor = unchecked((int)color);
             result.___u0.llval = unchecked((long)packed);
+            result.Color2 = vehicle.Color2;
+            result.State = 1;
             return result;
         }
 
@@ -208,7 +212,7 @@ ORDER BY v.InventoryIndex DESC;", conn))
                     uint color;
                     if (raw != null && raw != System.DBNull.Value && uint.TryParse(System.Convert.ToString(raw).Trim(), out color))
                     {
-                        Log.Debug("Visual {0} RGB resolved: CID={1} CarId={2} Color={3} Hex=0x{4:X6}",
+                        Log.Debug("Visual {0} COLORREF resolved: CID={1} CarId={2} Data={3} Hex=0x{4:X6}",
                             isTint ? "tint" : "paint", character.Id, character.ActiveCar.CarId, color, color);
                         return color;
                     }
@@ -301,45 +305,59 @@ ORDER BY v.InventoryIndex DESC;", conn))
             }
         }
 
+        private static uint ColorRefToRgb(uint colorRef)
+        {
+            // Visual-item Data is the decimal Win32 COLORREF used by the client:
+            // integer layout 0x00BBGGRR. The model colour path stores 0x00RRGGBB.
+            colorRef &= 0x00FFFFFFu;
+            return ((colorRef & 0x000000FFu) << 16)
+                 |  (colorRef & 0x0000FF00u)
+                 | ((colorRef & 0x00FF0000u) >> 16);
+        }
+
         private static uint ResolveRetailCarAttrColor(Character character)
         {
             if (character == null || character.ActiveCar == null) return 0;
 
-            // DriftCity.exe v0.77a sub_5FC300 is the authoritative normal/world
-            // XiCarAttr.Color packer. The low byte is a paint-mode marker:
-            //   category 1  -> (index << 24) | (color & 0x00FFFF00) | 0x01
-            //   category 32 -> (index << 24) | (color & 0x00FFFF00) | 0x02
-            // Category 3 (window tint) then replaces Color byte 1 with its index.
-            var color = character.ActiveCar.BaseColor;
-            var paintIndex = ResolveVisualRenderIndex(character, "paint");
+            // DriftCity.exe v0.77a modern visual path (sub_5FC370 + sub_4721F0):
+            //   category 1  paint -> 0x81RRGGBB
+            //   category 32 paint -> 0x83RRGGBB
+            // The per-instance RGB is the visual item's Data COLORREF, not its
+            // VisualItem render index. This is why two S15 paints can have different colours.
+            var paintColorRef = ResolveVisualPaintColor(character);
             var paintCategory = ResolveActivePaintCategory(character);
-            var tintIndex = ResolveVisualRenderIndex(character, "tint");
+            if (!paintColorRef.HasValue)
+                return character.ActiveCar.BaseColor;
 
-            if (paintIndex.HasValue)
+            uint prefix;
+            if (paintCategory == 32)
+                prefix = 0x83000000u;
+            else if (paintCategory == 1)
+                prefix = 0x81000000u;
+            else
             {
-                var paintMode = paintCategory == 32 ? 0x02u : 0x01u;
-                color = ((paintIndex.Value & 0xFFu) << 24) | (color & 0x00FFFF00u) | paintMode;
+                Log.Warning("Visual paint category unsupported for direct RGB: CID={0} CarId={1} Category={2}",
+                    character.Id, character.ActiveCar.CarId,
+                    paintCategory.HasValue ? paintCategory.Value.ToString() : "none");
+                return character.ActiveCar.BaseColor;
             }
-            if (tintIndex.HasValue)
-                color = ((tintIndex.Value & 0xFFu) << 8) | (color & 0xFFFF00FFu);
 
-            Log.Debug("Retail XiCarAttr color resolved: CID={0} CarId={1} Base=0x{2:X8} PaintIndex={3} PaintCategory={4} TintIndex={5} Packed=0x{6:X8}",
-                character.Id, character.ActiveCar.CarId, character.ActiveCar.BaseColor,
-                paintIndex.HasValue ? paintIndex.Value.ToString() : "none",
-                paintCategory.HasValue ? paintCategory.Value.ToString() : "none",
-                tintIndex.HasValue ? tintIndex.Value.ToString() : "none", color);
+            var rgb = ColorRefToRgb(paintColorRef.Value);
+            var color = prefix | rgb;
+            Log.Debug("Direct XiCarAttr paint resolved: CID={0} CarId={1} Category={2} COLORREF=0x{3:X6} RGB=0x{4:X6} Encoded=0x{5:X8}",
+                character.Id, character.ActiveCar.CarId, paintCategory.Value,
+                paintColorRef.Value & 0x00FFFFFFu, rgb, color);
             return color;
         }
 
         public static uint? ResolveVisualPaintColor(Character character) { return ResolveVisualColor(character, "paint"); }
         public static uint? ResolveVisualTintColor(Character character) { return ResolveVisualColor(character, "tint"); }
 
-        private static uint PackTintRgb565(uint rgb)
+        private static uint EncodeDirectTintColor(uint colorRef)
         {
-            var r = (rgb >> 16) & 0xFFu;
-            var g = (rgb >> 8) & 0xFFu;
-            var b = rgb & 0xFFu;
-            return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+            // sub_5FC370(category 3) uses the secondary model colour channel and
+            // marks the value with 0x82 in the high byte.
+            return 0x82000000u | ColorRefToRgb(colorRef);
         }
 
         public static void ApplyActivePaint(Character character)
@@ -347,8 +365,8 @@ ORDER BY v.InventoryIndex DESC;", conn))
             if (character == null || character.ActiveCar == null || global::GameServer.GameServer.Instance.Database == null) return;
 
             var color = ResolveRetailCarAttrColor(character);
-            var tintRgb = ResolveVisualTintColor(character);
-            var color2 = tintRgb.HasValue ? PackTintRgb565(tintRgb.Value) : 0u;
+            var tintColorRef = ResolveVisualTintColor(character);
+            var color2 = tintColorRef.HasValue ? EncodeDirectTintColor(tintColorRef.Value) : 0u;
             var changed = character.ActiveCar.Color != color || character.ActiveCar.Color2 != color2;
 
             character.ActiveCar.Color = color;
@@ -368,9 +386,9 @@ ORDER BY v.InventoryIndex DESC;", conn))
             {
                 using (var conn = global::GameServer.GameServer.Instance.Database.Connection)
                     VehicleModel.Update(conn, character.ActiveCar);
-                Log.Info("Retail visual colors persisted: CID={0} CarId={1} XiCarAttrColor=0x{2:X8} TintRGB={3} TintRGB565=0x{4:X4} Tint={5}",
-                    character.Id, character.ActiveCar.CarId, color, tintRgb ?? 0u, color2,
-                    tintRgb.HasValue ? "visual" : "default");
+                Log.Info("Direct visual colors persisted: CID={0} CarId={1} Color=0x{2:X8} Color2=0x{3:X8} TintCOLORREF=0x{4:X6}",
+                    character.Id, character.ActiveCar.CarId, color, color2,
+                    tintColorRef.HasValue ? tintColorRef.Value & 0x00FFFFFFu : 0u);
             }
             catch (System.Exception ex)
             {
