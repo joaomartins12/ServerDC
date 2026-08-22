@@ -11,6 +11,13 @@ namespace AreaServer.Network.Handlers
 {
     public class MoveVehicle
     {
+        // Retail BS_Area::ToAreaObserver<BS_PktMoveVehicle> pushes exactly 0x60 bytes
+        // starting at the packet id. Our Packet wrapper adds the 2-byte length prefix,
+        // and SendMovement adds id + Serial, so the observer movement body is 92 bytes.
+        // The client->server form contains additional client-only tail fields which must
+        // never be echoed to another client.
+        private const int RetailObserverMovementBodyLength = 92;
+
         private sealed class PresenceState
         {
             public string Name = string.Empty;
@@ -181,7 +188,15 @@ namespace AreaServer.Network.Handlers
 
             var stream = packet.Reader.BaseStream;
             var remaining = (int)Math.Max(0, stream.Length - stream.Position);
-            var movement = packet.Reader.ReadBytes(remaining);
+            var incomingMovement = packet.Reader.ReadBytes(remaining);
+
+            // The retail observer form is deliberately shorter than the command sent by
+            // the driving client. Keep only the 92-byte observer body. This makes our wire
+            // OUT packet exactly 98 bytes (length + id + serial + 92), matching v0.77a.
+            var relayLength = Math.Min(incomingMovement.Length, RetailObserverMovementBodyLength);
+            var movement = new byte[relayLength];
+            if (relayLength != 0)
+                Buffer.BlockCopy(incomingMovement, 0, movement, 0, relayLength);
 
             // DriftCity.exe v0.77a sub_4C8B00 produces a 16-byte XiCarAttr in 541.
             // After Serial has been consumed, movement begins with:
@@ -248,18 +263,18 @@ namespace AreaServer.Network.Handlers
 
         private static void PatchAuthoritativeCarAttr(Client source, ushort serial, byte[] movement)
         {
-            if (source?.User?.ActiveCharacter == null || movement == null || movement.Length < 22)
+            var character = source?.User?.ActiveCharacter;
+            if (character == null || movement == null || movement.Length < 22)
                 return;
-
-            var activeCarId = source.User.ActiveCharacter.ActiveVehicleId;
-            if (activeCarId == 0) return;
 
             var now = DateTime.UtcNow;
             VisualAttrState state;
             lock (Sync)
             {
+                // The AreaServer character object is a process-local snapshot. GameServer
+                // can change CurrentCarID without mutating this instance, so the cache is
+                // time based only. Once it expires we read the authoritative car id from DB.
                 if (VisualAttrs.TryGetValue(serial, out state) &&
-                    state.CarId == activeCarId &&
                     now - state.RefreshedUtc < VisualAttrRefreshInterval)
                 {
                     WriteCarAttr(movement, state);
@@ -267,13 +282,30 @@ namespace AreaServer.Network.Handlers
                 }
             }
 
+            uint activeCarId = 0;
             try
             {
                 Vehicle vehicle;
                 using (var conn = AreaServer.Instance.Database.Connection)
+                {
+                    using (var currentCar = new MySqlCommand(
+                        "SELECT CurrentCarID FROM dbo.characters WHERE CID=@cid", conn))
+                    {
+                        currentCar.Parameters.AddWithValue("@cid", character.Id);
+                        var raw = currentCar.ExecuteScalar();
+                        if (raw == null || raw == DBNull.Value) return;
+                        activeCarId = unchecked((uint)Convert.ToInt64(raw));
+                    }
+
+                    if (activeCarId == 0) return;
                     vehicle = VehicleModel.Retrieve(conn, activeCarId);
+                }
 
                 if (vehicle == null) return;
+
+                // Keep this AreaServer session coherent too, but DB remains authoritative.
+                character.ActiveVehicleId = activeCarId;
+                character.ActiveCar = vehicle;
 
                 var effectiveColor = vehicle.Color != 0 ? vehicle.Color : vehicle.BaseColor;
                 var refreshed = new VisualAttrState
@@ -298,7 +330,7 @@ namespace AreaServer.Network.Handlers
                 {
                     Log.Info(
                         "Area authoritative 541 visual: Name={0} Serial={1} CarId={2} Body={3} Color=0x{4:X8} Color2=0x{5:X8} State={6} (GlobalTime@+18 preserved)",
-                        source.User.ActiveCharacter.Name,
+                        character.Name,
                         serial,
                         refreshed.CarId,
                         refreshed.Body,
@@ -321,8 +353,8 @@ namespace AreaServer.Network.Handlers
             // movement[0..1]  = Age
             // movement[2..3]  = Sort (preserved)
             // movement[4..5]  = Body
-            // movement[6..9]  = Color  (0x81/0x83 RRGGBB for direct paint)
-            // movement[10..13]= Color2 (0x82RRGGBB for direct window tint)
+            // movement[6..9]  = Color  (0x81/0x83 + retail 24-bit paint payload)
+            // movement[10..13]= Color2 (0x82 + retail 24-bit window-tint payload)
             // movement[14..17]= State
             // movement[18..21]= GlobalTime (never touched here)
             Buffer.BlockCopy(BitConverter.GetBytes(state.Body), 0, movement, 4, 2);
