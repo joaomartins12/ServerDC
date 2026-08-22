@@ -118,8 +118,20 @@ namespace GameServer.Util
 {
     public static class PlayerVisualSnapshotBuilder
     {
+        private sealed class VisualDefinition
+        {
+            public int Id;
+            public int CategoryIndex;
+            public int Index;
+            public string ItemCode = string.Empty;
+        }
+
         private static readonly object VisualIndexSync = new object();
         private static System.Collections.Generic.Dictionary<int, int> _visualIndexByShopId;
+        private static System.Collections.Generic.Dictionary<int, VisualDefinition> _visualDefinitionById;
+        private static System.Collections.Generic.Dictionary<string, VisualDefinition> _visualDefinitionByItemCode;
+        private static System.Collections.Generic.Dictionary<int, string> _vshopItemCodeById;
+        private static System.Collections.Generic.Dictionary<string, int> _vshopIdByItemCode;
         private static readonly System.Collections.Generic.HashSet<int> MissingVisualIndexWarnings =
             new System.Collections.Generic.HashSet<int>();
 
@@ -209,15 +221,8 @@ ORDER BY v.InventoryIndex DESC;", conn))
             return null;
         }
 
-        public static uint? ResolveVisualPaintColor(Character character)
-        {
-            return ResolveVisualColor(character, "paint");
-        }
-
-        public static uint? ResolveVisualTintColor(Character character)
-        {
-            return ResolveVisualColor(character, "tint");
-        }
+        public static uint? ResolveVisualPaintColor(Character character) { return ResolveVisualColor(character, "paint"); }
+        public static uint? ResolveVisualTintColor(Character character) { return ResolveVisualColor(character, "tint"); }
 
         private static uint PackTintRgb565(uint rgb)
         {
@@ -229,8 +234,7 @@ ORDER BY v.InventoryIndex DESC;", conn))
 
         public static void ApplyActivePaint(Character character)
         {
-            if (character == null || character.ActiveCar == null || global::GameServer.GameServer.Instance.Database == null)
-                return;
+            if (character == null || character.ActiveCar == null || global::GameServer.GameServer.Instance.Database == null) return;
 
             var paint = ResolveVisualPaintColor(character);
             var tintRgb = ResolveVisualTintColor(character);
@@ -251,7 +255,6 @@ ORDER BY v.InventoryIndex DESC;", conn))
             }
 
             if (!changed) return;
-
             try
             {
                 using (var conn = global::GameServer.GameServer.Instance.Database.Connection)
@@ -262,8 +265,7 @@ ORDER BY v.InventoryIndex DESC;", conn))
             }
             catch (System.Exception ex)
             {
-                Log.Warning("Visual color vehicle persistence failed: CID={0} CarId={1} Error={2}",
-                    character.Id, character.ActiveCar.CarId, ex.Message);
+                Log.Warning("Visual color vehicle persistence failed: CID={0} CarId={1} Error={2}", character.Id, character.ActiveCar.CarId, ex.Message);
             }
         }
 
@@ -295,10 +297,8 @@ ORDER BY v.InventoryIndex;", conn))
                             var data = r.IsDBNull(4) ? string.Empty : System.Convert.ToString(r[4]);
                             var visualIndex = ResolveVisualIndex(shopId);
 
-                            Log.Debug(
-                                "Visual snapshot item: ShopId={0} VisualIndex={1} CategoryIndex={2} Category={3} ItemCode={4}",
+                            Log.Debug("Visual snapshot item: ShopId={0} VisualIndex={1} CategoryIndex={2} Category={3} ItemCode={4}",
                                 shopId, visualIndex, categoryIndex, category ?? string.Empty, itemCode ?? string.Empty);
-
                             ApplyVisual(visual, shopId, visualIndex, categoryIndex, category, itemCode, data);
                         }
                     }
@@ -308,132 +308,141 @@ ORDER BY v.InventoryIndex;", conn))
             return visual;
         }
 
-        /// <summary>
-        /// Retail keeps the VShop/Table id and the render-facing VisualItem index as two
-        /// different identifiers. TableIdx/dwId is used by the shop/inventory packets,
-        /// while XiVisualItem receives VisualItem.xlt's "index" field. The original
-        /// ZoneServer source confirms FillItemStruct(categoryIndex, index, ...) semantics.
-        /// </summary>
         private static int ResolveVisualIndex(int shopId)
         {
-            EnsureVisualIndexMap();
-
+            EnsureVisualMaps();
             int visualIndex;
-            if (_visualIndexByShopId != null && _visualIndexByShopId.TryGetValue(shopId, out visualIndex))
-                return visualIndex;
-
+            if (_visualIndexByShopId != null && _visualIndexByShopId.TryGetValue(shopId, out visualIndex)) return visualIndex;
             lock (VisualIndexSync)
             {
                 if (MissingVisualIndexWarnings.Add(shopId))
-                {
-                    Log.Warning(
-                        "Visual render index missing for ShopId={0}; falling back to ShopId. Check Importer/VisualItem.xlt.",
-                        shopId);
-                }
+                    Log.Warning("Visual render index missing for ShopId={0}; falling back to ShopId. Check Importer/VisualItem.xlt.", shopId);
             }
             return shopId;
         }
 
-        private static void EnsureVisualIndexMap()
+        private static void EnsureVisualMaps()
         {
             if (_visualIndexByShopId != null) return;
-
             lock (VisualIndexSync)
             {
                 if (_visualIndexByShopId != null) return;
 
-                var map = new System.Collections.Generic.Dictionary<int, int>();
-                var path = System.IO.Path.Combine(
-                    System.AppDomain.CurrentDomain.BaseDirectory,
-                    "Importer",
-                    "VisualItem.xlt");
+                var indexMap = new System.Collections.Generic.Dictionary<int, int>();
+                var defById = new System.Collections.Generic.Dictionary<int, VisualDefinition>();
+                var defByCode = new System.Collections.Generic.Dictionary<string, VisualDefinition>(System.StringComparer.OrdinalIgnoreCase);
+                var vshopCodeById = new System.Collections.Generic.Dictionary<int, string>();
+                var vshopIdByCode = new System.Collections.Generic.Dictionary<string, int>(System.StringComparer.OrdinalIgnoreCase);
+                var importer = System.IO.Path.Combine(System.AppDomain.CurrentDomain.BaseDirectory, "Importer");
+                var visualPath = System.IO.Path.Combine(importer, "VisualItem.xlt");
+                var vshopPath = System.IO.Path.Combine(importer, "VShopItem.xlt");
 
                 try
                 {
-                    if (!System.IO.File.Exists(path))
-                    {
-                        Log.Warning("Visual render index map unavailable: {0} was not found.", path);
-                        _visualIndexByShopId = map;
-                        return;
-                    }
-
-                    var lines = System.IO.File.ReadAllLines(path, System.Text.Encoding.Unicode);
-                    var headerLine = -1;
-                    var idColumn = -1;
-                    var indexColumn = -1;
-
-                    for (var i = 0; i < lines.Length; i++)
-                    {
-                        if (!lines[i].StartsWith("Category\tcategory index\tindex\titem_id\tid\t", System.StringComparison.Ordinal))
-                            continue;
-
-                        headerLine = i;
-                        var headers = lines[i].Split('\t');
-                        for (var c = 0; c < headers.Length; c++)
-                        {
-                            var header = (headers[c] ?? string.Empty).Trim();
-                            if (header.Equals("id", System.StringComparison.OrdinalIgnoreCase)) idColumn = c;
-                            else if (header.Equals("index", System.StringComparison.OrdinalIgnoreCase)) indexColumn = c;
-                        }
-                        break;
-                    }
-
-                    if (headerLine < 0 || idColumn < 0 || indexColumn < 0)
-                    {
-                        Log.Warning("Visual render index map: expected VisualItem.xlt header was not found in {0}.", path);
-                        _visualIndexByShopId = map;
-                        return;
-                    }
-
-                    var duplicateIds = 0;
-                    for (var i = headerLine + 1; i < lines.Length; i++)
-                    {
-                        if (string.IsNullOrWhiteSpace(lines[i])) continue;
-                        var values = lines[i].Split('\t');
-                        if (idColumn >= values.Length || indexColumn >= values.Length) continue;
-
-                        int id;
-                        int index;
-                        if (!int.TryParse(values[idColumn].Trim().Trim('"'),
-                                System.Globalization.NumberStyles.Integer,
-                                System.Globalization.CultureInfo.InvariantCulture, out id) ||
-                            !int.TryParse(values[indexColumn].Trim().Trim('"'),
-                                System.Globalization.NumberStyles.Integer,
-                                System.Globalization.CultureInfo.InvariantCulture, out index))
-                            continue;
-
-                        // Retail XiVisualItemMap uses std::map::insert keyed by dwId.
-                        // Duplicate dwId rows therefore preserve the first definition;
-                        // assigning map[id] here would incorrectly let a later variant
-                        // (often index=0) replace the render index used by the client.
-                        if (map.ContainsKey(id))
-                        {
-                            duplicateIds++;
-                            continue;
-                        }
-                        map.Add(id, index);
-                    }
-
-                    Log.Info(
-                        "Visual render index map loaded: {0} VisualItem.xlt ids mapped to retail render indexes; {1} duplicate dwId rows ignored (first definition wins).",
-                        map.Count, duplicateIds);
+                    LoadVisualItemMaps(visualPath, indexMap, defById, defByCode);
+                    LoadVShopMaps(vshopPath, vshopCodeById, vshopIdByCode);
+                    Log.Info("Visual retail maps loaded: VisualIds={0} VisualCodes={1} VShopIds={2}", defById.Count, defByCode.Count, vshopCodeById.Count);
                 }
                 catch (System.Exception ex)
                 {
-                    Log.Warning("Visual render index map load failed: {0}", ex.Message);
+                    Log.Warning("Visual retail map load failed: {0}", ex.Message);
                 }
 
-                _visualIndexByShopId = map;
+                _visualIndexByShopId = indexMap;
+                _visualDefinitionById = defById;
+                _visualDefinitionByItemCode = defByCode;
+                _vshopItemCodeById = vshopCodeById;
+                _vshopIdByItemCode = vshopIdByCode;
             }
         }
 
-        /// <summary>
-        /// Applies VisualItem.xlt's real category dispatcher (sub_54CC80) to the
-        /// 0x38-byte XiVisualItem. Categories not present in the retail jump table are
-        /// intentionally not forced into a guessed slot. In particular category 3
-        /// (window tint in our imported data) and category 32 (paint) are no-ops here;
-        /// their RGB values belong to XiStrCarInfo Color2/Color respectively.
-        /// </summary>
+        private static string[] ReadUnicodeLines(string path)
+        {
+            if (!System.IO.File.Exists(path)) return new string[0];
+            var bytes = System.IO.File.ReadAllBytes(path);
+            var offset = bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE ? 2 : 0;
+            var text = System.Text.Encoding.Unicode.GetString(bytes, offset, bytes.Length - offset);
+            return text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+        }
+
+        private static void LoadVisualItemMaps(string path,
+            System.Collections.Generic.Dictionary<int, int> indexMap,
+            System.Collections.Generic.Dictionary<int, VisualDefinition> defById,
+            System.Collections.Generic.Dictionary<string, VisualDefinition> defByCode)
+        {
+            var lines = ReadUnicodeLines(path);
+            var header = -1; var idCol = -1; var indexCol = -1; var categoryCol = -1; var codeCol = -1;
+            for (var i = 0; i < lines.Length; i++)
+            {
+                if (!lines[i].StartsWith("Category\tcategory index\tindex\titem_id\tid\t", System.StringComparison.Ordinal)) continue;
+                header = i;
+                var h = lines[i].Split('\t');
+                for (var c = 0; c < h.Length; c++)
+                {
+                    var name = (h[c] ?? string.Empty).Trim();
+                    if (name.Equals("id", System.StringComparison.OrdinalIgnoreCase)) idCol = c;
+                    else if (name.Equals("index", System.StringComparison.OrdinalIgnoreCase)) indexCol = c;
+                    else if (name.Equals("category index", System.StringComparison.OrdinalIgnoreCase)) categoryCol = c;
+                    else if (name.Equals("item_id", System.StringComparison.OrdinalIgnoreCase)) codeCol = c;
+                }
+                break;
+            }
+            if (header < 0 || idCol < 0 || indexCol < 0 || categoryCol < 0 || codeCol < 0) return;
+
+            for (var i = header + 1; i < lines.Length; i++)
+            {
+                if (string.IsNullOrWhiteSpace(lines[i])) continue;
+                var v = lines[i].Split('\t');
+                if (idCol >= v.Length || indexCol >= v.Length || categoryCol >= v.Length || codeCol >= v.Length) continue;
+                int id, index, category;
+                if (!int.TryParse(v[idCol].Trim().Trim('"'), out id) || !int.TryParse(v[indexCol].Trim().Trim('"'), out index)) continue;
+                int.TryParse(v[categoryCol].Trim().Trim('"'), out category);
+                var code = v[codeCol].Trim().Trim('"');
+                var def = new VisualDefinition { Id = id, Index = index, CategoryIndex = category, ItemCode = code };
+
+                // Retail map insertion keeps the first definition for duplicate dwId.
+                if (!defById.ContainsKey(id))
+                {
+                    defById.Add(id, def);
+                    indexMap.Add(id, index);
+                }
+                if (!string.IsNullOrEmpty(code) && !defByCode.ContainsKey(code)) defByCode.Add(code, def);
+            }
+        }
+
+        private static void LoadVShopMaps(string path,
+            System.Collections.Generic.Dictionary<int, string> codeById,
+            System.Collections.Generic.Dictionary<string, int> idByCode)
+        {
+            var lines = ReadUnicodeLines(path);
+            var header = -1; var idCol = -1; var codeCol = -1;
+            for (var i = 0; i < lines.Length; i++)
+            {
+                if (!lines[i].StartsWith("Index\tSupport\tUniqueId\t", System.StringComparison.Ordinal)) continue;
+                header = i;
+                var h = lines[i].Split('\t');
+                for (var c = 0; c < h.Length; c++)
+                {
+                    var name = (h[c] ?? string.Empty).Trim();
+                    if (name.Equals("UniqueId", System.StringComparison.OrdinalIgnoreCase)) idCol = c;
+                    else if (name.Equals("ItemName", System.StringComparison.OrdinalIgnoreCase)) codeCol = c;
+                }
+                break;
+            }
+            if (header < 0 || idCol < 0 || codeCol < 0) return;
+            for (var i = header + 1; i < lines.Length; i++)
+            {
+                if (string.IsNullOrWhiteSpace(lines[i])) continue;
+                var v = lines[i].Split('\t');
+                if (idCol >= v.Length || codeCol >= v.Length) continue;
+                int id;
+                if (!int.TryParse(v[idCol].Trim().Trim('"'), out id)) continue;
+                var code = v[codeCol].Trim().Trim('"');
+                if (!codeById.ContainsKey(id)) codeById.Add(id, code);
+                if (!string.IsNullOrEmpty(code) && !idByCode.ContainsKey(code)) idByCode.Add(code, id);
+            }
+        }
+
         private static void ApplyVisual(XiVisualItem visual, int shopId, int visualIndex, int categoryIndex, string category, string itemCode, string data)
         {
             var value = unchecked((ushort)visualIndex);
@@ -446,60 +455,28 @@ ORDER BY v.InventoryIndex;", conn))
                     visual.Slot00 = value;
                     if (hasNumericData) visual.Value0A = numericData;
                     return;
-                case 4:
-                    visual.Slot0E = value;
-                    return;
-                case 5:
-                    visual.Slot10 = value;
-                    return;
+                case 4: visual.Slot0E = value; return;
+                case 5: visual.Slot10 = value; return;
                 case 6:
-                    if (value != 0)
-                    {
-                        visual.Slot12 = value;
-                        return;
-                    }
-
-                    ushort aeroSetIndex;
-                    if (TryParseAeroSetIndex(data, out aeroSetIndex))
-                    {
-                        visual.Slot12 = aeroSetIndex;
-                        Log.Debug("Visual AeroSet resolved from item data: ShopId={0} Data={1} AeroSetIndex={2}",
-                            shopId, data ?? string.Empty, aeroSetIndex);
-                    }
+                    if (value != 0) { visual.Slot12 = value; return; }
+                    if (!TryApplyRetailAeroPackage(visual, data))
+                        Log.Warning("Visual Aero package could not be resolved: ShopId={0} Data='{1}'", shopId, data ?? string.Empty);
                     return;
-                case 7:
-                    // DriftCity.exe 0x54CD22 has the same zero-index fallback used by
-                    // wheels/booster: when itemIndex is zero it parses the item parameter.
-                    visual.Slot18 = value != 0 ? value : unchecked((ushort)numericData);
-                    return;
-                case 8:
-                    visual.Slot16 = value;
-                    return;
+                case 7: visual.Slot18 = value != 0 ? value : unchecked((ushort)numericData); return;
+                case 8: visual.Slot16 = value; return;
                 case 9:
                     visual.Slot02 = value;
                     visual.PlateString = string.IsNullOrEmpty(data) ? string.Empty : data;
                     return;
-                case 10:
-                    visual.Slot14 = value != 0 ? value : unchecked((ushort)numericData);
-                    return;
+                case 10: visual.Slot14 = value != 0 ? value : unchecked((ushort)numericData); return;
                 case 11:
                     visual.Slot04 = value;
                     if (hasNumericData) visual.Value06 = numericData;
                     return;
-                case 47:
-                    visual.Slot1A = value;
-                    return;
-                case 48:
-                    visual.Slot16 = value != 0 ? value : unchecked((ushort)numericData);
-                    return;
-                case 52:
-                    visual.Slot1C = value;
-                    return;
-                case 57:
-                    visual.Slot1E = value;
-                    return;
-
-                // Explicit retail no-op categories for the two RGB customizations.
+                case 47: visual.Slot1A = value; return;
+                case 48: visual.Slot16 = value != 0 ? value : unchecked((ushort)numericData); return;
+                case 52: visual.Slot1C = value; return;
+                case 57: visual.Slot1E = value; return;
                 case 1:
                 case 3:
                 case 32:
@@ -510,24 +487,67 @@ ORDER BY v.InventoryIndex;", conn))
                 shopId, visualIndex, categoryIndex, category ?? string.Empty, itemCode ?? string.Empty);
         }
 
-        private static bool TryParseAeroSetIndex(string data, out ushort value)
+        private static bool TryApplyRetailAeroPackage(XiVisualItem visual, string data)
         {
-            value = 0;
-            if (string.IsNullOrWhiteSpace(data)) return false;
+            EnsureVisualMaps();
+            if (visual == null || string.IsNullOrWhiteSpace(data)) return false;
 
-            // Retail pc_Aero instance data is car-specific. Captures from v0.77a use
-            // e.g. 054110464 for CarType 54 and 028110037 for CarType 28. The final
-            // three decimal digits are the AeroSet/render index consumed by Slot12.
+            // DriftCity.exe v0.77a special case at 0x54E2F4 -> 0x767C60/0x6CE290:
+            // pc_Aero (category 6, index 0) uses its 19-wchar parameter. The client
+            // reads a three-digit car type, a one-digit set selector and a five-digit
+            // VShop UniqueId. The final id identifies a concrete car-specific Aero item
+            // (e.g. "          038310859" -> UniqueId 10859, Cielo front Mk.2).
             var text = data.Trim();
-            if (text.Length < 3) return false;
-            var suffix = text.Substring(text.Length - 3);
+            if (text.Length < 5) return false;
+            int concreteId;
+            if (!int.TryParse(text.Substring(text.Length - 5), out concreteId) || concreteId <= 0) return false;
 
-            ushort parsed;
-            if (!ushort.TryParse(suffix, System.Globalization.NumberStyles.Integer,
-                    System.Globalization.CultureInfo.InvariantCulture, out parsed) || parsed == 0)
+            var applied = false;
+            applied |= TryApplyAeroDefinition(visual, concreteId);
+
+            string code;
+            if (_vshopItemCodeById != null && _vshopItemCodeById.TryGetValue(concreteId, out code) && !string.IsNullOrWhiteSpace(code))
+            {
+                // pc_0033c_b04 / pc_0033c_i04 are the paired front/hood definitions
+                // returned by the retail resolver. Expand either side to its companion.
+                string companion = null;
+                var marker = code.LastIndexOf("_b", System.StringComparison.OrdinalIgnoreCase);
+                if (marker >= 0 && marker + 4 == code.Length)
+                    companion = code.Substring(0, marker) + "_i" + code.Substring(marker + 2);
+                else
+                {
+                    marker = code.LastIndexOf("_i", System.StringComparison.OrdinalIgnoreCase);
+                    if (marker >= 0 && marker + 4 == code.Length)
+                        companion = code.Substring(0, marker) + "_b" + code.Substring(marker + 2);
+                }
+
+                int companionId;
+                if (!string.IsNullOrEmpty(companion) && _vshopIdByItemCode != null && _vshopIdByItemCode.TryGetValue(companion, out companionId))
+                    applied |= TryApplyAeroDefinition(visual, companionId);
+
+                Log.Debug("Visual Aero package resolve: Data='{0}' ConcreteId={1} ItemCode={2} Companion={3} Applied={4}",
+                    data, concreteId, code, companion ?? string.Empty, applied);
+            }
+            return applied;
+        }
+
+        private static bool TryApplyAeroDefinition(XiVisualItem visual, int id)
+        {
+            VisualDefinition def;
+            if (_visualDefinitionById == null || !_visualDefinitionById.TryGetValue(id, out def) || def == null || def.Index == 0)
                 return false;
 
-            value = parsed;
+            var value = unchecked((ushort)def.Index);
+            switch (def.CategoryIndex)
+            {
+                case 4: visual.Slot0E = value; break;
+                case 5: visual.Slot10 = value; break;
+                case 6: visual.Slot12 = value; break;
+                default:
+                    Log.Debug("Visual Aero concrete definition ignored: Id={0} ItemCode={1} CategoryIndex={2} Index={3}", id, def.ItemCode, def.CategoryIndex, def.Index);
+                    return false;
+            }
+            Log.Debug("Visual Aero concrete definition: Id={0} ItemCode={1} CategoryIndex={2} Index={3}", id, def.ItemCode, def.CategoryIndex, def.Index);
             return true;
         }
 
@@ -539,8 +559,22 @@ ORDER BY v.InventoryIndex;", conn))
             if (text.StartsWith("0x", System.StringComparison.OrdinalIgnoreCase))
                 return uint.TryParse(text.Substring(2), System.Globalization.NumberStyles.HexNumber,
                     System.Globalization.CultureInfo.InvariantCulture, out value);
-            return uint.TryParse(text, System.Globalization.NumberStyles.Integer,
-                System.Globalization.CultureInfo.InvariantCulture, out value);
+
+            if (uint.TryParse(text, System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture, out value))
+                return true;
+
+            // Decal colour parameters are emitted by the retail client as signed
+            // decimal int32 values (e.g. -16579837). They are bit patterns, not a
+            // negative colour. Preserve those exact 32 bits for XiVisualItem.Value06.
+            int signed;
+            if (int.TryParse(text, System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture, out signed))
+            {
+                value = unchecked((uint)signed);
+                return true;
+            }
+            return false;
         }
     }
 }
