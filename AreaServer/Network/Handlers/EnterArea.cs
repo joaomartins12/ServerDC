@@ -10,11 +10,11 @@ namespace AreaServer.Network.Handlers
     public static class EnterArea
     {
         // GameServer publishes the 802/809 XiPlayerInfo identity/visual snapshot just
-        // after JoinArea. If AreaServer replays a cached 541 immediately, v0.77a creates
-        // the remote vehicle before that visual identity exists and the car remains in
-        // its default appearance. A short one-shot delay preserves the normal movement
-        // stream while allowing the retail player-info manager to be populated first.
-        private const int InitialPresenceReplayDelayMs = 250;
+        // after JoinArea. One fixed replay at 250ms can still race that state on a busy
+        // machine or during an area TCP handover. Retry only during the first few seconds:
+        // 250ms gets the fast path, 1250ms is after the normal GameServer delayed resync,
+        // and 3000ms is a final recovery pass. Normal 541 movement remains authoritative.
+        private static readonly int[] InitialPresenceReplayDelaysMs = { 250, 1250, 3000 };
 
         [Packet(Packets.CmdEnterArea)]
         public static void Handle(Packet packet)
@@ -53,9 +53,8 @@ namespace AreaServer.Network.Handlers
 
             // Area transitions can create a fresh TCP connection while the previous
             // connection with the same vehicle serial is still shutting down. Always bind
-            // the serial to the newest authenticated User object. Otherwise the old
-            // Client.KillConnection() may remove the serial later and make the new live
-            // session look inactive to presence/movement routing.
+            // the serial to the newest authenticated User object. Client.KillConnection()
+            // now also verifies this ownership before it is allowed to broadcast packet 550.
             Shared.Objects.User previousOwner = null;
             DefaultServer.ActiveSerials.TryGetValue(enterAreaPacket.VehicleSerial, out previousOwner);
             DefaultServer.ActiveSerials[enterAreaPacket.VehicleSerial] = packet.Sender.User;
@@ -87,37 +86,52 @@ namespace AreaServer.Network.Handlers
         {
             ThreadPool.QueueUserWorkItem(_ =>
             {
-                Thread.Sleep(InitialPresenceReplayDelayMs);
+                var elapsedDelay = 0;
 
-                try
+                for (var attempt = 0; attempt < InitialPresenceReplayDelaysMs.Length; attempt++)
                 {
-                    if (client == null || client.User == null || client.User.VehicleSerial != serial)
-                        return;
+                    var targetDelay = InitialPresenceReplayDelaysMs[attempt];
+                    var sleep = targetDelay - elapsedDelay;
+                    if (sleep > 0)
+                        Thread.Sleep(sleep);
+                    elapsedDelay = targetDelay;
 
-                    Shared.Objects.User active;
-                    if (!DefaultServer.ActiveSerials.TryGetValue(serial, out active) ||
-                        !ReferenceEquals(active, client.User))
-                        return;
+                    try
+                    {
+                        if (client == null || client.User == null || client.User.VehicleSerial != serial)
+                            return;
 
-                    // By now the GameServer has normally delivered 802 + 809 + 806 for
-                    // the players in this area. The first relayed 541 can therefore bind
-                    // the world vehicle to an already-populated XiPlayerInfo/XiVisualItem.
-                    MoveVehicle.ReplayExisting(client, serial, areaId);
-                    MoveVehicle.AnnounceCurrentToArea(client, serial, areaId);
+                        Shared.Objects.User active;
+                        if (!DefaultServer.ActiveSerials.TryGetValue(serial, out active) ||
+                            !ReferenceEquals(active, client.User))
+                            return;
 
-                    Log.Debug(
-                        "Area initial presence replay: Serial={0} Area={1} DelayMs={2}",
-                        serial,
-                        areaId,
-                        InitialPresenceReplayDelayMs);
-                }
-                catch (Exception ex)
-                {
-                    Log.Warning(
-                        "Area initial presence replay failed: Serial={0} Area={1} Error={2}",
-                        serial,
-                        areaId,
-                        ex.Message);
+                        // Replay other already-moving players to the entrant and announce
+                        // the entrant's latest movement back to current players. Repeating
+                        // this only during startup makes the creation/identity ordering
+                        // deterministic without adding a permanent movement heartbeat.
+                        MoveVehicle.ReplayExisting(client, serial, areaId);
+                        MoveVehicle.AnnounceCurrentToArea(client, serial, areaId);
+
+                        if (attempt == InitialPresenceReplayDelaysMs.Length - 1)
+                        {
+                            Log.Debug(
+                                "Area initial presence sync complete: Serial={0} Area={1} Attempts={2} WindowMs={3}",
+                                serial,
+                                areaId,
+                                InitialPresenceReplayDelaysMs.Length,
+                                targetDelay);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warning(
+                            "Area initial presence replay failed: Serial={0} Area={1} Attempt={2} Error={3}",
+                            serial,
+                            areaId,
+                            attempt + 1,
+                            ex.Message);
+                    }
                 }
             });
         }

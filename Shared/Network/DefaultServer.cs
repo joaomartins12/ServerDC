@@ -175,10 +175,12 @@ namespace Shared.Network
         public void Parse(Packet packet)
         {
 #if DEBUG
-            var hexDump = BinaryWriterExt.HexDump(packet.Buffer);
-
+            // Binary/hex captures are explicit research mode only. Normal debug logging
+            // below keeps the useful packet-name notice without flooding the console.
             if (DumpIncoming)
             {
+                var hexDump = BinaryWriterExt.HexDump(packet.Buffer);
+
                 // Make sure the packetcaptures directory exists.
                 Directory.CreateDirectory("packetcaptures\\incoming\\");
 
@@ -218,8 +220,6 @@ namespace Shared.Network
                     {
                         Log.Info("Handling unnamed packet ({0} id {1}, 0x{1:X}) on {2}.", Packets.GetName(packet.Id), packet.Id, _port);
                     }
-
-                    Log.Debug("HexDump {0}:{1}{2}", packet.Id, Environment.NewLine, hexDump);
                 }
 #endif
                 _parsers[packet.Id](packet);
@@ -231,15 +231,10 @@ namespace Shared.Network
                 {
                     Log.Info("Received unhandled packet {0} ({1} id {2}, 0x{2:X}) on {3}.", PacketNameDatabase[packet.Id],
                         Packets.GetName(packet.Id), packet.Id, _port);
-                    Log.Debug("HexDump  {0} ({1} id {2}, 0x{2:X}):{3}{4}", PacketNameDatabase[packet.Id],
-                        Packets.GetName(packet.Id), packet.Id, Environment.NewLine, hexDump);
                     return;
                 }
 #endif
                 Log.Warning("Received unhandled packet {0} (id {1}, 0x{1:X}) on {2}.", Packets.GetName(packet.Id), packet.Id, _port);
-#if DEBUG
-                Log.Debug("HexDump {0} (id {1}, 0x{1:X}):{2}{3}", Packets.GetName(packet.Id), packet.Id, Environment.NewLine, hexDump);
-#endif
             }
         }
 
@@ -254,13 +249,23 @@ namespace Shared.Network
         }
 
         /// <summary>
-        /// Gets a client from it's vehicle serial
+        /// Gets the current live client for a vehicle serial. During area/channel
+        /// transitions an older socket with the same serial can coexist briefly with
+        /// the replacement connection, so prefer the User registered in ActiveSerials.
         /// </summary>
         /// <param name="vehicleSerial">The vehicle serial to fetch</param>
-        /// <returns>A client or null</returns>
+        /// <returns>The current client or null</returns>
         public Client GetClient(ushort vehicleSerial)
         {
-            return _clients.FirstOrDefault(client => client?.User?.VehicleSerial == vehicleSerial);
+            User active;
+            if (vehicleSerial != 0 && ActiveSerials.TryGetValue(vehicleSerial, out active) && active != null)
+            {
+                var current = _clients.FirstOrDefault(client => client?.User != null && ReferenceEquals(client.User, active));
+                if (current != null)
+                    return current;
+            }
+
+            return _clients.LastOrDefault(client => client?.User?.VehicleSerial == vehicleSerial);
         }
 
         /// <summary>

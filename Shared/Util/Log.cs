@@ -147,36 +147,45 @@ namespace Shared.Util
                 var now = DateTime.Now;
                 var dir = string.Equals(direction, "OUT", StringComparison.OrdinalIgnoreCase) ? "OUT" : "IN";
                 var packetName = GetPacketName(id);
-                var fileBase = sequence.ToString("D6") + "_" + now.ToString("HH-mm-ss.fff") +
-                               "_ID" + id.ToString("D4") + "_" + SafeFileName(packetName);
-                var dirRoot = Path.Combine(_packetRoot, dir);
-                var txtPath = Path.Combine(dirRoot, fileBase + ".txt");
-                var binPath = Path.Combine(dirRoot, fileBase + ".bin");
 
-                var body = new StringBuilder();
-                body.AppendLine("DRIFT CITY PACKET CAPTURE");
-                body.AppendLine("=========================");
-                body.AppendLine("Sequence   : " + sequence);
-                body.AppendLine("Timestamp  : " + now.ToString("yyyy-MM-dd HH:mm:ss.fff"));
-                body.AppendLine("Direction  : " + dir);
-                body.AppendLine("Server     : " + _serverName);
-                body.AppendLine("Port       : " + port);
-                body.AppendLine("Packet ID  : " + id + " (0x" + id.ToString("X") + ")");
-                body.AppendLine("Packet Name: " + packetName);
-                body.AppendLine("Wire Bytes : " + wireBytes.Length);
-                body.AppendLine("Endpoint   : " + (endpoint ?? ""));
-                body.AppendLine("User       : " + (username ?? ""));
-                body.AppendLine("Character  : " + (characterName ?? ""));
-                body.AppendLine();
-                body.AppendLine("HEX DUMP");
-                body.AppendLine("--------");
-                body.AppendLine(BinaryWriterExt.HexDump(wireBytes));
+                // Keep a compact one-line packet index for every packet. Full payload
+                // .txt/.bin captures are research mode only and are enabled explicitly
+                // through DefaultServer.DumpIncoming / DumpOutgoing.
+                var capturePayload = dir == "OUT" ? DefaultServer.DumpOutgoing : DefaultServer.DumpIncoming;
 
                 lock (FileLock)
                 {
-                    Directory.CreateDirectory(dirRoot);
-                    File.WriteAllText(txtPath, body.ToString(), Encoding.UTF8);
-                    File.WriteAllBytes(binPath, wireBytes);
+                    if (capturePayload)
+                    {
+                        var fileBase = sequence.ToString("D6") + "_" + now.ToString("HH-mm-ss.fff") +
+                                       "_ID" + id.ToString("D4") + "_" + SafeFileName(packetName);
+                        var dirRoot = Path.Combine(_packetRoot, dir);
+                        var txtPath = Path.Combine(dirRoot, fileBase + ".txt");
+                        var binPath = Path.Combine(dirRoot, fileBase + ".bin");
+
+                        var body = new StringBuilder();
+                        body.AppendLine("DRIFT CITY PACKET CAPTURE");
+                        body.AppendLine("=========================");
+                        body.AppendLine("Sequence   : " + sequence);
+                        body.AppendLine("Timestamp  : " + now.ToString("yyyy-MM-dd HH:mm:ss.fff"));
+                        body.AppendLine("Direction  : " + dir);
+                        body.AppendLine("Server     : " + _serverName);
+                        body.AppendLine("Port       : " + port);
+                        body.AppendLine("Packet ID  : " + id + " (0x" + id.ToString("X") + ")");
+                        body.AppendLine("Packet Name: " + packetName);
+                        body.AppendLine("Wire Bytes : " + wireBytes.Length);
+                        body.AppendLine("Endpoint   : " + (endpoint ?? ""));
+                        body.AppendLine("User       : " + (username ?? ""));
+                        body.AppendLine("Character  : " + (characterName ?? ""));
+                        body.AppendLine();
+                        body.AppendLine("HEX DUMP");
+                        body.AppendLine("--------");
+                        body.AppendLine(BinaryWriterExt.HexDump(wireBytes));
+
+                        Directory.CreateDirectory(dirRoot);
+                        File.WriteAllText(txtPath, body.ToString(), Encoding.UTF8);
+                        File.WriteAllBytes(binPath, wireBytes);
+                    }
 
                     using (var writer = new StreamWriter(_packetSessionLog, true, Encoding.UTF8))
                     {

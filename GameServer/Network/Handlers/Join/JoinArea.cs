@@ -84,6 +84,15 @@ namespace GameServer.Network.Handlers.Join
             var serial = packet.Sender?.User == null ? (ushort)0 : packet.Sender.User.VehicleSerial;
             if (serial == 0) return;
 
+            // A replaced GameServer socket may finish its old area flow after the new
+            // session has already rebound the same serial. Do not let that stale LeaveArea
+            // delete the live-area identity state belonging to the replacement session.
+            if (!IsCurrentSerialOwner(packet.Sender))
+            {
+                Log.Debug("LiveArea: stale LEAVE ignored Serial={0}", serial);
+                return;
+            }
+
             lock (PresenceSync)
                 LiveAreas.Remove(serial);
 

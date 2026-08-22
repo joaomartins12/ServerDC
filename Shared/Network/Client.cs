@@ -189,7 +189,9 @@ namespace Shared.Network
                 RemoteEndpointText, Username, CharacterName);
 
 #if DEBUG
-            var hexDump = BinaryWriterExt.HexDump(buffer);
+            // Keep the useful packet notice in debug builds, but do not dump binary/hex
+            // payloads to the normal server log. Detailed packet captures are opt-in via
+            // DefaultServer.DumpIncoming / DumpOutgoing in Log.PacketTrace.
             if (!DefaultServer.PacketDumpBlacklist.Contains(packet.Id))
             {
                 if (DefaultServer.PacketNameDatabase.ContainsKey(packet.Id))
@@ -198,11 +200,6 @@ namespace Shared.Network
                 else
                     Log.Info("Sending unnamed packet ({0} id {1}, 0x{1:X}).",
                         Packets.GetName(packet.Id), packet.Id);
-
-                if (bufferLength != 0)
-                    Log.Debug("HexDump {0} (Size: {1}):{2}{3}", packet.Id, bufferLength, Environment.NewLine, hexDump);
-                else
-                    Log.Debug("HexDump {0}:{1}{2}", packet.Id, Environment.NewLine, hexDump);
             }
 #endif
 
@@ -263,7 +260,27 @@ namespace Shared.Network
                 Log.Info("Killing off client. {0}", reason);
             }
 
-            if (departingSerial != 0 && (localPort == 11031 || localPort == 11041))
+            // Area transitions can overlap for a short time: the new authenticated TCP
+            // connection may already own this serial while the previous connection is
+            // still shutting down. Only the CURRENT serial owner is allowed to publish
+            // packet 550 or remove ActiveSerials. Otherwise a late close from the old
+            // socket deletes the newly spawned live vehicle on every other client.
+            var ownsActiveSerial = false;
+            if (departingUser != null && departingSerial != 0)
+            {
+                try
+                {
+                    User active;
+                    ownsActiveSerial = DefaultServer.ActiveSerials.TryGetValue(departingSerial, out active) &&
+                                        ReferenceEquals(active, departingUser);
+                }
+                catch
+                {
+                    ownsActiveSerial = false;
+                }
+            }
+
+            if (ownsActiveSerial && departingSerial != 0 && (localPort == 11031 || localPort == 11041))
             {
                 try
                 {
@@ -278,17 +295,17 @@ namespace Shared.Network
                     Log.Warning("Area disconnect remove failed for Serial={0}: {1}", departingSerial, ex.Message);
                 }
             }
+            else if (departingSerial != 0 && (localPort == 11031 || localPort == 11041) && !ownsActiveSerial)
+            {
+                Log.Debug("Area stale disconnect ignored: Name={0} Serial={1} Port={2}; newer connection owns serial.",
+                    departingName, departingSerial, localPort);
+            }
 
-            if (departingUser != null && departingSerial != 0)
+            if (ownsActiveSerial)
             {
                 try
                 {
-                    User active;
-                    if (DefaultServer.ActiveSerials.TryGetValue(departingSerial, out active) &&
-                        ReferenceEquals(active, departingUser))
-                    {
-                        DefaultServer.ActiveSerials.Remove(departingSerial);
-                    }
+                    DefaultServer.ActiveSerials.Remove(departingSerial);
                 }
                 catch
                 {
