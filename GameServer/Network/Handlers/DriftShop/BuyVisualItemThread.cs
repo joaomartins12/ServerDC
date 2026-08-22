@@ -104,9 +104,28 @@ namespace GameServer.Network.Handlers
                     break;
             }
 
+            // A purchase can auto-equip the new visual. Rebuild/persist direct paint/tint
+            // BEFORE any client/world refresh so AreaServer's next authoritative 541 sees
+            // the same Color/Color2 state and cannot immediately restore the old paint.
+            var affectsActiveCar = purchase.Equipped &&
+                                   character.ActiveCar != null &&
+                                   character.ActiveCar.CarId == purchase.CarId;
+            if (affectsActiveCar)
+            {
+                PlayerVisualSnapshotBuilder.ApplyActivePaint(character);
+                Log.Debug(
+                    "Visual purchase active-car refresh prepared: CID={0} CarId={1} ShopId={2} Category={3} Color=0x{4:X8} Color2=0x{5:X8}",
+                    character.Id,
+                    purchase.CarId,
+                    purchase.ShopId,
+                    purchase.CategoryIndex,
+                    character.ActiveCar.Color,
+                    character.ActiveCar.Color2);
+            }
+
             // Retail sends Cmd_VSItemModList (1202), not a complete VisualItemListAck
-            // (1201), after a visual mutation. Sending the affected category is important
-            // because purchase can implicitly unequip the previous item in that category.
+            // (1201), before BuyVisualItemAck. Keep that retail mutation order because
+            // purchase can implicitly unequip the previous item in the same category.
             if (purchase.CategoryIndex > 0)
                 VisualShopProtocolSync.SendCategory(packet, character.Id, purchase.CarId, purchase.CategoryIndex);
             else
@@ -127,8 +146,15 @@ namespace GameServer.Network.Handlers
             };
             packet.Sender.Send(ack.CreatePacket());
 
-            if (purchase.Equipped)
+            if (affectsActiveCar)
+            {
+                // EquipVisualItem already uses this exact post-ACK path and it is the path
+                // that reliably refreshes an existing v0.77a render object: 1201 rebuilds
+                // the authoritative equipped visual collection, SendCurrent follows with
+                // local 1061, and WorldSync publishes 809+467 to players in the same area.
+                global::GameServer.Network.Handlers.Join.VisualItemList.SendCurrent(packet);
                 VisualShopWorldSync.Broadcast(user);
+            }
 
             CheckStat.Handle(packet);
         }
