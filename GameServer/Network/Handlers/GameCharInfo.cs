@@ -154,7 +154,7 @@ namespace GameServer.Util
         public static XiCarAttr BuildCarAttr(Character character)
         {
             return BuildCarAttr(character == null ? null : character.ActiveCar,
-                character == null ? (uint?)null : ResolveVisualPaintColor(character));
+                character == null || character.ActiveCar == null ? (uint?)null : ResolveRetailCarAttrColor(character));
         }
 
         public static XiCarAttr BuildCarAttr(Vehicle vehicle)
@@ -208,7 +208,7 @@ ORDER BY v.InventoryIndex DESC;", conn))
                     uint color;
                     if (raw != null && raw != System.DBNull.Value && uint.TryParse(System.Convert.ToString(raw).Trim(), out color))
                     {
-                        Log.Debug("Visual {0} resolved: CID={1} CarId={2} Color={3} Hex=0x{4:X6}",
+                        Log.Debug("Visual {0} RGB resolved: CID={1} CarId={2} Color={3} Hex=0x{4:X6}",
                             isTint ? "tint" : "paint", character.Id, character.ActiveCar.CarId, color, color);
                         return color;
                     }
@@ -219,6 +219,81 @@ ORDER BY v.InventoryIndex DESC;", conn))
                 Log.Warning("Visual {0} lookup failed for CID={1}: {2}", kind, character.Id, ex.Message);
             }
             return null;
+        }
+
+        private static uint? ResolveVisualRenderIndex(Character character, string kind)
+        {
+            if (character == null || character.ActiveCar == null || global::GameServer.GameServer.Instance.Database == null) return null;
+            try
+            {
+                var isTint = kind == "tint";
+                using (var conn = global::GameServer.GameServer.Instance.Database.Connection)
+                using (var cmd = new MySqlCommand(isTint ? @"
+SELECT TOP 1 v.ShopId
+FROM dbo.visual_items v
+JOIN dbo.visual_item_catalog c ON c.ShopId=v.ShopId
+WHERE v.CharacterId=@cid AND v.CarId=@carId AND v.ItemState=1
+  AND (v.ExpireTime=0 OR v.ExpireTime>@now)
+  AND (v.CategoryIndex=3 OR LOWER(c.ItemCode) LIKE '%window%' OR LOWER(c.Category) LIKE '%windowtint%')
+ORDER BY v.InventoryIndex DESC;" : @"
+SELECT TOP 1 v.ShopId
+FROM dbo.visual_items v
+JOIN dbo.visual_item_catalog c ON c.ShopId=v.ShopId
+WHERE v.CharacterId=@cid AND v.CarId=@carId AND v.ItemState=1
+  AND (v.ExpireTime=0 OR v.ExpireTime>@now)
+  AND (v.CategoryIndex IN (1,32) OR LOWER(c.ItemCode) LIKE '%paint%' OR LOWER(c.Category) LIKE '%paint%')
+ORDER BY v.InventoryIndex DESC;", conn))
+                {
+                    cmd.Parameters.AddWithValue("@cid", character.Id);
+                    cmd.Parameters.AddWithValue("@carId", character.ActiveCar.CarId);
+                    cmd.Parameters.AddWithValue("@now", System.DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+                    var raw = cmd.ExecuteScalar();
+                    if (raw == null || raw == System.DBNull.Value) return null;
+
+                    var shopId = System.Convert.ToInt32(raw, System.Globalization.CultureInfo.InvariantCulture);
+                    var renderIndex = ResolveVisualIndex(shopId);
+                    if (renderIndex < 0 || renderIndex > byte.MaxValue)
+                    {
+                        Log.Warning("Visual {0} render index out of XiCarAttr byte range: CID={1} CarId={2} ShopId={3} Index={4}",
+                            isTint ? "tint" : "paint", character.Id, character.ActiveCar.CarId, shopId, renderIndex);
+                        return null;
+                    }
+
+                    Log.Debug("Visual {0} render index resolved: CID={1} CarId={2} ShopId={3} Index={4}",
+                        isTint ? "tint" : "paint", character.Id, character.ActiveCar.CarId, shopId, renderIndex);
+                    return unchecked((uint)renderIndex);
+                }
+            }
+            catch (System.Exception ex)
+            {
+                Log.Warning("Visual {0} render-index lookup failed for CID={1}: {2}", kind, character.Id, ex.Message);
+            }
+            return null;
+        }
+
+        private static uint ResolveRetailCarAttrColor(Character character)
+        {
+            if (character == null || character.ActiveCar == null) return 0;
+
+            // Retail ZoneServer v0.77a XiCsCharInfo::UpdateCarColorByItem starts from
+            // XiStrCarUnit.BaseColor and applies the visual *item index*, not v.Data RGB:
+            //   paint (VisualItem category 1) -> Color byte 3
+            //   tint  (VisualItem category 3) -> Color byte 1
+            // DriftCity.exe's car-model update consumes this packed DWORD as XiCarAttr.Color.
+            var color = character.ActiveCar.BaseColor;
+            var paintIndex = ResolveVisualRenderIndex(character, "paint");
+            var tintIndex = ResolveVisualRenderIndex(character, "tint");
+
+            if (paintIndex.HasValue)
+                color = (color & 0x00FFFFFFu) | ((paintIndex.Value & 0xFFu) << 24);
+            if (tintIndex.HasValue)
+                color = (color & 0xFFFF00FFu) | ((tintIndex.Value & 0xFFu) << 8);
+
+            Log.Debug("Retail XiCarAttr color resolved: CID={0} CarId={1} Base=0x{2:X8} PaintIndex={3} TintIndex={4} Packed=0x{5:X8}",
+                character.Id, character.ActiveCar.CarId, character.ActiveCar.BaseColor,
+                paintIndex.HasValue ? paintIndex.Value.ToString() : "none",
+                tintIndex.HasValue ? tintIndex.Value.ToString() : "none", color);
+            return color;
         }
 
         public static uint? ResolveVisualPaintColor(Character character) { return ResolveVisualColor(character, "paint"); }
@@ -236,9 +311,8 @@ ORDER BY v.InventoryIndex DESC;", conn))
         {
             if (character == null || character.ActiveCar == null || global::GameServer.GameServer.Instance.Database == null) return;
 
-            var paint = ResolveVisualPaintColor(character);
+            var color = ResolveRetailCarAttrColor(character);
             var tintRgb = ResolveVisualTintColor(character);
-            var color = paint ?? character.ActiveCar.BaseColor;
             var color2 = tintRgb.HasValue ? PackTintRgb565(tintRgb.Value) : 0u;
             var changed = character.ActiveCar.Color != color || character.ActiveCar.Color2 != color2;
 
@@ -259,9 +333,9 @@ ORDER BY v.InventoryIndex DESC;", conn))
             {
                 using (var conn = global::GameServer.GameServer.Instance.Database.Connection)
                     VehicleModel.Update(conn, character.ActiveCar);
-                Log.Info("Visual colors persisted to vehicle: CID={0} CarId={1} Color={2} TintRGB={3} TintRGB565=0x{4:X4} Paint={5} Tint={6}",
+                Log.Info("Retail visual colors persisted: CID={0} CarId={1} XiCarAttrColor=0x{2:X8} TintRGB={3} TintRGB565=0x{4:X4} Tint={5}",
                     character.Id, character.ActiveCar.CarId, color, tintRgb ?? 0u, color2,
-                    paint.HasValue ? "visual" : "base", tintRgb.HasValue ? "visual" : "default");
+                    tintRgb.HasValue ? "visual" : "default");
             }
             catch (System.Exception ex)
             {
