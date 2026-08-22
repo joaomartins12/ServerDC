@@ -271,27 +271,62 @@ ORDER BY v.InventoryIndex DESC;", conn))
             return null;
         }
 
+        private static int? ResolveActivePaintCategory(Character character)
+        {
+            if (character == null || character.ActiveCar == null || global::GameServer.GameServer.Instance.Database == null) return null;
+            try
+            {
+                using (var conn = global::GameServer.GameServer.Instance.Database.Connection)
+                using (var cmd = new MySqlCommand(@"
+SELECT TOP 1 v.CategoryIndex
+FROM dbo.visual_items v
+JOIN dbo.visual_item_catalog c ON c.ShopId=v.ShopId
+WHERE v.CharacterId=@cid AND v.CarId=@carId AND v.ItemState=1
+  AND (v.ExpireTime=0 OR v.ExpireTime>@now)
+  AND (v.CategoryIndex IN (1,32) OR LOWER(c.ItemCode) LIKE '%paint%' OR LOWER(c.Category) LIKE '%paint%')
+ORDER BY v.InventoryIndex DESC;", conn))
+                {
+                    cmd.Parameters.AddWithValue("@cid", character.Id);
+                    cmd.Parameters.AddWithValue("@carId", character.ActiveCar.CarId);
+                    cmd.Parameters.AddWithValue("@now", System.DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+                    var raw = cmd.ExecuteScalar();
+                    if (raw == null || raw == System.DBNull.Value) return null;
+                    return System.Convert.ToInt32(raw, System.Globalization.CultureInfo.InvariantCulture);
+                }
+            }
+            catch (System.Exception ex)
+            {
+                Log.Warning("Visual paint category lookup failed for CID={0}: {1}", character.Id, ex.Message);
+                return null;
+            }
+        }
+
         private static uint ResolveRetailCarAttrColor(Character character)
         {
             if (character == null || character.ActiveCar == null) return 0;
 
-            // Retail ZoneServer v0.77a XiCsCharInfo::UpdateCarColorByItem starts from
-            // XiStrCarUnit.BaseColor and applies the visual *item index*, not v.Data RGB:
-            //   paint (VisualItem category 1) -> Color byte 3
-            //   tint  (VisualItem category 3) -> Color byte 1
-            // DriftCity.exe's car-model update consumes this packed DWORD as XiCarAttr.Color.
+            // DriftCity.exe v0.77a sub_5FC300 is the authoritative normal/world
+            // XiCarAttr.Color packer. The low byte is a paint-mode marker:
+            //   category 1  -> (index << 24) | (color & 0x00FFFF00) | 0x01
+            //   category 32 -> (index << 24) | (color & 0x00FFFF00) | 0x02
+            // Category 3 (window tint) then replaces Color byte 1 with its index.
             var color = character.ActiveCar.BaseColor;
             var paintIndex = ResolveVisualRenderIndex(character, "paint");
+            var paintCategory = ResolveActivePaintCategory(character);
             var tintIndex = ResolveVisualRenderIndex(character, "tint");
 
             if (paintIndex.HasValue)
-                color = (color & 0x00FFFFFFu) | ((paintIndex.Value & 0xFFu) << 24);
+            {
+                var paintMode = paintCategory == 32 ? 0x02u : 0x01u;
+                color = ((paintIndex.Value & 0xFFu) << 24) | (color & 0x00FFFF00u) | paintMode;
+            }
             if (tintIndex.HasValue)
-                color = (color & 0xFFFF00FFu) | ((tintIndex.Value & 0xFFu) << 8);
+                color = ((tintIndex.Value & 0xFFu) << 8) | (color & 0xFFFF00FFu);
 
-            Log.Debug("Retail XiCarAttr color resolved: CID={0} CarId={1} Base=0x{2:X8} PaintIndex={3} TintIndex={4} Packed=0x{5:X8}",
+            Log.Debug("Retail XiCarAttr color resolved: CID={0} CarId={1} Base=0x{2:X8} PaintIndex={3} PaintCategory={4} TintIndex={5} Packed=0x{6:X8}",
                 character.Id, character.ActiveCar.CarId, character.ActiveCar.BaseColor,
                 paintIndex.HasValue ? paintIndex.Value.ToString() : "none",
+                paintCategory.HasValue ? paintCategory.Value.ToString() : "none",
                 tintIndex.HasValue ? tintIndex.Value.ToString() : "none", color);
             return color;
         }
