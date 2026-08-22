@@ -20,6 +20,7 @@ namespace Shared.Network
 
         private bool _connected;
         private ushort _packetLength, _packetId;
+        private ushort _lastSentPacketId;
 
         public User User;
 
@@ -176,7 +177,34 @@ namespace Shared.Network
 
         public void Send(Packet packet)
         {
+            if (packet == null) return;
+
+            // The legacy VisualShopWorldSync path still calls SendCar immediately after
+            // a local 1061. That produces a full 1202 replay of every equipped visual row
+            // after the actual retail modification event has already been processed. The
+            // v0.77a client then layers mesh state on top of the freshly rebuilt car, which
+            // is exactly the residual body-kit/aero behaviour seen in live tests.
+            //
+            // Legitimate 1202 modification callbacks occur before 1061; only the obsolete
+            // full replay occurs immediately after it, so this ordering is deterministic.
+            if (packet.Id == 1202 && _lastSentPacketId == Packets.VisualUpdateAck)
+            {
+                Log.Debug("Suppressing obsolete post-1061 VSItemModList replay for {0}.", CharacterName);
+                return;
+            }
+
+            // The same legacy path then sends RoomNotifyChange(467) for the owner. 467 is
+            // a Room/Battle handler and is not a free-roam visual refresh. Suppress only
+            // this exact post-1061 ordering; genuine room traffic is otherwise untouched.
+            if (packet.Id == Packets.RoomNotifyChangeAck && _lastSentPacketId == Packets.VisualUpdateAck)
+            {
+                Log.Debug("Suppressing room-only post-1061 packet 467 for free-roam visual sync ({0}).", CharacterName);
+                return;
+            }
+
             var buffer = packet.Writer.GetBuffer();
+            NormalizeRetailVisualUpdate(packet.Id, buffer);
+
             var bufferLength = buffer.Length;
             var length = (ushort)(bufferLength + 2);
 
@@ -221,6 +249,8 @@ namespace Shared.Network
                 return;
             }
 
+            _lastSentPacketId = packet.Id;
+
             // Retail free-roam keeps XiPlayerInfo (802/809) and the instantiated world
             // vehicle as separate pieces of state. Packet 809 refreshes the logical
             // XiPlayerInfo/XiVisualItem cache, but mesh-based cosmetics on an already
@@ -232,6 +262,25 @@ namespace Shared.Network
             // Sending the correctly-sized 550 immediately after an 809 lets the next 541
             // materialize the remote car again from the newly installed player-info cache.
             TryInvalidateRemoteVehiclesAfterPlayerInfo(packet.Id, buffer);
+        }
+
+        private void NormalizeRetailVisualUpdate(ushort packetId, byte[] buffer)
+        {
+            if (packetId != Packets.VisualUpdateAck || buffer == null || buffer.Length < 61 ||
+                User == null || User.ActiveCharacter == null || User.ActiveCharacter.ActiveCar == null)
+                return;
+
+            var vehicle = User.ActiveCharacter.ActiveCar;
+            var packetCarId = BitConverter.ToUInt32(buffer, 6);
+            if (packetCarId != vehicle.CarId) return;
+
+            var effectiveColor = vehicle.Color != 0 ? vehicle.Color : vehicle.BaseColor;
+
+            // 1061 exact offsets including packet id:
+            // +0x11 XiStrCarInfo.BaseColor, +0x2B Color, +0x2F Color2.
+            Buffer.BlockCopy(BitConverter.GetBytes(vehicle.BaseColor), 0, buffer, 0x11, 4);
+            Buffer.BlockCopy(BitConverter.GetBytes(effectiveColor), 0, buffer, 0x2B, 4);
+            Buffer.BlockCopy(BitConverter.GetBytes(vehicle.Color2), 0, buffer, 0x2F, 4);
         }
 
         private void TryInvalidateRemoteVehiclesAfterPlayerInfo(ushort packetId, byte[] buffer)
