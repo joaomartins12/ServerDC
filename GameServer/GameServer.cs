@@ -1,9 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using GameServer.Database;
 using GameServer.Util;
 using Shared;
+using Shared.Models;
 using Shared.Network;
 using Shared.Objects;
 using Shared.Objects.GameDatas;
@@ -46,6 +48,11 @@ namespace GameServer
             NavigateToRoot();
             LoadConf(Config = new GameConf());
             InitDatabase(Database = new GameDatabase(), Config);
+
+            // Heal the old character-creation regression before any player data is loaded.
+            // CharacterModel also performs the same conservative level-one check on login.
+            using (var expRepairConnection = Database.Connection)
+                CharacterModel.RepairInvalidExperienceRows(expRepairConnection);
 
             Log.Info("Loading Vehicles..");
             if (File.Exists("system/data/Vehicles.xml"))
@@ -181,7 +188,7 @@ namespace GameServer.Util
 {
     /// <summary>
     /// Imports the retail client's UTF-16 XLT visual-shop tables into SQL Server.
-    /// VShopItem.xlt supplies names, categories, prices and stat bonuses.
+    /// VShopItem.xlt supplies names, categories, periods, prices and stat bonuses.
     /// VisualItem.xlt supplies the real client visual category index used for equip slots.
     /// </summary>
     public static class VShopClientXltImporter
@@ -240,6 +247,8 @@ namespace GameServer.Util
                 imported++;
             }
 
+            VisualShopDatabase.RepairLegacyPeriods(conn);
+
             Log.Info(
                 "Client VShop XLT import complete: {0} rows imported from {1}; {2} rows had no VisualItem.xlt match.",
                 imported,
@@ -296,44 +305,100 @@ IF COL_LENGTH('dbo.visual_item_catalog','ImportedUtc') IS NULL ALTER TABLE dbo.v
             return result;
         }
 
+        /// <summary>
+        /// Reads UTF-16 XLT as a quoted TSV stream. Retail descriptions can contain real
+        /// CR/LF characters inside a quoted field (Robo-B Box is one example), therefore
+        /// File.ReadAllLines/Split('\t') silently shifted/lost all columns after the break.
+        /// </summary>
         private static List<Dictionary<string, string>> ReadTable(string path, string headerPrefix)
         {
-            var result = new List<Dictionary<string, string>>();
-            var lines = File.ReadAllLines(path, System.Text.Encoding.Unicode);
-            var headerLine = -1;
-
-            for (var i = 0; i < lines.Length; i++)
-            {
-                if (lines[i].StartsWith(headerPrefix, StringComparison.Ordinal))
-                {
-                    headerLine = i;
-                    break;
-                }
-            }
-
-            if (headerLine < 0)
+            var text = File.ReadAllText(path, Encoding.Unicode);
+            var headerStart = text.IndexOf(headerPrefix, StringComparison.Ordinal);
+            if (headerStart < 0)
                 throw new InvalidDataException("Could not find expected XLT header in " + path);
 
-            var headers = lines[headerLine].Split('\t');
-            for (var i = headerLine + 1; i < lines.Length; i++)
+            var records = ParseQuotedTsv(text.Substring(headerStart));
+            if (records.Count == 0)
+                throw new InvalidDataException("XLT table is empty in " + path);
+
+            var headers = records[0];
+            var result = new List<Dictionary<string, string>>();
+            for (var i = 1; i < records.Count; i++)
             {
-                if (string.IsNullOrWhiteSpace(lines[i]))
+                var values = records[i];
+                if (values.Count == 0 || (values.Count == 1 && string.IsNullOrWhiteSpace(values[0])))
                     continue;
 
-                var values = lines[i].Split('\t');
                 var row = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                for (var c = 0; c < headers.Length; c++)
+                for (var c = 0; c < headers.Count; c++)
                 {
-                    var name = headers[c];
+                    var name = (headers[c] ?? string.Empty).Trim();
                     if (string.IsNullOrWhiteSpace(name) || row.ContainsKey(name))
                         continue;
-                    row[name] = c < values.Length ? values[c].Trim() : string.Empty;
+                    row[name] = c < values.Count ? (values[c] ?? string.Empty).Trim() : string.Empty;
                 }
-
                 result.Add(row);
             }
-
             return result;
+        }
+
+        private static List<List<string>> ParseQuotedTsv(string text)
+        {
+            var records = new List<List<string>>();
+            var row = new List<string>();
+            var field = new StringBuilder();
+            var quoted = false;
+
+            for (var i = 0; i < text.Length; i++)
+            {
+                var ch = text[i];
+                if (ch == '"')
+                {
+                    if (quoted && i + 1 < text.Length && text[i + 1] == '"')
+                    {
+                        field.Append('"');
+                        i++;
+                    }
+                    else
+                    {
+                        quoted = !quoted;
+                    }
+                    continue;
+                }
+
+                if (ch == '\t' && !quoted)
+                {
+                    row.Add(field.ToString());
+                    field.Length = 0;
+                    continue;
+                }
+
+                if ((ch == '\r' || ch == '\n') && !quoted)
+                {
+                    if (ch == '\r' && i + 1 < text.Length && text[i + 1] == '\n') i++;
+                    row.Add(field.ToString());
+                    field.Length = 0;
+                    records.Add(row);
+                    row = new List<string>();
+                    continue;
+                }
+
+                if (ch == '\r' && quoted)
+                {
+                    if (i + 1 < text.Length && text[i + 1] == '\n') i++;
+                    field.Append('\n');
+                    continue;
+                }
+
+                field.Append(ch);
+            }
+
+            if (field.Length != 0 || row.Count != 0)
+            {
+                row.Add(field.ToString());
+                records.Add(row);
+            }
+            return records;
         }
 
         private static void UpsertCatalogRow(
@@ -370,6 +435,11 @@ BEGIN
         SourceMileage90dPrice=@mile90,
         SourceMileage365dPrice=@mile365,
         SourceMileage0dPrice=@mile0,
+        SourcePeriod7d=@period7,
+        SourcePeriod30d=@period30,
+        SourcePeriod90d=@period90,
+        SourcePeriod365d=@period365,
+        SourcePeriod0d=@period0,
         SourceBonusMito7d=@bonusMito7,
         SourceBonusMito30d=@bonusMito30,
         SourceBonusMito90d=@bonusMito90,
@@ -408,6 +478,7 @@ BEGIN
      SourceMitoPrice,SourceMito7dPrice,SourceMito30dPrice,SourceMito90dPrice,SourceMito365dPrice,SourceMito0dPrice,
      SourceHancoin7dPrice,SourceHancoin30dPrice,SourceHancoin90dPrice,SourceHancoin365dPrice,SourceHancoin0dPrice,
      SourceMileage7dPrice,SourceMileage30dPrice,SourceMileage90dPrice,SourceMileage365dPrice,SourceMileage0dPrice,
+     SourcePeriod7d,SourcePeriod30d,SourcePeriod90d,SourcePeriod365d,SourcePeriod0d,
      SourceBonusMito7d,SourceBonusMito30d,SourceBonusMito90d,SourceBonusMito365d,SourceBonusMito0d,
      SourceBonusSpeed,SourceBonusAccel,SourceBonusBoost,SourceBonusCrash,SourceBonusAssist,
      ClientRowIndex,DisplayName,Description,TopCategory,MainCategoryId,MainCategory,SubCategoryId,SubCategory,
@@ -416,6 +487,7 @@ BEGIN
     (@shopId,@itemCode,@category,@categoryIndex,@support,@useMito,@useHancoin,@useMileage,
      @mito,@mito7,@mito30,@mito90,@mito365,@mito0,@hc7,@hc30,@hc90,@hc365,@hc0,
      @mile7,@mile30,@mile90,@mile365,@mile0,
+     @period7,@period30,@period90,@period365,@period0,
      @bonusMito7,@bonusMito30,@bonusMito90,@bonusMito365,@bonusMito0,
      @bonusSpeed,@bonusAccel,@bonusBoost,@bonusCrash,@bonusAssist,
      @clientRowIndex,@displayName,@description,@topCategory,@mainCategoryId,@mainCategory,@subCategoryId,@subCategory,
@@ -455,6 +527,12 @@ END;";
                 cmd.Parameters.AddWithValue("@mile90", DbInt(row, "Mile Price90D"));
                 cmd.Parameters.AddWithValue("@mile365", DbInt(row, "Mile Price365D"));
                 cmd.Parameters.AddWithValue("@mile0", DbInt(row, "Mile Price0D"));
+
+                cmd.Parameters.AddWithValue("@period7", DbInt(row, "Period 7D"));
+                cmd.Parameters.AddWithValue("@period30", DbInt(row, "Period 30D"));
+                cmd.Parameters.AddWithValue("@period90", DbInt(row, "Period 90D"));
+                cmd.Parameters.AddWithValue("@period365", DbInt(row, "Period 365D"));
+                cmd.Parameters.AddWithValue("@period0", DbInt(row, "Period 0D"));
 
                 cmd.Parameters.AddWithValue("@bonusMito7", IntValue(row, "Bonus Mito 7D"));
                 cmd.Parameters.AddWithValue("@bonusMito30", IntValue(row, "Bonus Mito 30D"));
