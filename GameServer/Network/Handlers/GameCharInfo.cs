@@ -385,6 +385,7 @@ ORDER BY v.InventoryIndex;", conn))
                         return;
                     }
 
+                    var duplicateIds = 0;
                     for (var i = headerLine + 1; i < lines.Length; i++)
                     {
                         if (string.IsNullOrWhiteSpace(lines[i])) continue;
@@ -401,10 +402,21 @@ ORDER BY v.InventoryIndex;", conn))
                                 System.Globalization.CultureInfo.InvariantCulture, out index))
                             continue;
 
-                        map[id] = index;
+                        // Retail XiVisualItemMap uses std::map::insert keyed by dwId.
+                        // Duplicate dwId rows therefore preserve the first definition;
+                        // assigning map[id] here would incorrectly let a later variant
+                        // (often index=0) replace the render index used by the client.
+                        if (map.ContainsKey(id))
+                        {
+                            duplicateIds++;
+                            continue;
+                        }
+                        map.Add(id, index);
                     }
 
-                    Log.Info("Visual render index map loaded: {0} VisualItem.xlt ids mapped to retail render indexes.", map.Count);
+                    Log.Info(
+                        "Visual render index map loaded: {0} VisualItem.xlt ids mapped to retail render indexes; {1} duplicate dwId rows ignored (first definition wins).",
+                        map.Count, duplicateIds);
                 }
                 catch (System.Exception ex)
                 {
@@ -444,7 +456,9 @@ ORDER BY v.InventoryIndex;", conn))
                     visual.Slot12 = value;
                     return;
                 case 7:
-                    visual.Slot18 = value;
+                    // DriftCity.exe 0x54CD22 has the same zero-index fallback used by
+                    // wheels/booster: when itemIndex is zero it parses the item parameter.
+                    visual.Slot18 = value != 0 ? value : unchecked((ushort)numericData);
                     return;
                 case 8:
                     visual.Slot16 = value;
