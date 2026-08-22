@@ -48,8 +48,8 @@ namespace GameServer.Network.Handlers
         public static void GetLicenseInfo(Packet packet)
         {
             var request = ReadRemaining(packet);
-            var character = packet.Sender?.User?.ActiveCharacter;
-            if (character == null)
+            var requester = packet.Sender?.User?.ActiveCharacter;
+            if (requester == null)
             {
                 Research("GET_INFO no-character request=" + Hex(request));
                 return;
@@ -57,6 +57,15 @@ namespace GameServer.Network.Handlers
 
             try
             {
+                // The right-click player menu includes the target identity in 811. The old
+                // handler ignored it and always returned the requester's own licenses.
+                var targetClient = global::GameServer.Network.Handlers.Social.PlayerQuickActions.ResolveTarget(
+                    request, packet.Sender);
+                var character = targetClient?.User?.ActiveCharacter ?? requester;
+                var targetSerial = targetClient?.User == null
+                    ? packet.Sender.User.VehicleSerial
+                    : targetClient.User.VehicleSerial;
+
                 var connection = GameServer.Instance.Database.Connection;
                 EnsureRookie(connection, character);
 
@@ -64,17 +73,22 @@ namespace GameServer.Network.Handlers
                 var unlocked = CharacterProgressModel.GetUnlockedLicenses(connection, character.Id);
                 var catalogCount = GetCatalogCount(connection);
 
-                SendLicenseInfoAck(packet.Sender, current, unlocked, 0, "get-info");
-                SendEquippedLicenseInfo(packet.Sender, current, "get-info");
+                SendLicenseInfoAck(packet.Sender, current, unlocked, 0,
+                    targetClient == null ? "get-info-self" : "get-info-target");
+                SendEquippedLicenseInfo(packet.Sender, targetSerial, current,
+                    targetClient == null ? "get-info-self" : "get-info-target");
 
                 Research(string.Format(CultureInfo.InvariantCulture,
-                    "GET_INFO cid={0} name={1} request={2} current={3} unlocked=[{4}] catalogCount={5} -> 812+806",
-                    character.Id, character.Name, Hex(request), current,
+                    "GET_INFO requester={0}/{1} target={2}/{3} targetSerial={4} request={5} current={6} unlocked=[{7}] catalogCount={8} -> 812+806",
+                    requester.Id, requester.Name,
+                    character.Id, character.Name,
+                    targetSerial,
+                    Hex(request), current,
                     string.Join(",", unlocked), catalogCount));
             }
             catch (Exception ex)
             {
-                Research("GET_INFO_ERROR cid=" + character.Id + " " + ex.GetType().Name + ": " + ex.Message);
+                Research("GET_INFO_ERROR requester=" + requester.Id + " " + ex.GetType().Name + ": " + ex.Message);
             }
         }
 
@@ -284,16 +298,21 @@ namespace GameServer.Network.Handlers
         private static void SendEquippedLicenseInfo(Client client, int licenseId, string reason)
         {
             if (client == null || client.User == null || licenseId <= 0) return;
+            SendEquippedLicenseInfo(client, client.User.VehicleSerial, licenseId, reason);
+        }
 
-            var serial = client.User.VehicleSerial;
-            if (serial <= 0 || serial > ushort.MaxValue)
+        private static void SendEquippedLicenseInfo(Client client, ushort serial, int licenseId, string reason)
+        {
+            if (client == null || licenseId <= 0) return;
+
+            if (serial == 0)
             {
                 Research("OUT 806 SKIP invalid-serial=" + serial + " license=" + licenseId + " reason=" + reason);
                 return;
             }
 
             var packet = new Packet(LicenseInfoRes);
-            packet.Writer.Write((ushort)serial);
+            packet.Writer.Write(serial);
             WriteXiLicense(packet, licenseId, true);
             client.Send(packet);
 
