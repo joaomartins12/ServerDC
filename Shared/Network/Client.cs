@@ -218,7 +218,76 @@ namespace Shared.Network
             catch (Exception ex)
             {
                 KillConnection(ex);
+                return;
             }
+
+            // Retail free-roam keeps XiPlayerInfo (802/809) and the instantiated world
+            // vehicle as separate pieces of state. Packet 809 refreshes the logical
+            // XiPlayerInfo/XiVisualItem cache, but mesh-based cosmetics on an already
+            // spawned remote car are not rebuilt merely because that cache changed.
+            //
+            // Cmd_RemoveVehicle (550) is the retail invalidation path for a remote world
+            // vehicle. Its handler consumes exactly 60 bytes and, for a non-local serial,
+            // only needs Serial(+0x02) and Age(+0x06) to invalidate the existing object.
+            // Sending the correctly-sized 550 immediately after an 809 lets the next 541
+            // materialize the remote car again from the newly installed player-info cache.
+            TryInvalidateRemoteVehiclesAfterPlayerInfo(packet.Id, buffer);
+        }
+
+        private void TryInvalidateRemoteVehiclesAfterPlayerInfo(ushort packetId, byte[] buffer)
+        {
+            const ushort PlayerInfoLivePacketId = 809;
+            const int PlayerInfoStride = 216;
+            const int HeaderSize = 6; // id(u16) + count(u32)
+            const int NameSize = 26;  // wchar Name[13]
+
+            if (packetId != PlayerInfoLivePacketId || buffer == null || buffer.Length < HeaderSize)
+                return;
+
+            int count;
+            try
+            {
+                count = BitConverter.ToInt32(buffer, 2);
+            }
+            catch
+            {
+                return;
+            }
+
+            if (count <= 0 || count > 64) return;
+
+            for (var i = 0; i < count; i++)
+            {
+                var record = HeaderSize + (i * PlayerInfoStride);
+                if (record < 0 || record + PlayerInfoStride > buffer.Length) break;
+
+                var serial = BitConverter.ToUInt16(buffer, record + NameSize);
+                var age = BitConverter.ToUInt16(buffer, record + NameSize + 2);
+                if (serial == 0) continue;
+                if (User != null && serial == User.VehicleSerial) continue;
+
+                Send(BuildRetailRemoveVehicle(serial, age));
+                Log.Debug(
+                    "Remote visual rebuild invalidate: Viewer={0} TargetSerial={1} Age={2} -> 809+550; next 541 recreates world vehicle",
+                    CharacterName, serial, age);
+            }
+        }
+
+        /// <summary>
+        /// Drift City v0.77a Cmd_RemoveVehicle (550) is exactly 60 bytes including the
+        /// packet id. The remote handler reads Serial at +0x02 and Age at +0x06; the
+        /// remaining retail structure is not consulted by the remote invalidation branch.
+        /// Keep the complete wire size nevertheless, because the client handler returns
+        /// 0x3C and short historical packets were malformed.
+        /// </summary>
+        public static Packet BuildRetailRemoveVehicle(ushort serial, ushort age = 0)
+        {
+            var remove = new Packet(Packets.CmdRemoveVehicle);
+            remove.Writer.Write(serial);       // +0x02
+            remove.Writer.Write((ushort)0);    // +0x04 opaque/reserved
+            remove.Writer.Write(age);          // +0x06
+            remove.Writer.Write(new byte[52]); // +0x08 .. +0x3B
+            return remove;
         }
 
         public void SendError(string format, params object[] args)
@@ -267,10 +336,9 @@ namespace Shared.Network
             {
                 try
                 {
-                    var remove = new Packet(Packets.CmdRemoveVehicle);
-                    remove.Writer.Write(departingSerial);
+                    var remove = BuildRetailRemoveVehicle(departingSerial);
                     _parent.Broadcast(remove, this);
-                    Log.Debug("Area disconnect remove: Name={0} Serial={1} Port={2} -> packet 550 broadcast",
+                    Log.Debug("Area disconnect remove: Name={0} Serial={1} Port={2} -> retail packet 550/60-byte broadcast",
                         departingName, departingSerial, localPort);
                 }
                 catch (Exception ex)
