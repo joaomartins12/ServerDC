@@ -91,8 +91,8 @@ namespace Shared.Models
                 character = GetCharacter(dbconn, reader);
             }
 
-            // Repair again after the reader is closed and persist it. GetCharacter already
-            // normalized the live object, while this makes a corrupt DB row self-healing on login.
+            // GetCharacter normalizes the live object while the reader is open. Persisting
+            // happens only after the reader has closed, so legacy 0/0 rows heal on login.
             EnsureCharacterExperience(dbconn, character);
 
             character.GarageVehicles = VehicleModel.Retrieve(dbconn, character.Id);
@@ -239,7 +239,7 @@ WHERE ISNULL(Level,0)<=1
 
         private static bool NormalizeExperience(Character character)
         {
-            if (character == null || character.ExperienceInfo == null) return false;
+            if (character == null) return false;
             var changed = false;
 
             if (character.Level < 1)
@@ -268,7 +268,11 @@ WHERE ISNULL(Level,0)<=1
         private static void EnsureCharacterExperience(MySqlConnection dbconn, Character character)
         {
             if (dbconn == null || character == null || character.Id == 0) return;
-            if (!NormalizeExperience(character)) return;
+
+            // GetCharacter may already have normalized the object. Persist level-one rows
+            // regardless so an in-memory repair is guaranteed to reach the database.
+            var changed = NormalizeExperience(character);
+            if (!changed && character.Level != 1) return;
 
             using (var cmd = new MySqlCommand(@"
 UPDATE dbo.characters
@@ -283,9 +287,12 @@ WHERE CID=@cid;", dbconn))
                 cmd.ExecuteNonQuery();
             }
 
-            Log.Warning("Character EXP repaired on load: CID={0} Name={1} Level={2} Base={3} Cur={4} Next={5}",
-                character.Id, character.Name ?? string.Empty, character.Level,
-                character.ExperienceInfo.BaseExp, character.ExperienceInfo.CurExp, character.ExperienceInfo.NextExp);
+            if (changed)
+            {
+                Log.Warning("Character EXP repaired on load: CID={0} Name={1} Level={2} Base={3} Cur={4} Next={5}",
+                    character.Id, character.Name ?? string.Empty, character.Level,
+                    character.ExperienceInfo.BaseExp, character.ExperienceInfo.CurExp, character.ExperienceInfo.NextExp);
+            }
         }
 
         public static void EnsureDefaultLicense(MySqlConnection dbconn, ulong cid)
