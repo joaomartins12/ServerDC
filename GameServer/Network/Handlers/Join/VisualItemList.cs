@@ -106,7 +106,7 @@ namespace GameServer.Network.Handlers.Join
                 {
                     CarID = vehicle.CarId,
                     CarType = vehicle.CarType,
-                    BaseColor = effectiveColor,
+                    BaseColor = vehicle.BaseColor,
                     Grade = vehicle.Grade,
                     SlotType = vehicle.SlotType,
                     AuctionCnt = vehicle.AuctionCnt,
@@ -122,9 +122,9 @@ namespace GameServer.Network.Handlers.Join
             }.CreatePacket());
 
             Log.Debug(
-                "Local visual update[{0}]: CID={1} Serial={2} CarId={3} Color=0x{4:X6} Color2=0x{5:X8} -> 1061",
+                "Local visual update[{0}]: CID={1} Serial={2} CarId={3} BaseColor=0x{4:X6} Color=0x{5:X6} Color2=0x{6:X8} -> 1061",
                 reason ?? string.Empty, character.Id, user.VehicleSerial, vehicle.CarId,
-                effectiveColor, vehicle.Color2);
+                vehicle.BaseColor, effectiveColor, vehicle.Color2);
         }
     }
 }
